@@ -206,9 +206,11 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                 }
             }
 
-            // TODO: What if, LTS.
-            labelsToAdd.Add("Target: Rolling");
-            
+            if (file.FileName.StartsWith("SPECS/"))
+            {
+                // TODO: What if, LTS.
+                labelsToAdd.Add("Target: Rolling");
+            }
         }
 
         if (labelsToAdd.Any())
