@@ -2,6 +2,7 @@ using Octokit.Webhooks;
 using Octokit.Webhooks.Events;
 using Octokit.Webhooks.Events.PullRequest;
 using Octokit.Webhooks.Events.PullRequestReview;
+using Octokit.Webhooks.Events.IssueComment;
 
 namespace abaci_bot.Services;
 
@@ -99,6 +100,38 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             {
                 await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
                 await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: In Review");
+            }
+        }
+    }
+
+    // When a new comment is created on the PR, if the commenter is a captain, we can also add "Workflow: In Review" label.
+    protected override async ValueTask ProcessIssueCommentWebhookAsync(
+        WebhookHeaders headers,
+        IssueCommentEvent issueCommentEvent,
+        IssueCommentAction action,
+        CancellationToken cancellationToken = default)
+    {
+        if (action == IssueCommentAction.Created)
+        {
+            if (issueCommentEvent.Issue.PullRequest != null)
+            {
+                var prNumber = (int)issueCommentEvent.Issue.Number;
+                var owner = issueCommentEvent.Repository.Owner.Login;
+                var repo = issueCommentEvent.Repository.Name;
+                var captains = await _github.GetTeamMembersAsync(owner, _config["GitHubApp:TeamName"]!);
+                string sender = issueCommentEvent.Sender.Login.ToLowerInvariant();
+                var pullRequest = await _github.GetPullRequestAsync(owner, repo, prNumber);
+                var prTitle = issueCommentEvent.Issue.Title;
+
+                // Only when the commenter is a captain, the PR is not in draft,
+                // and the title doesn't start with "WIP", we consider it as "In Review" and add the label.
+                if (captains.Contains(sender) &&
+                    !pullRequest.Draft &&
+                    !prTitle.StartsWith("WIP", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
+                    await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: In Review");
+                }
             }
         }
     }

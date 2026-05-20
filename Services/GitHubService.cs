@@ -139,4 +139,11 @@ public class GitHubService
         var members = await _client.Organization.Team.GetAllMembers(teamSlug.Id);
         return members.Select(m => m.Login.ToLowerInvariant()).ToHashSet();
     }
+
+    // Add more GitHub API methods as needed.
+    public async Task<PullRequest> GetPullRequestAsync(string owner, string repo, int prNumber)
+    {
+        await EnsureAuthenticatedAsync();
+        return await _client.PullRequest.Get(owner, repo, prNumber);
+    }
 }
