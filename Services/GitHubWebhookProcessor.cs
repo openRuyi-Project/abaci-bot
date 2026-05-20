@@ -29,6 +29,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         var headSha = pullRequestEvent.PullRequest.Head.Sha;
         var isDraft = pullRequestEvent.PullRequest.Draft;
         var currentLabels = pullRequestEvent.PullRequest.Labels.Select(l => l.Name).ToList();
+        string prTitle = pullRequestEvent.PullRequest.Title;
 
         // Handle PR when opened or synchronized (new commit)
         if (action == PullRequestAction.Opened || 
@@ -53,7 +54,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             // Then, let's analyze the content of the PR and add labels accordingly.
             await AnalyzeFilesAndLabelPR(owner, repo, prNumber, headSha);
 
-            if (isDraft)
+            if (isDraft || prTitle.StartsWith("WIP", StringComparison.OrdinalIgnoreCase))
             {
                 // For draft PR, add "Workflow: In Dev" label to indicate it's still in development,
                 // and remove "Workflow: Ready For Review" label if exists.
