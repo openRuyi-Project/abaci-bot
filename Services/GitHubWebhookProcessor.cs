@@ -28,6 +28,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         var repo = pullRequestEvent.Repository.Name;
         var headSha = pullRequestEvent.PullRequest.Head.Sha;
         var isDraft = pullRequestEvent.PullRequest.Draft;
+        var currentLabels = pullRequestEvent.PullRequest.Labels.Select(l => l.Name).ToList();
 
         // Handle PR when opened or synchronized (new commit)
         if (action == PullRequestAction.Opened || 
@@ -63,7 +64,10 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             {
                 // For non-draft PR, add "Workflow: Ready For Review" label and remove "Workflow: In Dev" label if exists.
                 await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: In Dev");
-                await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: Ready For Review");
+                if (!currentLabels.Contains("Workflow: In Review"))
+                {
+                    await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: Ready For Review");
+                }
                 
             }
         }
