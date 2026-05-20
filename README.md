@@ -21,7 +21,30 @@ Then edit `appsettings.json` and fill in your actual values:
 | `GitHubApp.TeamName` | Team slug used for review workflow (for example: `captains`). Review labels are updated only when review is submitted by a member of this team. |
 | `Kestrel.Endpoints.Http.Url` | The address and port the server listens on (default: `http://0.0.0.0:3456`) |
 
-### 2. Run
+### 2. Configure GitHub App permissions and webhook events
+
+Your GitHub App must be configured with the following permissions:
+
+**Organization permissions**
+
+- Members: **Read-only**
+
+**Repository permissions**
+
+- Pull requests: **Read and write**
+- Issues: **Read and write**
+- Contents: **Read-only**
+
+Your GitHub App must also subscribe to these webhook events:
+
+- Issue comments
+- Issues
+- Pull request review comments
+- Pull request review threads
+- Pull request reviews
+- Pull requests
+
+### 3. Run
 
 #### Option A: Run directly
 
@@ -72,7 +95,7 @@ docker run -d \
   ghcr.io/openruyi/abaci-bot:latest
 ```
 
-### 3. Build Docker Image Locally (Optional)
+### 4. Build Docker Image Locally (Optional)
 
 If you want to build the image yourself:
 
