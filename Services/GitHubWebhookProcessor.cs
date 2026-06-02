@@ -38,6 +38,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             action == PullRequestAction.ConvertedToDraft || 
             action == PullRequestAction.ReadyForReview)
         {
+            // Keep "AI Assistance" label in sync with the PR description.
+            await AnalyzeDescriptionAndLabelPR(owner, repo, prNumber, pullRequestEvent.PullRequest.Body);
+
             // Get user email from PR commits (via base repo API, works for both public and private forks)
             string? userEmail = null;
             try
@@ -71,6 +74,11 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                 }
                 
             }
+        }
+        // When PR description is edited, remove/cleanup labels
+        else if (action == PullRequestAction.Edited)
+        {
+            await AnalyzeDescriptionAndLabelPR(owner, repo, prNumber, pullRequestEvent.PullRequest.Body);
         }
         // When PR is closed, remove/cleanup labels
         else if (action == PullRequestAction.Closed)
@@ -223,6 +231,18 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             await _github.AddLabelsAsync(owner, repo, prNumber, labelsToAdd.Distinct().ToArray());
         }
     }
+    
+    // Analyze the PR description and update labels accordingly.
+    private async Task AnalyzeDescriptionAndLabelPR(string owner, string repo, int prNumber, string? body)
+    {
+        // The PR description is the source of truth for the "AI Assistance" label.
+        // If the checkbox is checked, add the label.
+        // Otherwise, remove it to avoid stale label state.
+        if (IsAiAssistedPullRequest(body))
+            await _github.AddLabelsAsync(owner, repo, prNumber, "AI Assistance");
+        else
+            await _github.RemoveLabelAsync(owner, repo, prNumber, "AI Assistance");
+    }
 
     private static string? ExtractEmailDomain(string? email)
     {
@@ -246,5 +266,29 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         return normalizedEmail.EndsWith(".oerv@isrc.iscas.ac.cn", StringComparison.OrdinalIgnoreCase) ||
                normalizedEmail.EndsWith(".or@isrc.iscas.ac.cn", StringComparison.OrdinalIgnoreCase) ||
                normalizedEmail.EndsWith(".riscv@isrc.iscas.ac.cn", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Check whether the AI-assisted contribution checkbox is checked in the PR description.
+    private static bool IsAiAssistedPullRequest(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return false;
+
+        const string checkboxText =
+            "I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.";
+
+        var lines = body.Split('\n');
+
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+
+            if (!line.Contains(checkboxText, StringComparison.Ordinal))
+                continue;
+
+            return line.StartsWith("- [x]", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
     }
 }
