@@ -38,6 +38,11 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             action == PullRequestAction.ConvertedToDraft || 
             action == PullRequestAction.ReadyForReview)
         {
+            // When PR is synchronized (new commits) and has Workflow: Blocked label, add Commits: Updated
+            if (action == PullRequestAction.Synchronize && currentLabels.Contains("Workflow: Blocked"))
+            {
+                await _github.AddLabelsAsync(owner, repo, prNumber, "Commits: Updated");
+            }
             // Keep "AI Assistance" label in sync with the PR description.
             await AnalyzeDescriptionAndLabelPR(owner, repo, prNumber, pullRequestEvent.PullRequest.Body);
 
@@ -92,6 +97,16 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
             await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: In Review");
         }
+        // Handle PR labeled event for Workflow: Blocked management
+        else if (action == PullRequestAction.Labeled)
+        {
+            await HandleBlockedLabelAdded(owner, repo, prNumber);
+        }
+        // Handle PR unlabeled event for Workflow: Blocked management
+        else if (action == PullRequestAction.Unlabeled)
+        {
+            await HandleBlockedLabelRemoved(owner, repo, prNumber);
+        }
     }
 
     protected override async ValueTask ProcessPullRequestReviewWebhookAsync(
@@ -114,6 +129,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                 await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
                 await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: In Review");
             }
+
+            // Remove "Commits: Updated" label when a review is submitted
+            await _github.RemoveLabelAsync(owner, repo, prNumber, "Commits: Updated");
         }
     }
 
@@ -145,8 +163,24 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                     await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
                     await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: In Review");
                 }
+
+                // Remove "Commits: Updated" label when there's a comment from contributor
+                await _github.RemoveLabelAsync(owner, repo, prNumber, "Commits: Updated");
             }
         }
+    }
+
+    // When Workflow: Blocked label is added, remove In Review and Ready For Review labels
+    private async Task HandleBlockedLabelAdded(string owner, string repo, int prNumber)
+    {
+        await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: In Review");
+        await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
+    }
+
+    // When Workflow: Blocked label is removed, restore In Review label
+    private async Task HandleBlockedLabelRemoved(string owner, string repo, int prNumber)
+    {
+        await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: In Review");
     }
 
     private async Task AnalyzeUserAndLabelPR(string owner, string repo, int prNumber, string? userEmail)

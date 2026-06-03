@@ -61,3 +61,5 @@ appsettings.json
 
 # User-specific files
 .idea
+.vs/
+.vscode/
