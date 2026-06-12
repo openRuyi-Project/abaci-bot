@@ -29,7 +29,7 @@ if (missingFields.Count > 0)
     return;
 }
 
-builder.Services.AddSingleton(new GitHubService(
+builder.Services.AddSingleton<IGitHubService>(new GitHubService(
     builder.Configuration.GetValue<int>("GitHubApp:AppId"),
     builder.Configuration["GitHubApp:PrivateKey"]!,
     builder.Configuration.GetValue<long>("GitHubApp:InstallationId")

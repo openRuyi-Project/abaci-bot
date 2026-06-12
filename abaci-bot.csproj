@@ -14,4 +14,11 @@
       <PackageReference Include="Octokit.Webhooks.AspNetCore" Version="4.0.0" />
     </ItemGroup>
 
+    <ItemGroup>
+      <Compile Remove="tests\**" />
+      <Content Remove="tests\**" />
+      <EmbeddedResource Remove="tests\**" />
+      <None Remove="tests\**" />
+    </ItemGroup>
+
 </Project>

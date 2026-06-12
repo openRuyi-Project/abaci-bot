@@ -8,10 +8,10 @@ namespace abaci_bot.Services;
 
 public class GitHubWebhookProcessor : WebhookEventProcessor
 {
-    private readonly GitHubService _github;
+    private readonly IGitHubService _github;
     private readonly IConfiguration _config;
 
-    public GitHubWebhookProcessor(GitHubService github, IConfiguration config)
+    public GitHubWebhookProcessor(IGitHubService github, IConfiguration config)
     {
         _github = github;
         _config = config;
@@ -24,11 +24,13 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         CancellationToken cancellationToken = default)
     {
         var prNumber = (int)pullRequestEvent.PullRequest.Number;
-        var owner = pullRequestEvent.Repository.Owner.Login;
-        var repo = pullRequestEvent.Repository.Name;
+        if (!TryGetRepositoryContext(pullRequestEvent.Repository, out var owner, out var repo))
+            return;
+
         var headSha = pullRequestEvent.PullRequest.Head.Sha;
         var isDraft = pullRequestEvent.PullRequest.Draft;
-        var currentLabels = pullRequestEvent.PullRequest.Labels.Select(l => l.Name).ToList();
+        var currentLabels = GetLabelNames(pullRequestEvent.PullRequest.Labels);
+        var isBlocked = currentLabels.Contains(GitHubLabels.WorkflowBlocked);
         string prTitle = pullRequestEvent.PullRequest.Title;
 
         // Handle PR when opened or synchronized (new commit)
@@ -39,9 +41,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             action == PullRequestAction.ReadyForReview)
         {
             // When PR is synchronized (new commits) and has Workflow: Blocked label, add Commits: Updated
-            if (action == PullRequestAction.Synchronize && currentLabels.Contains("Workflow: Blocked"))
+            if (action == PullRequestAction.Synchronize && isBlocked)
             {
-                await _github.AddLabelsAsync(owner, repo, prNumber, "Commits: Updated");
+                await _github.AddLabelsAsync(owner, repo, prNumber, GitHubLabels.CommitsUpdated);
             }
             // Keep "AI Assistance" label in sync with the PR description.
             await AnalyzeDescriptionAndLabelPR(owner, repo, prNumber, pullRequestEvent.PullRequest.Body);
@@ -62,20 +64,25 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             // Then, let's analyze the content of the PR and add labels accordingly.
             await AnalyzeFilesAndLabelPR(owner, repo, prNumber, headSha);
 
+            if (isBlocked)
+            {
+                return;
+            }
+
             if (isDraft || prTitle.StartsWith("WIP", StringComparison.OrdinalIgnoreCase))
             {
                 // For draft PR, add "Workflow: In Dev" label to indicate it's still in development,
                 // and remove "Workflow: Ready For Review" label if exists.
-                await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: In Dev");
-                await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
+                await _github.AddLabelsAsync(owner, repo, prNumber, GitHubLabels.WorkflowInDev);
+                await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.WorkflowReadyForReview);
             }
             else
             {
                 // For non-draft PR, add "Workflow: Ready For Review" label and remove "Workflow: In Dev" label if exists.
-                await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: In Dev");
-                if (!currentLabels.Contains("Workflow: In Review"))
+                await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.WorkflowInDev);
+                if (!currentLabels.Contains(GitHubLabels.WorkflowInReview))
                 {
-                    await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: Ready For Review");
+                    await _github.AddLabelsAsync(owner, repo, prNumber, GitHubLabels.WorkflowReadyForReview);
                 }
                 
             }
@@ -91,21 +98,29 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             if (pullRequestEvent.PullRequest.Merged == true)
             {
                 // For merged PR, add "Workflow: Complete" label.
-                await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: Complete");
+                await _github.AddLabelsAsync(owner, repo, prNumber, GitHubLabels.WorkflowComplete);
             }
-            await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: In Dev");
-            await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
-            await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: In Review");
+            await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.WorkflowInDev);
+            await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.WorkflowReadyForReview);
+            await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.WorkflowInReview);
         }
         // Handle PR labeled event for Workflow: Blocked management
         else if (action == PullRequestAction.Labeled)
         {
-            await HandleBlockedLabelAdded(owner, repo, prNumber);
+            if (pullRequestEvent is PullRequestLabeledEvent labeledEvent &&
+                IsBlockedLabel(labeledEvent.Label.Name))
+            {
+                await HandleBlockedLabelAdded(owner, repo, prNumber);
+            }
         }
         // Handle PR unlabeled event for Workflow: Blocked management
         else if (action == PullRequestAction.Unlabeled)
         {
-            await HandleBlockedLabelRemoved(owner, repo, prNumber);
+            if (pullRequestEvent is PullRequestUnlabeledEvent unlabeledEvent &&
+                IsBlockedLabel(unlabeledEvent.Label.Name))
+            {
+                await HandleBlockedLabelRemoved(owner, repo, prNumber);
+            }
         }
     }
 
@@ -118,20 +133,29 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         if (action == PullRequestReviewAction.Submitted)
         {
             var prNumber = (int)pullRequestReviewEvent.PullRequest.Number;
-            var owner = pullRequestReviewEvent.Repository.Owner.Login;
-            var repo = pullRequestReviewEvent.Repository.Name;
+            if (!TryGetRepositoryContext(pullRequestReviewEvent.Repository, out var owner, out var repo))
+                return;
+
+            if (!TryGetSender(pullRequestReviewEvent.Sender, out var sender))
+                return;
+
             var captains = await _github.GetTeamMembersAsync(owner, _config["GitHubApp:TeamName"]!);
-            string sender = pullRequestReviewEvent.Sender.Login.ToLowerInvariant();
+            string? author = pullRequestReviewEvent.PullRequest.User?.Login;
+            var currentLabels = GetLabelNames(pullRequestReviewEvent.PullRequest.Labels);
+            var isBlocked = currentLabels.Contains(GitHubLabels.WorkflowBlocked);
 
             // If the review is submitted by a captain, add "Workflow: In Review" label.
-            if (captains.Contains(sender))
+            if (captains.Contains(sender) && !isBlocked)
             {
-                await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
-                await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: In Review");
+                await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.WorkflowReadyForReview);
+                await _github.AddLabelsAsync(owner, repo, prNumber, GitHubLabels.WorkflowInReview);
             }
 
-            // Remove "Commits: Updated" label when a review is submitted
-            await _github.RemoveLabelAsync(owner, repo, prNumber, "Commits: Updated");
+            // A non-author captain response acknowledges the author's update.
+            if (captains.Contains(sender) && !IsSameUser(sender, author))
+            {
+                await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.CommitsUpdated);
+            }
         }
     }
 
@@ -147,25 +171,35 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             if (issueCommentEvent.Issue.PullRequest != null)
             {
                 var prNumber = (int)issueCommentEvent.Issue.Number;
-                var owner = issueCommentEvent.Repository.Owner.Login;
-                var repo = issueCommentEvent.Repository.Name;
+                if (!TryGetRepositoryContext(issueCommentEvent.Repository, out var owner, out var repo))
+                    return;
+
+                if (!TryGetSender(issueCommentEvent.Sender, out var sender))
+                    return;
+
                 var captains = await _github.GetTeamMembersAsync(owner, _config["GitHubApp:TeamName"]!);
-                string sender = issueCommentEvent.Sender.Login.ToLowerInvariant();
                 var pullRequest = await _github.GetPullRequestAsync(owner, repo, prNumber);
+                string? author = issueCommentEvent.Issue.User?.Login ?? pullRequest.User?.Login;
                 var prTitle = issueCommentEvent.Issue.Title;
+                var currentLabels = GetLabelNames(issueCommentEvent.Issue.Labels);
+                var isBlocked = currentLabels.Contains(GitHubLabels.WorkflowBlocked);
 
                 // Only when the commenter is a captain, the PR is not in draft,
                 // and the title doesn't start with "WIP", we consider it as "In Review" and add the label.
                 if (captains.Contains(sender) &&
+                    !isBlocked &&
                     !pullRequest.Draft &&
                     !prTitle.StartsWith("WIP", StringComparison.OrdinalIgnoreCase))
                 {
-                    await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
-                    await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: In Review");
+                    await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.WorkflowReadyForReview);
+                    await _github.AddLabelsAsync(owner, repo, prNumber, GitHubLabels.WorkflowInReview);
                 }
 
-                // Remove "Commits: Updated" label when there's a comment from contributor
-                await _github.RemoveLabelAsync(owner, repo, prNumber, "Commits: Updated");
+                // A non-author captain response acknowledges the author's update.
+                if (captains.Contains(sender) && !IsSameUser(sender, author))
+                {
+                    await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.CommitsUpdated);
+                }
             }
         }
     }
@@ -173,14 +207,14 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     // When Workflow: Blocked label is added, remove In Review and Ready For Review labels
     private async Task HandleBlockedLabelAdded(string owner, string repo, int prNumber)
     {
-        await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: In Review");
-        await _github.RemoveLabelAsync(owner, repo, prNumber, "Workflow: Ready For Review");
+        await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.WorkflowInReview);
+        await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.WorkflowReadyForReview);
     }
 
     // When Workflow: Blocked label is removed, restore In Review label
     private async Task HandleBlockedLabelRemoved(string owner, string repo, int prNumber)
     {
-        await _github.AddLabelsAsync(owner, repo, prNumber, "Workflow: In Review");
+        await _github.AddLabelsAsync(owner, repo, prNumber, GitHubLabels.WorkflowInReview);
     }
 
     private async Task AnalyzeUserAndLabelPR(string owner, string repo, int prNumber, string? userEmail)
@@ -273,9 +307,46 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         // If the checkbox is checked, add the label.
         // Otherwise, remove it to avoid stale label state.
         if (IsAiAssistedPullRequest(body))
-            await _github.AddLabelsAsync(owner, repo, prNumber, "AI Assistance");
+            await _github.AddLabelsAsync(owner, repo, prNumber, GitHubLabels.AiAssistance);
         else
-            await _github.RemoveLabelAsync(owner, repo, prNumber, "AI Assistance");
+            await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.AiAssistance);
+    }
+
+    private static HashSet<string> GetLabelNames(IEnumerable<Octokit.Webhooks.Models.Label>? labels)
+    {
+        return labels?
+            .Select(label => label.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetRepositoryContext(
+        Octokit.Webhooks.Models.Repository? repository,
+        out string owner,
+        out string repo)
+    {
+        owner = repository?.Owner?.Login ?? string.Empty;
+        repo = repository?.Name ?? string.Empty;
+
+        return !string.IsNullOrWhiteSpace(owner) && !string.IsNullOrWhiteSpace(repo);
+    }
+
+    private static bool TryGetSender(Octokit.Webhooks.Models.User? sender, out string login)
+    {
+        login = sender?.Login?.ToLowerInvariant() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(login);
+    }
+
+    private static bool IsBlockedLabel(string? labelName)
+    {
+        return string.Equals(labelName, GitHubLabels.WorkflowBlocked, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSameUser(string? left, string? right)
+    {
+        return !string.IsNullOrWhiteSpace(left) &&
+               !string.IsNullOrWhiteSpace(right) &&
+               string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ExtractEmailDomain(string? email)

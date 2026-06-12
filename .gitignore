@@ -63,3 +63,4 @@ appsettings.json
 .idea
 .vs/
 .vscode/
+Properties/launchSettings.json

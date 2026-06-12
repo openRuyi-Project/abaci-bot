@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace abaci_bot.Services;
 
-public class GitHubService
+public class GitHubService : IGitHubService
 {
     private readonly int _appId;
     private readonly string _privateKey;
@@ -91,7 +91,7 @@ public class GitHubService
         return await _client.PullRequest.Files(owner, repo, prNumber);
     }
 
-    public async Task<string> GetPullRequestAuthorEmailAsync(
+    public async Task<string?> GetPullRequestAuthorEmailAsync(
         string owner, string repo, int prNumber)
     {
         await EnsureAuthenticatedAsync();
