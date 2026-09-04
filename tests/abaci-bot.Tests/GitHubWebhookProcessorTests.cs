@@ -18,11 +18,17 @@ using WebhookPullRequestReviewSubmittedEvent = Octokit.Webhooks.Events.PullReque
 using WebhookRepository = Octokit.Webhooks.Models.Repository;
 using WebhookSimplePullRequest = Octokit.Webhooks.Models.SimplePullRequest;
 using WebhookUser = Octokit.Webhooks.Models.User;
+using Xunit;
 
 namespace abaci_bot.Tests;
 
 public class GitHubWebhookProcessorTests
 {
+    private const string AiCheckboxLineChecked = "- [x] I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.";
+    private const string AiCheckboxLineUnchecked = "- [ ] I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.";
+
+    #region Existing Blocked / Review Flow Tests
+
     [Theory]
     [InlineData(true, GitHubLabels.WorkflowInReview)]
     [InlineData(false, GitHubLabels.WorkflowInReview)]
@@ -73,7 +79,7 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = PullRequestEvent(PullRequestAction.Synchronize, labels: new[] { GitHubLabels.WorkflowBlocked });
+        var payload = CreatePREvent<PullRequestSynchronizeEvent>(labels: new[] { GitHubLabels.WorkflowBlocked });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Synchronize);
 
@@ -147,6 +153,763 @@ public class GitHubWebhookProcessorTests
         Assert.DoesNotContain($"remove:{GitHubLabels.CommitsUpdated}", github.LabelOperations);
     }
 
+    #endregion
+
+    #region WorkflowStateModule: PR Lifecycle & State Transitions
+
+    [Fact]
+    public async Task OpenedNonDraftPrAddsReadyForReviewAndRemovesInDev()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: false, title: "Feature: Add RISC-V support");
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"add:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task OpenedDraftPrAddsInDevAndRemovesReadyForReview()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: true, title: "Feature: Under construction");
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"add:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task OpenedWipTitlePrAddsInDevAndRemovesReadyForReview()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: false, title: "wip: not ready yet");
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"add:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task OpenedNonDraftPrWithExistingInReviewDoesNotAddReadyForReview()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            draft: false,
+            title: "Normal PR",
+            labels: new[] { GitHubLabels.WorkflowInReview });
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"remove:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+        Assert.DoesNotContain($"add:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ReopenedActionRunsWorkflowEvaluation()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: false, title: "Ready PR");
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Reopened);
+
+        Assert.Contains($"add:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ConvertedToDraftActionRunsWorkflowEvaluation()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: true, title: "Draft PR");
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.ConvertedToDraft);
+
+        Assert.Contains($"add:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ReadyForReviewActionRunsWorkflowEvaluation()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: false, title: "Ready PR");
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.ReadyForReview);
+
+        Assert.Contains($"add:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task OpenedBlockedPrReturnsEarlyWithoutWorkflowLabelChange()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            draft: false,
+            title: "Blocked PR",
+            labels: new[] { GitHubLabels.WorkflowBlocked });
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.DoesNotContain($"add:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.DoesNotContain($"add:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task EditedPrOnlyAnalyzesDescription()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestEditedEvent>(body: AiCheckboxLineChecked);
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Edited);
+
+        Assert.Equal(new[] { $"add:{GitHubLabels.AiAssistance}" }, github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ClosedMergedPrAddsWorkflowCompleteAndRemovesActiveWorkflowLabels()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestClosedEvent>(merged: true);
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Closed);
+
+        Assert.Contains($"add:{GitHubLabels.WorkflowComplete}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ClosedUnmergedPrRemovesActiveWorkflowLabelsWithoutAddingComplete()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestClosedEvent>(merged: false);
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Closed);
+
+        Assert.DoesNotContain($"add:{GitHubLabels.WorkflowComplete}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task UnhandledPrActionDoesNothing()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestAssignedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Assigned);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task MissingRepositoryContextReturnsEarly()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var pullRequest = PullRequest();
+
+        // 1. Repository is null
+        var payload1 = Create<PullRequestOpenedEvent>(
+            (nameof(PullRequestEvent.Number), pullRequest.Number),
+            (nameof(PullRequestEvent.PullRequest), pullRequest),
+            (nameof(PullRequestEvent.Repository), null),
+            (nameof(PullRequestEvent.Sender), User("contributor")));
+
+        await processor.ProcessPullRequestAsync(payload1, PullRequestAction.Opened);
+
+        // 2. Repository owner or name is empty
+        var emptyRepo = Create<WebhookRepository>(
+            (nameof(WebhookRepository.Name), ""),
+            (nameof(WebhookRepository.Owner), User("")));
+        var payload2 = Create<PullRequestOpenedEvent>(
+            (nameof(PullRequestEvent.Number), pullRequest.Number),
+            (nameof(PullRequestEvent.PullRequest), pullRequest),
+            (nameof(PullRequestEvent.Repository), emptyRepo),
+            (nameof(PullRequestEvent.Sender), User("contributor")));
+
+        await processor.ProcessPullRequestAsync(payload2, PullRequestAction.Opened);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task AuthorEmailExceptionContinuesWithoutThrowing()
+    {
+        var github = new FakeGitHubService { ThrowOnGetAuthorEmail = true };
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        var ex = await Record.ExceptionAsync(async () => await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened));
+
+        Assert.Null(ex);
+        Assert.Contains($"add:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+    }
+
+    #endregion
+
+    #region WorkflowStateModule: Reviews & Issue Comments
+
+    [Fact]
+    public async Task ReviewSubmittedByCaptainOnNonBlockedPrTransitionsToInReview()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = PullRequestReviewEvent(author: "contributor", sender: "captain");
+
+        await processor.ProcessPullRequestReviewAsync(payload, PullRequestReviewAction.Submitted);
+
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ReviewSubmittedByCaptainOnBlockedPrDoesNotTransitionToInReview()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = PullRequestReviewEvent(
+            author: "contributor",
+            sender: "captain",
+            labels: new[] { GitHubLabels.WorkflowBlocked });
+
+        await processor.ProcessPullRequestReviewAsync(payload, PullRequestReviewAction.Submitted);
+
+        Assert.DoesNotContain($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ReviewSubmittedByNonCaptainDoesNotTransitionToInReview()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = PullRequestReviewEvent(author: "contributor", sender: "other_user");
+
+        await processor.ProcessPullRequestReviewAsync(payload, PullRequestReviewAction.Submitted);
+
+        Assert.DoesNotContain($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ReviewNonSubmittedActionDoesNothing()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = PullRequestReviewEvent(author: "contributor", sender: "captain");
+
+        await processor.ProcessPullRequestReviewAsync(payload, PullRequestReviewAction.Dismissed);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ReviewMissingRepoContextOrSenderReturnsEarly()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var pullRequest = Create<WebhookSimplePullRequest>((nameof(WebhookSimplePullRequest.Number), 1L));
+
+        var noRepoPayload = Create<WebhookPullRequestReviewSubmittedEvent>(
+            (nameof(WebhookPullRequestReviewSubmittedEvent.PullRequest), pullRequest),
+            (nameof(WebhookPullRequestReviewSubmittedEvent.Sender), User("captain")));
+
+        await processor.ProcessPullRequestReviewAsync(noRepoPayload, PullRequestReviewAction.Submitted);
+
+        var noSenderPayload = Create<WebhookPullRequestReviewSubmittedEvent>(
+            (nameof(WebhookPullRequestReviewSubmittedEvent.PullRequest), pullRequest),
+            (nameof(WebhookPullRequestReviewSubmittedEvent.Repository), Repository()));
+
+        await processor.ProcessPullRequestReviewAsync(noSenderPayload, PullRequestReviewAction.Submitted);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task IssueCommentOnRegularIssueWithoutPullRequestDoesNothing()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var issue = Create<WebhookIssue>(
+            (nameof(WebhookIssue.Number), 10L),
+            (nameof(WebhookIssue.Title), "Just an issue"),
+            (nameof(WebhookIssue.PullRequest), null));
+
+        var payload = Create<WebhookIssueCommentCreatedEvent>(
+            (nameof(WebhookIssueCommentCreatedEvent.Issue), issue),
+            (nameof(WebhookIssueCommentCreatedEvent.Repository), Repository()),
+            (nameof(WebhookIssueCommentCreatedEvent.Sender), User("captain")));
+
+        await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Created);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task IssueCommentNonCreatedActionDoesNothing()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = IssueCommentEvent(author: "contributor", sender: "captain");
+
+        await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Edited);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task IssueCommentMissingRepoOrSenderReturnsEarly()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var issue = Create<WebhookIssue>(
+            (nameof(WebhookIssue.Number), 1L),
+            (nameof(WebhookIssue.PullRequest), Create<WebhookIssuePullRequest>()));
+
+        var noRepoPayload = Create<WebhookIssueCommentCreatedEvent>(
+            (nameof(WebhookIssueCommentCreatedEvent.Issue), issue),
+            (nameof(WebhookIssueCommentCreatedEvent.Sender), User("captain")));
+
+        await processor.ProcessIssueCommentAsync(noRepoPayload, IssueCommentAction.Created);
+
+        var noSenderPayload = Create<WebhookIssueCommentCreatedEvent>(
+            (nameof(WebhookIssueCommentCreatedEvent.Issue), issue),
+            (nameof(WebhookIssueCommentCreatedEvent.Repository), Repository()));
+
+        await processor.ProcessIssueCommentAsync(noSenderPayload, IssueCommentAction.Created);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task IssueCommentByCaptainOnPRTransitionsToInReviewWhenEligible()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = IssueCommentEvent(author: "contributor", sender: "captain", title: "Clean PR");
+
+        await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Created);
+
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task IssueCommentByCaptainOnBlockedPrDoesNotTransitionToInReview()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = IssueCommentEvent(author: "contributor", sender: "captain", labels: new[] { GitHubLabels.WorkflowBlocked });
+
+        await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Created);
+
+        Assert.DoesNotContain($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task IssueCommentByCaptainOnDraftPrDoesNotTransitionToInReview()
+    {
+        var draftPr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
+        typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Draft))?.SetValue(draftPr, true);
+
+        var github = new FakeGitHubService
+        {
+            PullRequest = draftPr
+        };
+        var processor = CreateProcessor(github);
+        var payload = IssueCommentEvent(author: "contributor", sender: "captain", draft: true);
+
+        await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Created);
+
+        Assert.DoesNotContain($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task IssueCommentByCaptainOnWipPrDoesNotTransitionToInReview()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = IssueCommentEvent(author: "contributor", sender: "captain", title: "WIP: Not done yet");
+
+        await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Created);
+
+        Assert.DoesNotContain($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task IssueCommentAuthorFallbackFromPullRequestWhenIssueUserNull()
+    {
+        var github = new FakeGitHubService
+        {
+            PullRequest = CreateOctokitPullRequestWithUser("pr_author")
+        };
+        var processor = CreateProcessor(github);
+        var payload = IssueCommentEvent(author: null, sender: "captain");
+
+        await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Created);
+
+        Assert.Contains($"remove:{GitHubLabels.CommitsUpdated}", github.LabelOperations);
+    }
+
+    #endregion
+
+    #region UserContributionModule: Email Domain Recognition
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("invalid-email")]
+    [InlineData("user@")]
+    public async Task UserEmailNullOrMalformedDoesNotAddContributionLabel(string? email)
+    {
+        var github = new FakeGitHubService { AuthorEmail = email };
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.DoesNotContain(github.LabelOperations, op => op.Contains("Community:"));
+    }
+
+    [Theory]
+    [InlineData("staff@iscas.ac.cn")]
+    [InlineData("Leader@ISCAS.AC.CN")]
+    public async Task UserEmailIscasStaffIsExcludedFromCommunityLabels(string staffEmail)
+    {
+        var github = new FakeGitHubService { AuthorEmail = staffEmail };
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.DoesNotContain(github.LabelOperations, op => op.Contains("Community:"));
+    }
+
+    [Theory]
+    [InlineData("alice.oerv@isrc.iscas.ac.cn")]
+    [InlineData("bob.or@isrc.iscas.ac.cn")]
+    [InlineData("charlie.riscv@isrc.iscas.ac.cn")]
+    [InlineData("DAVID.RISCV@ISRC.ISCAS.AC.CN")]
+    public async Task UserEmailInternSubdomainsAddStudentContributionLabel(string internEmail)
+    {
+        var github = new FakeGitHubService { AuthorEmail = internEmail };
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains("add:Community: Student contribution", github.LabelOperations);
+    }
+
+    [Theory]
+    [InlineData("developer@gmail.com")]
+    [InlineData("contributor@163.com")]
+    [InlineData("student@pku.edu.cn")]
+    public async Task UserEmailOtherDomainsAddCommunityContributionLabel(string communityEmail)
+    {
+        var github = new FakeGitHubService { AuthorEmail = communityEmail };
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains("add:Community: Contribution", github.LabelOperations);
+    }
+
+    #endregion
+
+    #region BuildSystemAnalysisModule: RPM Spec & File Analysis
+
+    [Fact]
+    public async Task FileAnalysisGithubDirectoryAddsCILabel()
+    {
+        var github = new FakeGitHubService
+        {
+            PullRequestFiles = new[] { CreateOctokitFile(".github/workflows/ci.yml") }
+        };
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains("add:CI", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task FileAnalysisSpecsDirectoryAddsTargetRollingLabel()
+    {
+        var github = new FakeGitHubService
+        {
+            PullRequestFiles = new[] { CreateOctokitFile("SPECS/package.spec") }
+        };
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains("add:Target: Rolling", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task FileAnalysisRemovedFileDoesNotFetchContent()
+    {
+        var github = new FakeGitHubService
+        {
+            PullRequestFiles = new[] { CreateOctokitFile("SPECS/deleted.spec", status: "removed") }
+        };
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        // Does not fetch content for removed file, but adds Target: Rolling because it starts with SPECS/
+        Assert.Contains("add:Target: Rolling", github.LabelOperations);
+        Assert.DoesNotContain(github.LabelOperations, op => op.Contains("BuildSystem:"));
+    }
+
+    [Fact]
+    public async Task FileAnalysisNonSpecFileDoesNotCheckBuildSystem()
+    {
+        var github = new FakeGitHubService
+        {
+            PullRequestFiles = new[] { CreateOctokitFile("docs/README.md") }
+        };
+        github.FileContents["docs/README.md"] = "BuildSystem: autotools";
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.DoesNotContain(github.LabelOperations, op => op.Contains("BuildSystem:"));
+    }
+
+    [Theory]
+    [InlineData("BuildSystem:    autotools\nName: test", "BuildSystem: autotools")]
+    [InlineData("buildsystem:    cmake\nName: test", "BuildSystem: cmake")]
+    [InlineData("BuildSystem:    golangmodule\nName: test", "BuildSystem: golangmodule")]
+    [InlineData("BuildSystem:    golang\nName: test", "BuildSystem: golang")]
+    [InlineData("BuildSystem:    rustcrate\nName: test", "BuildSystem: rustcrate")]
+    [InlineData("BuildSystem:    rust\nName: test", "BuildSystem: rust")]
+    [InlineData("BuildSystem:    meson\nName: test", "BuildSystem: meson")]
+    [InlineData("BuildSystem:    pyproject\nName: test", "BuildSystem: pyproject")]
+    [InlineData("Name: standard-package\nVersion: 1.0", "BuildSystem: misc")]
+    public async Task FileAnalysisSpecBuildSystemsRecognized(string specContent, string expectedLabel)
+    {
+        var filePath = "mypkg.spec";
+        var github = new FakeGitHubService
+        {
+            PullRequestFiles = new[] { CreateOctokitFile(filePath) }
+        };
+        github.FileContents[filePath] = specContent;
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"add:{expectedLabel}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task FileAnalysisNoMatchingLabelsDoesNotCallAddLabels()
+    {
+        var github = new FakeGitHubService
+        {
+            PullRequestFiles = new[] { CreateOctokitFile("src/main.c") }
+        };
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>();
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.DoesNotContain(github.LabelOperations, op => op.Contains("CI") || op.Contains("Target: Rolling") || op.Contains("BuildSystem:"));
+    }
+
+    #endregion
+
+    #region AiAssistanceModule: Checkbox Synchronization
+
+    [Fact]
+    public async Task AiAssistanceCheckedWithLowercaseXAddsLabel()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(body: $"Introduction\n{AiCheckboxLineChecked}\nDetails");
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"add:{GitHubLabels.AiAssistance}", github.LabelOperations);
+        Assert.DoesNotContain($"remove:{GitHubLabels.AiAssistance}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task AiAssistanceCheckedWithUppercaseXAddsLabel()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var uppercaseCheckbox = "- [X] I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.";
+        var payload = CreatePREvent<PullRequestOpenedEvent>(body: uppercaseCheckbox);
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"add:{GitHubLabels.AiAssistance}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task AiAssistanceUncheckedRemovesLabel()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(body: AiCheckboxLineUnchecked);
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"remove:{GitHubLabels.AiAssistance}", github.LabelOperations);
+        Assert.DoesNotContain($"add:{GitHubLabels.AiAssistance}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task AiAssistanceMissingCheckboxRemovesLabel()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(body: "This is a regular description without checkboxes.");
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"remove:{GitHubLabels.AiAssistance}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task AiAssistanceNullBodyRemovesLabel()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(body: null);
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        Assert.Contains($"remove:{GitHubLabels.AiAssistance}", github.LabelOperations);
+    }
+
+    #endregion
+
+    #region Helper & Edge Case Tests
+
+    [Fact]
+    public void TestLabelNamesHelperHandlesNullAndWhitespace()
+    {
+        var labels = new[]
+        {
+            Label("valid"),
+            Label(""),
+            Label("   "),
+            (WebhookLabel)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookLabel))
+        };
+
+        var set = GitHubWebhookProcessor.GetLabelNames(labels);
+        Assert.Single(set);
+        Assert.Contains("valid", set);
+
+        var nullSet = GitHubWebhookProcessor.GetLabelNames(null);
+        Assert.Empty(nullSet);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    [InlineData("user@example.com", false)]
+    [InlineData("student.oerv@isrc.iscas.ac.cn", true)]
+    [InlineData("student.or@isrc.iscas.ac.cn", true)]
+    [InlineData("student.riscv@isrc.iscas.ac.cn", true)]
+    public void TestIsInternEmail(string? email, bool expected)
+    {
+        Assert.Equal(expected, GitHubWebhookProcessor.IsInternEmail(email));
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", null)]
+    [InlineData("   ", null)]
+    [InlineData("no-at-sign", null)]
+    [InlineData("trailing-at@", null)]
+    [InlineData("alice@example.com", "example.com")]
+    [InlineData("bob@iscas.ac.cn", "iscas.ac.cn")]
+    public void TestExtractEmailDomain(string? email, string? expected)
+    {
+        Assert.Equal(expected, GitHubWebhookProcessor.ExtractEmailDomain(email));
+    }
+
+    [Theory]
+    [InlineData(null, "alice", false)]
+    [InlineData("alice", null, false)]
+    [InlineData("", "", false)]
+    [InlineData("   ", "   ", false)]
+    [InlineData("alice", "bob", false)]
+    [InlineData("Alice", "alice", true)]
+    public void TestIsSameUser(string? left, string? right, bool expected)
+    {
+        Assert.Equal(expected, GitHubWebhookProcessor.IsSameUser(left, right));
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("Other: Label", false)]
+    [InlineData("Workflow: Blocked", true)]
+    [InlineData("workflow: blocked", true)]
+    public void TestIsBlockedLabel(string? label, bool expected)
+    {
+        Assert.Equal(expected, GitHubWebhookProcessor.IsBlockedLabel(label));
+    }
+
+    [Fact]
+    public void TestTryGetSender()
+    {
+        Assert.False(GitHubWebhookProcessor.TryGetSender(null, out var login1));
+        Assert.Empty(login1);
+
+        var emptyUser = (WebhookUser)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookUser));
+        Assert.False(GitHubWebhookProcessor.TryGetSender(emptyUser, out var login2));
+        Assert.Empty(login2);
+
+        var validUser = User("CaptainUser");
+        Assert.True(GitHubWebhookProcessor.TryGetSender(validUser, out var login3));
+        Assert.Equal("captainuser", login3);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("Regular PR body", false)]
+    [InlineData("- [ ] I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.", false)]
+    [InlineData("- [x] I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.", true)]
+    [InlineData("- [X] I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.", true)]
+    public void TestIsAiAssistedPullRequest(string? body, bool expected)
+    {
+        Assert.Equal(expected, GitHubWebhookProcessor.IsAiAssistedPullRequest(body));
+    }
+
+    #endregion
+
+    #region Test Factories & Helpers
+
     private static TestGitHubWebhookProcessor CreateProcessor(FakeGitHubService github)
     {
         var config = new ConfigurationManager
@@ -179,24 +942,36 @@ public class GitHubWebhookProcessorTests
             (nameof(PullRequestUnlabeledEvent.Label), Label(labelName)));
     }
 
-    private static PullRequestSynchronizeEvent PullRequestEvent(
-        PullRequestAction action,
-        IReadOnlyList<string>? labels = null)
+    private static T CreatePREvent<T>(
+        string title = "Ready PR",
+        string? body = "",
+        bool draft = false,
+        bool? merged = null,
+        IReadOnlyList<string>? labels = null,
+        WebhookRepository? repository = null)
+        where T : PullRequestEvent
     {
-        var pullRequest = PullRequest(labels: labels);
-        return Create<PullRequestSynchronizeEvent>(
-            (nameof(PullRequestSynchronizeEvent.Number), pullRequest.Number),
-            (nameof(PullRequestSynchronizeEvent.PullRequest), pullRequest),
-            (nameof(PullRequestSynchronizeEvent.Repository), Repository()),
-            (nameof(PullRequestSynchronizeEvent.Sender), User("contributor")));
+        var repo = repository ?? Repository();
+        var pullRequest = PullRequest(labels: labels, title: title, body: body, draft: draft, merged: merged);
+        return Create<T>(
+            (nameof(PullRequestEvent.Number), pullRequest.Number),
+            (nameof(PullRequestEvent.PullRequest), pullRequest),
+            (nameof(PullRequestEvent.Repository), repo),
+            (nameof(PullRequestEvent.Sender), User("contributor")));
     }
 
-    private static WebhookIssueCommentCreatedEvent IssueCommentEvent(string author, string sender, IReadOnlyList<string>? labels = null)
+    private static WebhookIssueCommentCreatedEvent IssueCommentEvent(
+        string? author,
+        string sender,
+        string title = "Ready PR",
+        bool draft = false,
+        IReadOnlyList<string>? labels = null)
     {
+        var user = author != null ? User(author) : null;
         var issue = Create<WebhookIssue>(
             (nameof(WebhookIssue.Number), 1L),
-            (nameof(WebhookIssue.Title), "Ready PR"),
-            (nameof(WebhookIssue.User), User(author)),
+            (nameof(WebhookIssue.Title), title),
+            (nameof(WebhookIssue.User), user),
             (nameof(WebhookIssue.PullRequest), Create<WebhookIssuePullRequest>()),
             (nameof(WebhookIssue.Labels), Labels(labels)));
 
@@ -220,16 +995,22 @@ public class GitHubWebhookProcessorTests
             (nameof(WebhookPullRequestReviewSubmittedEvent.Sender), User(sender)));
     }
 
-    private static WebhookPullRequest PullRequest(IReadOnlyList<string>? labels = null)
+    private static WebhookPullRequest PullRequest(
+        IReadOnlyList<string>? labels = null,
+        string title = "Ready PR",
+        string? body = "",
+        bool draft = false,
+        bool? merged = null)
     {
         var head = Create<WebhookPullRequestHead>(
             (nameof(WebhookPullRequestHead.Sha), "head-sha"));
 
         return Create<WebhookPullRequest>(
             (nameof(WebhookPullRequest.Number), 1L),
-            (nameof(WebhookPullRequest.Title), "Ready PR"),
-            (nameof(WebhookPullRequest.Body), ""),
-            (nameof(WebhookPullRequest.Draft), false),
+            (nameof(WebhookPullRequest.Title), title),
+            (nameof(WebhookPullRequest.Body), body),
+            (nameof(WebhookPullRequest.Draft), draft),
+            (nameof(WebhookPullRequest.Merged), merged),
             (nameof(WebhookPullRequest.Head), head),
             (nameof(WebhookPullRequest.User), User("contributor")),
             (nameof(WebhookPullRequest.Labels), Labels(labels)));
@@ -257,6 +1038,24 @@ public class GitHubWebhookProcessorTests
     {
         return Create<WebhookLabel>(
             (nameof(WebhookLabel.Name), name));
+    }
+
+    private static OctokitPullRequestFile CreateOctokitFile(string filename, string status = "modified")
+    {
+        var file = (OctokitPullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequestFile));
+        typeof(OctokitPullRequestFile).GetProperty(nameof(OctokitPullRequestFile.FileName))?.SetValue(file, filename);
+        typeof(OctokitPullRequestFile).GetProperty(nameof(OctokitPullRequestFile.Status))?.SetValue(file, status);
+        return file;
+    }
+
+    private static OctokitPullRequest CreateOctokitPullRequestWithUser(string login)
+    {
+        var user = (Octokit.User)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.User));
+        typeof(Octokit.User).GetProperty(nameof(Octokit.User.Login))?.SetValue(user, login);
+
+        var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
+        typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.User))?.SetValue(pr, user);
+        return pr;
     }
 
     private static T Create<T>(params (string PropertyName, object? Value)[] properties)
@@ -306,21 +1105,33 @@ public class GitHubWebhookProcessorTests
             "captain"
         };
 
+        public IReadOnlyList<OctokitPullRequestFile> PullRequestFiles { get; set; } = Array.Empty<OctokitPullRequestFile>();
+
+        public string? AuthorEmail { get; set; }
+
+        public bool ThrowOnGetAuthorEmail { get; set; }
+
+        public Dictionary<string, string> FileContents { get; } = new(StringComparer.OrdinalIgnoreCase);
+
         public Task<IReadOnlyList<OctokitPullRequestFile>> GetPullRequestFilesAsync(
             string owner, string repo, int prNumber)
         {
-            return Task.FromResult<IReadOnlyList<OctokitPullRequestFile>>(Array.Empty<OctokitPullRequestFile>());
+            return Task.FromResult(PullRequestFiles);
         }
 
         public Task<string?> GetPullRequestAuthorEmailAsync(
             string owner, string repo, int prNumber)
         {
-            return Task.FromResult<string?>(null);
+            if (ThrowOnGetAuthorEmail)
+                throw new InvalidOperationException("Simulated GitHub API error");
+            return Task.FromResult(AuthorEmail);
         }
 
         public Task<string> GetFileContentAsync(
             string owner, string repo, string path, string sha)
         {
+            if (FileContents.TryGetValue(path, out var content))
+                return Task.FromResult(content);
             return Task.FromResult("");
         }
 
@@ -350,4 +1161,6 @@ public class GitHubWebhookProcessorTests
             return Task.FromResult(PullRequest);
         }
     }
+
+    #endregion
 }

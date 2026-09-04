@@ -10,15 +10,20 @@ public class GitHubService : IGitHubService
     private readonly int _appId;
     private readonly string _privateKey;
     private long _installationId;
-    private GitHubClient _client;
+    private IGitHubClient _client;
     private DateTimeOffset _tokenExpiry;
 
     public GitHubService(int appId, string privateKey, long installationId)
+        : this(appId, privateKey, installationId, new GitHubClient(new ProductHeaderValue("abaci-bot")))
+    {
+    }
+
+    internal GitHubService(int appId, string privateKey, long installationId, IGitHubClient client)
     {
         _appId = appId;
         _privateKey = privateKey;
         _installationId = installationId;
-        _client = new GitHubClient(new ProductHeaderValue("abaci-bot"));
+        _client = client;
     }
 
     public void SetInstallationId(long installationId)
@@ -38,10 +43,10 @@ public class GitHubService : IGitHubService
 
         var jwt = GenerateJwt();
 
-        _client.Credentials = new Credentials(jwt, AuthenticationType.Bearer);
+        _client.Connection.Credentials = new Credentials(jwt, AuthenticationType.Bearer);
         var token = await _client.GitHubApps.CreateInstallationToken(_installationId);
 
-        _client.Credentials = new Credentials(token.Token);
+        _client.Connection.Credentials = new Credentials(token.Token);
         _tokenExpiry = token.ExpiresAt;
     }
 

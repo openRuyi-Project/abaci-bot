@@ -1,4 +1,4 @@
-﻿using abaci_bot.Services;
+using abaci_bot.Services;
 using Octokit.Webhooks;
 using Octokit.Webhooks.AspNetCore;
 
@@ -45,3 +45,6 @@ app.MapGitHubWebhooks("/api/webhook", config["GitHubApp:WebhookSecret"]!);
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
 
 app.Run();
+
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
+public partial class Program { }

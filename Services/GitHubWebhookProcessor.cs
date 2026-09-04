@@ -312,7 +312,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             await _github.RemoveLabelAsync(owner, repo, prNumber, GitHubLabels.AiAssistance);
     }
 
-    private static HashSet<string> GetLabelNames(IEnumerable<Octokit.Webhooks.Models.Label>? labels)
+    internal static HashSet<string> GetLabelNames(IEnumerable<Octokit.Webhooks.Models.Label>? labels)
     {
         return labels?
             .Select(label => label.Name)
@@ -320,7 +320,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     }
 
-    private static bool TryGetRepositoryContext(
+    internal static bool TryGetRepositoryContext(
         Octokit.Webhooks.Models.Repository? repository,
         out string owner,
         out string repo)
@@ -331,25 +331,25 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         return !string.IsNullOrWhiteSpace(owner) && !string.IsNullOrWhiteSpace(repo);
     }
 
-    private static bool TryGetSender(Octokit.Webhooks.Models.User? sender, out string login)
+    internal static bool TryGetSender(Octokit.Webhooks.Models.User? sender, out string login)
     {
         login = sender?.Login?.ToLowerInvariant() ?? string.Empty;
         return !string.IsNullOrWhiteSpace(login);
     }
 
-    private static bool IsBlockedLabel(string? labelName)
+    internal static bool IsBlockedLabel(string? labelName)
     {
         return string.Equals(labelName, GitHubLabels.WorkflowBlocked, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsSameUser(string? left, string? right)
+    internal static bool IsSameUser(string? left, string? right)
     {
         return !string.IsNullOrWhiteSpace(left) &&
                !string.IsNullOrWhiteSpace(right) &&
                string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string? ExtractEmailDomain(string? email)
+    internal static string? ExtractEmailDomain(string? email)
     {
         if (string.IsNullOrWhiteSpace(email))
             return null;
@@ -361,7 +361,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         return email[(atIndex + 1)..].Trim();
     }
 
-    private static bool IsInternEmail(string? email)
+    internal static bool IsInternEmail(string? email)
     {
         if (string.IsNullOrWhiteSpace(email))
             return false;
@@ -374,7 +374,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     }
 
     // Check whether the AI-assisted contribution checkbox is checked in the PR description.
-    private static bool IsAiAssistedPullRequest(string? body)
+    internal static bool IsAiAssistedPullRequest(string? body)
     {
         if (string.IsNullOrWhiteSpace(body))
             return false;
