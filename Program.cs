@@ -1,4 +1,6 @@
 using abaci_bot.Services;
+using abaci_bot.Modules;
+using abaci_bot.Pipelines;
 using Octokit.Webhooks;
 using Octokit.Webhooks.AspNetCore;
 
@@ -34,6 +36,19 @@ builder.Services.AddSingleton<IGitHubService>(new GitHubService(
     builder.Configuration["GitHubApp:PrivateKey"]!,
     builder.Configuration.GetValue<long>("GitHubApp:InstallationId")
 ));
+
+// 注册 PR 流水线基础设施与互斥引擎
+builder.Services.AddSingleton<PullRequestLockManager>();
+builder.Services.AddSingleton<LabelMutexEngine>();
+
+// 注册可插拔治理模块
+builder.Services.AddSingleton<IPullRequestModule, WorkflowStateModule>();
+builder.Services.AddSingleton<IPullRequestModule, UserContributionModule>();
+builder.Services.AddSingleton<IPullRequestModule, BuildSystemAnalysisModule>();
+builder.Services.AddSingleton<IPullRequestModule, AiAssistanceModule>();
+
+// 注册流水线调度器
+builder.Services.AddSingleton<PullRequestPipeline>();
 
 builder.Services.AddSingleton<WebhookEventProcessor, GitHubWebhookProcessor>();
 
