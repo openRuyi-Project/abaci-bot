@@ -10,8 +10,10 @@ using Octokit.Webhooks.Events.PullRequestReview;
 namespace abaci_bot.Services;
 
 /// <summary>
-/// GitHub Webhook 事件接收与调度分发器。
-/// 职责下沉与信息隐藏：只负责接入校验、PR 上下文装配、细粒度单 PR 并发加锁与转交 PullRequestPipeline 处理。
+/// Webhook event ingestion and dispatch coordinator.
+/// Acts as a thin dispatcher that validates incoming payload context, builds the domain
+/// <see cref="PullRequestContext"/>, acquires fine-grained per-PR locks, and delegates governance
+/// evaluation to the <see cref="PullRequestPipeline"/>.
 /// </summary>
 public class GitHubWebhookProcessor : WebhookEventProcessor
 {
@@ -33,13 +35,16 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     }
 
     /// <summary>
-    /// 便捷构造函数（用于独立测试或无 DI 容器启动时的自装配默认流水线）
+    /// Convenience constructor for standalone testing and default pipeline assembly.
     /// </summary>
     public GitHubWebhookProcessor(IGitHubService github, IConfiguration config)
         : this(github, config, CreateDefaultPipeline(github), new PullRequestLockManager())
     {
     }
 
+    /// <summary>
+    /// Instantiates the standard default governance pipeline with built-in modules.
+    /// </summary>
     public static PullRequestPipeline CreateDefaultPipeline(IGitHubService github)
     {
         var mutexEngine = new LabelMutexEngine();
@@ -65,6 +70,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
         var context = PullRequestContext.FromPullRequestEvent(_github, teamName, headers, pullRequestEvent, action);
 
+        // Pre-flight check: skip lock acquisition and execution if no module processes this action
         if (!_pipeline.Modules.Any(m => m.ShouldProcess(context)))
             return;
 
@@ -80,7 +86,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         PullRequestReviewAction action,
         CancellationToken cancellationToken = default)
     {
-        // 过滤非 Submitted 动作（如 Dismissed, Edited 等），防止状态错乱
+        // Ignore non-Submitted review actions (e.g. Dismissed, Edited) to prevent unintended state transitions
         if (action != PullRequestReviewAction.Submitted)
             return;
 
@@ -108,10 +114,11 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         IssueCommentAction action,
         CancellationToken cancellationToken = default)
     {
-        // 过滤非 Created 动作（如 Edited, Deleted 等），防止状态错乱
+        // Only react to newly created comments; ignore edits and deletions
         if (action != IssueCommentAction.Created)
             return;
 
+        // Skip regular issue comments; only pull request comments are governed here
         if (issueCommentEvent.Issue.PullRequest == null)
             return;
 
@@ -133,8 +140,11 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         }
     }
 
-    #region 公共领域解析与辅助方法（供各治理模块复用并保证既有测试兼容性）
+    #region Domain Parsing & Helper Methods
 
+    /// <summary>
+    /// Extracts a case-insensitive set of non-empty label names from a webhook label collection.
+    /// </summary>
     public static HashSet<string> GetLabelNames(IEnumerable<Octokit.Webhooks.Models.Label>? labels)
     {
         return labels?
@@ -143,6 +153,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Validates and extracts repository owner and name from the webhook repository payload.
+    /// </summary>
     public static bool TryGetRepositoryContext(
         Octokit.Webhooks.Models.Repository? repository,
         out string owner,
@@ -154,17 +167,26 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         return !string.IsNullOrWhiteSpace(owner) && !string.IsNullOrWhiteSpace(repo);
     }
 
+    /// <summary>
+    /// Validates and normalizes the webhook sender's login username.
+    /// </summary>
     public static bool TryGetSender(Octokit.Webhooks.Models.User? sender, out string login)
     {
         login = sender?.Login?.ToLowerInvariant() ?? string.Empty;
         return !string.IsNullOrWhiteSpace(login);
     }
 
+    /// <summary>
+    /// Checks whether the label name corresponds to the "Workflow: Blocked" label.
+    /// </summary>
     public static bool IsBlockedLabel(string? labelName)
     {
         return string.Equals(labelName, GitHubLabels.WorkflowBlocked, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Case-insensitively determines whether two GitHub usernames refer to the same user.
+    /// </summary>
     public static bool IsSameUser(string? left, string? right)
     {
         return !string.IsNullOrWhiteSpace(left) &&
@@ -172,6 +194,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Extracts the domain portion of an email address. Returns null if invalid or missing.
+    /// </summary>
     public static string? ExtractEmailDomain(string? email)
     {
         if (string.IsNullOrWhiteSpace(email))
@@ -184,6 +209,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         return email[(atIndex + 1)..].Trim();
     }
 
+    /// <summary>
+    /// Determines whether the email address belongs to recognized student intern subdomains.
+    /// </summary>
     public static bool IsInternEmail(string? email)
     {
         if (string.IsNullOrWhiteSpace(email))
@@ -196,6 +224,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                normalizedEmail.EndsWith(".riscv@isrc.iscas.ac.cn", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Parses the pull request body to check if the AI-assisted contribution checkbox is checked.
+    /// </summary>
     public static bool IsAiAssistedPullRequest(string? body)
     {
         if (string.IsNullOrWhiteSpace(body))

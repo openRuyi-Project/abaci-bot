@@ -4,7 +4,9 @@ using abaci_bot.Services;
 namespace abaci_bot.Pipelines;
 
 /// <summary>
-/// PR 治理流水线执行器。负责模块有序装配、Fail-Fast 异常控制与声明式原子写回。
+/// Orchestrates the execution of registered <see cref="IPullRequestModule"/> instances.
+/// Orders modules by priority, applies a fail-fast error policy, and performs an atomic
+/// batch write-back of computed label diffs to GitHub upon successful completion.
 /// </summary>
 public class PullRequestPipeline
 {
@@ -22,27 +24,34 @@ public class PullRequestPipeline
         _gitHubService = gitHubService;
     }
 
+    /// <summary>
+    /// Registered modules in priority-sorted execution order.
+    /// </summary>
     public IReadOnlyList<IPullRequestModule> Modules => _modules;
 
+    /// <summary>
+    /// Executes the pipeline sequentially across all active modules and flushes label changes.
+    /// </summary>
     public async Task ExecuteAsync(PullRequestContext context, CancellationToken cancellationToken = default)
     {
-        // 1. 按 Priority 升序顺序执行已注册模块
+        // 1. Run each registered module in ascending priority order
         foreach (var module in _modules)
         {
             if (!module.ShouldProcess(context))
                 continue;
 
-            // Fail-Fast: 任一模块未捕获异常立即终止流水线向上抛出，不刷入脏状态
+            // Fail-fast policy: unhandled exceptions abort the pipeline immediately,
+            // preventing partial or corrupted label state from being pushed to GitHub.
             await module.ProcessAsync(context, cancellationToken);
         }
 
-        // 2. 流水线所有模块成功后，执行原子差量互斥计算
+        // 2. Resolve mutual-exclusion conflicts and calculate minimal API diffs
         var diff = _mutexEngine.ComputeDiff(
             context.ExistingLabels,
             context.LabelsToAdd,
             context.LabelsToRemove);
 
-        // 3. 批量写回需添加的标签
+        // 3. Batch-add newly qualified labels in a single call
         if (diff.LabelsToAdd.Count > 0)
         {
             await _gitHubService.AddLabelsAsync(
@@ -52,7 +61,7 @@ public class PullRequestPipeline
                 diff.LabelsToAdd.ToArray());
         }
 
-        // 4. 写回需移除的标签
+        // 4. Remove conflicting or explicitly evicted labels
         foreach (var label in diff.LabelsToRemove)
         {
             await _gitHubService.RemoveLabelAsync(

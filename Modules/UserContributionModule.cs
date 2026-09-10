@@ -6,8 +6,9 @@ using Octokit.Webhooks.Events.PullRequest;
 namespace abaci_bot.Modules;
 
 /// <summary>
-/// 贡献者身份识别治理模块 (Priority: 20)
-/// 治理范围：根据 PR 提交者邮箱分类 Student contribution 与社区 Contribution，排除 iscas.ac.cn 官方员工。
+/// Contributor identification governance module (Priority: 20).
+/// Categorizes pull requests based on the commit author's email domain into
+/// student intern contributions or general community contributions, excluding official staff.
 /// </summary>
 public class UserContributionModule : IPullRequestModule
 {
@@ -15,6 +16,9 @@ public class UserContributionModule : IPullRequestModule
 
     public int Priority => 20;
 
+    /// <summary>
+    /// Processes opened, updated, or reopened pull requests to classify contributor identity.
+    /// </summary>
     public bool ShouldProcess(PullRequestContext context)
     {
         return context.EventType == PullRequestEventType.PullRequest &&
@@ -32,18 +36,18 @@ public class UserContributionModule : IPullRequestModule
         if (string.IsNullOrWhiteSpace(domain))
             return;
 
-        // Staff are excluded
+        // Official institute staff members are excluded from community labeling
         if (domain.Equals("iscas.ac.cn", StringComparison.OrdinalIgnoreCase))
             return;
 
-        // For intern, check email pattern
+        // Intern email addresses match designated subdomains
         if (GitHubWebhookProcessor.IsInternEmail(userEmail))
         {
             context.LabelsToAdd.Add("Community: Student contribution");
         }
         else
         {
-            // Any other domain counted as community contribution
+            // All other non-staff domains are counted as general community contributions
             context.LabelsToAdd.Add("Community: Contribution");
         }
     }

@@ -5,8 +5,9 @@ using Octokit.Webhooks.Events.PullRequest;
 namespace abaci_bot.Modules;
 
 /// <summary>
-/// RPM Spec 编译系统与 CI/Target 文件分析治理模块 (Priority: 30)
-/// 治理范围：识别 .github/ (CI)、SPECS/ (Target: Rolling) 以及 .spec 文件中的 BuildSystem 声明。
+/// RPM Spec build system and CI file analysis module (Priority: 30).
+/// Inspects modified file paths to assign CI, build system (autotools, cmake, meson, etc.),
+/// and target release branch labels.
 /// </summary>
 public class BuildSystemAnalysisModule : IPullRequestModule
 {
@@ -14,6 +15,9 @@ public class BuildSystemAnalysisModule : IPullRequestModule
 
     public int Priority => 30;
 
+    /// <summary>
+    /// Evaluates file changes whenever pull request contents are created or updated.
+    /// </summary>
     public bool ShouldProcess(PullRequestContext context)
     {
         return context.EventType == PullRequestEventType.PullRequest &&
@@ -30,18 +34,20 @@ public class BuildSystemAnalysisModule : IPullRequestModule
 
         foreach (var file in files)
         {
+            // Workflows and CI configuration modifications
             if (file.FileName.StartsWith(".github/"))
             {
                 context.LabelsToAdd.Add("CI");
             }
 
-            // Check the file content only when the file is not removed
+            // Only inspect file contents if the file was not deleted in this PR
             if (file.Status != "removed")
             {
                 if (file.FileName.EndsWith(".spec"))
                 {
                     var content = await context.GetFileContentAsync(file.FileName, context.HeadSha);
 
+                    // Identify declared build systems in RPM spec files
                     if (content.Contains("BuildSystem:    autotools", StringComparison.OrdinalIgnoreCase))
                         context.LabelsToAdd.Add("BuildSystem: autotools");
                     else if (content.Contains("BuildSystem:    cmake", StringComparison.OrdinalIgnoreCase))
@@ -63,6 +69,7 @@ public class BuildSystemAnalysisModule : IPullRequestModule
                 }
             }
 
+            // Standard package specification directory
             if (file.FileName.StartsWith("SPECS/"))
             {
                 context.LabelsToAdd.Add("Target: Rolling");

@@ -2,16 +2,22 @@ using abaci_bot.Services;
 
 namespace abaci_bot.Pipelines;
 
+/// <summary>
+/// Encapsulates the minimal label additions and removals computed by <see cref="LabelMutexEngine"/>.
+/// </summary>
 public record LabelDiffResult(IReadOnlyList<string> LabelsToAdd, IReadOnlyList<string> LabelsToRemove);
 
 /// <summary>
-/// 声明式标签互斥与差量计算引擎（下沉复杂度至框架）
+/// Declarative label mutual-exclusion and diff calculation engine.
+/// Pulls complexity downward by managing single-choice label groups centrally.
+/// Modules only express what label they want; this engine automatically evicts
+/// conflicting labels in the same group and computes the minimal set of changes.
 /// </summary>
 public class LabelMutexEngine
 {
     private readonly List<HashSet<string>> _mutexGroups = new()
     {
-        // 1. Workflow 主状态单选互斥组
+        // 1. Workflow primary lifecycle state (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
             GitHubLabels.WorkflowInDev,
@@ -20,19 +26,19 @@ public class LabelMutexEngine
             GitHubLabels.WorkflowBlocked,
             GitHubLabels.WorkflowComplete
         },
-        // 2. Community 贡献者身份单选互斥组
+        // 2. Community contributor classification (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
             "Community: Student contribution",
             "Community: Contribution"
         },
-        // 3. Target 目标分支单选互斥组
+        // 3. Target release branch classification (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
             "Target: Rolling",
             "Target: LTS"
         },
-        // 4. Severity 安全漏洞严重等级单选互斥组
+        // 4. Security vulnerability severity mapping (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
             "Severity: 1",
@@ -40,7 +46,7 @@ public class LabelMutexEngine
             "Severity: 3",
             "Severity: 4"
         },
-        // 5. Vulnerability 缺陷生命周期单选互斥组
+        // 5. CVE tracking lifecycle state (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
             "Vulnerability: Detected",
@@ -49,7 +55,7 @@ public class LabelMutexEngine
             "Vulnerability: Dismissed",
             "Vulnerability: Pending Verification"
         },
-        // 6. Rebuild 影响包规模单选互斥组
+        // 6. Downstream rebuild package count tier (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
             "Rebuild: 0",
@@ -63,6 +69,10 @@ public class LabelMutexEngine
         }
     };
 
+    /// <summary>
+    /// Computes the net label additions and removals required to reflect module intents
+    /// while enforcing mutual-exclusion rules across known label groups.
+    /// </summary>
     public LabelDiffResult ComputeDiff(
         IEnumerable<string> existingLabels,
         IEnumerable<string> labelsToAdd,
@@ -72,7 +82,7 @@ public class LabelMutexEngine
         var toAdd = new List<string>(labelsToAdd.Distinct(StringComparer.OrdinalIgnoreCase));
         var toRemove = new List<string>(labelsToRemove.Distinct(StringComparer.OrdinalIgnoreCase));
 
-        // 互斥规范化：对于每个待添加标签，若其属于某互斥组，则该组中的其他标签应被加入待移除列表
+        // Enforce mutex rules: adding a label in a single-choice group requires evicting any other labels in that group.
         foreach (var adding in toAdd.ToList())
         {
             foreach (var group in _mutexGroups)
@@ -84,7 +94,7 @@ public class LabelMutexEngine
                         if (!string.Equals(other, adding, StringComparison.OrdinalIgnoreCase))
                         {
                             toAdd.Remove(other);
-                            // 若现有标签或已声明中含有该冲突标签，则标记移除
+                            // Mark other conflicting label for removal if it already exists or was scheduled for eviction.
                             if (existingSet.Contains(other) || toRemove.Contains(other, StringComparer.OrdinalIgnoreCase))
                             {
                                 if (!toRemove.Contains(other, StringComparer.OrdinalIgnoreCase))
@@ -96,7 +106,7 @@ public class LabelMutexEngine
             }
         }
 
-        // 冲突消解：若一个标签既在 toAdd 又在 toRemove，以 toAdd 优先
+        // Conflict resolution: if a label appears in both toAdd and toRemove, addition wins.
         toRemove.RemoveAll(r => toAdd.Contains(r, StringComparer.OrdinalIgnoreCase));
 
         return new LabelDiffResult(toAdd, toRemove);

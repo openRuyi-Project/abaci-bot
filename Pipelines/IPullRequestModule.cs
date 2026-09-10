@@ -3,27 +3,31 @@ using abaci_bot.Contexts;
 namespace abaci_bot.Pipelines;
 
 /// <summary>
-/// PR 治理流水线模块标准契约（深模块原则）
+/// Defines a pull request governance module in the processing pipeline.
+/// Following the Deep Module principle, each module hides its specific evaluation rules
+/// and operates purely by inspecting the PullRequestContext and declaring desired label changes.
 /// </summary>
 public interface IPullRequestModule
 {
     /// <summary>
-    /// 模块唯一名称
+    /// Unique name of the module, used for diagnostics and logging.
     /// </summary>
     string ModuleName { get; }
 
     /// <summary>
-    /// 执行优先级。数值越小越先执行（例如：Workflow=10, User=20, BuildSystem=30, AI=40）
+    /// Execution priority in the pipeline. Lower values run first (e.g. Workflow=10, User=20, BuildSystem=30, AI=40).
     /// </summary>
     int Priority { get; }
 
     /// <summary>
-    /// 模块前置短路判断。返回 false 时该模块在当前请求跳过执行。
+    /// Determines whether this module should run for the given context.
+    /// Allows modules to skip execution early based on event type or action.
     /// </summary>
     bool ShouldProcess(PullRequestContext context) => true;
 
     /// <summary>
-    /// 执行模块领域评估逻辑，仅读取上下文并向 context.LabelsToAdd / context.LabelsToRemove / context.PendingComments 声明意图。
+    /// Evaluates domain rules against the context and records desired additions or removals in
+    /// <see cref="PullRequestContext.LabelsToAdd"/> and <see cref="PullRequestContext.LabelsToRemove"/>.
     /// </summary>
     Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken = default);
 }

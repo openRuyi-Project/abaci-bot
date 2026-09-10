@@ -1,5 +1,8 @@
 namespace abaci_bot.Services;
 
+/// <summary>
+/// Defines standard label constants used across the repository for workflow, contribution, and compliance tracking.
+/// </summary>
 public static class GitHubLabels
 {
     public const string WorkflowBlocked = "Workflow: Blocked";

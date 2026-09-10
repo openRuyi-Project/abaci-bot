@@ -8,8 +8,9 @@ using Octokit.Webhooks.Events.IssueComment;
 namespace abaci_bot.Modules;
 
 /// <summary>
-/// PR 工作流主生命周期状态机模块 (Priority: 10)
-/// 治理范围：In Dev, Ready For Review, In Review, Blocked, Complete 以及 Commits: Updated 联动。
+/// Primary pull request workflow state machine module (Priority: 10).
+/// Governs transitions across In Dev, Ready For Review, In Review, Blocked, and Complete states,
+/// and manages the Commits: Updated notification flag during captain reviews.
 /// </summary>
 public class WorkflowStateModule : IPullRequestModule
 {
@@ -17,6 +18,9 @@ public class WorkflowStateModule : IPullRequestModule
 
     public int Priority => 10;
 
+    /// <summary>
+    /// Filters events to only those that can trigger workflow state changes.
+    /// </summary>
     public bool ShouldProcess(PullRequestContext context)
     {
         return context.EventType switch
@@ -59,6 +63,7 @@ public class WorkflowStateModule : IPullRequestModule
         var action = context.PullRequestAction;
         var isBlocked = context.IsBlocked;
 
+        // When "Workflow: Blocked" is added, temporarily remove active review labels
         if (action == PullRequestAction.Labeled)
         {
             if (context.PullRequestEvent is PullRequestLabeledEvent labeledEvent &&
@@ -70,6 +75,7 @@ public class WorkflowStateModule : IPullRequestModule
             return Task.CompletedTask;
         }
 
+        // When "Workflow: Blocked" is removed, restore the pull request to "In Review"
         if (action == PullRequestAction.Unlabeled)
         {
             if (context.PullRequestEvent is PullRequestUnlabeledEvent unlabeledEvent &&
@@ -80,6 +86,7 @@ public class WorkflowStateModule : IPullRequestModule
             return Task.CompletedTask;
         }
 
+        // Clean up active workflow labels when closed; tag as Complete if merged
         if (action == PullRequestAction.Closed)
         {
             if (context.IsMerged == true)
@@ -92,17 +99,19 @@ public class WorkflowStateModule : IPullRequestModule
             return Task.CompletedTask;
         }
 
-        // Opened, Synchronize, Reopened, ConvertedToDraft, ReadyForReview
+        // When new commits arrive on a blocked PR, notify reviewers via "Commits: Updated"
         if (action == PullRequestAction.Synchronize && isBlocked)
         {
             context.LabelsToAdd.Add(GitHubLabels.CommitsUpdated);
         }
 
+        // Blocked PRs should not advance their workflow state until unblocked
         if (isBlocked)
         {
             return Task.CompletedTask;
         }
 
+        // Draft PRs and WIP titles indicate work-in-progress development
         if (context.IsDraft || context.Title.StartsWith("WIP", StringComparison.OrdinalIgnoreCase))
         {
             context.LabelsToAdd.Add(GitHubLabels.WorkflowInDev);
@@ -129,12 +138,14 @@ public class WorkflowStateModule : IPullRequestModule
         if (string.IsNullOrWhiteSpace(sender))
             return;
 
+        // Captain reviews advance the PR to "In Review" unless blocked
         if (captains.Contains(sender) && !context.IsBlocked)
         {
             context.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
             context.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
         }
 
+        // A response from a non-author captain acknowledges the author's previous updates
         if (captains.Contains(sender) && !GitHubWebhookProcessor.IsSameUser(sender, author))
         {
             context.LabelsToRemove.Add(GitHubLabels.CommitsUpdated);
@@ -154,6 +165,7 @@ public class WorkflowStateModule : IPullRequestModule
         var effectiveAuthor = author ?? pullRequest.User?.Login;
         var isDraft = pullRequest.Draft;
 
+        // Captain comments on ready PRs count as active review
         if (captains.Contains(sender) &&
             !context.IsBlocked &&
             !isDraft &&
@@ -163,6 +175,7 @@ public class WorkflowStateModule : IPullRequestModule
             context.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
         }
 
+        // A response from a non-author captain acknowledges the author's previous updates
         if (captains.Contains(sender) && !GitHubWebhookProcessor.IsSameUser(sender, effectiveAuthor))
         {
             context.LabelsToRemove.Add(GitHubLabels.CommitsUpdated);

@@ -6,8 +6,9 @@ using Octokit.Webhooks.Events.PullRequest;
 namespace abaci_bot.Modules;
 
 /// <summary>
-/// AI 协助申明检测治理模块 (Priority: 40)
-/// 治理范围：根据 PR Description 中是否有勾选 AI-Assisted Policy 复选框同步添加或移除 AI Assistance 标签。
+/// AI-assisted contribution declaration module (Priority: 40).
+/// Synchronizes the "AI Assistance" label based on whether the contributor
+/// checked the AI-assisted contribution policy checkbox in the pull request description.
 /// </summary>
 public class AiAssistanceModule : IPullRequestModule
 {
@@ -15,6 +16,9 @@ public class AiAssistanceModule : IPullRequestModule
 
     public int Priority => 40;
 
+    /// <summary>
+    /// Processes pull request creation, commit updates, and description edits.
+    /// </summary>
     public bool ShouldProcess(PullRequestContext context)
     {
         return context.EventType == PullRequestEventType.PullRequest &&
@@ -28,6 +32,8 @@ public class AiAssistanceModule : IPullRequestModule
 
     public Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken = default)
     {
+        // The pull request description is the source of truth for AI assistance.
+        // When checked, apply the label; otherwise, ensure it is removed.
         if (GitHubWebhookProcessor.IsAiAssistedPullRequest(context.Body))
         {
             context.LabelsToAdd.Add(GitHubLabels.AiAssistance);
