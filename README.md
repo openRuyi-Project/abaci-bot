@@ -44,7 +44,15 @@ Your GitHub App must also subscribe to these webhook events:
 - Pull request reviews
 - Pull requests
 
-### 3. Run
+### 3. Repository Labels Prerequisite
+
+Before deploying the bot, ensure that target repositories have created the required workflow and status labels (GitHub API does not automatically create missing labels when applying them):
+
+- **Workflow states**: `Workflow: In Review`, `Workflow: Approved`, `Workflow: Changes Requested`, `Workflow: Blocked`, `Workflow: Complete`
+- **Contributor & Status**: `first-time-contributor`, `Status: Pinned`, `Status: Stale`
+- **Classification**: `Type: Packaging`, `Type: Documentation`, `Type: Infrastructure`, `Target: Rolling`, `Target: Releases`
+
+### 4. Run
 
 #### Option A: Run directly
 
@@ -95,7 +103,7 @@ docker run -d \
   ghcr.io/openruyi/abaci-bot:latest
 ```
 
-### 4. Build Docker Image Locally (Optional)
+### 5. Build Docker Image Locally (Optional)
 
 If you want to build the image yourself:
 

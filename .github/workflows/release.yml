@@ -2,8 +2,6 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - master
     tags:
       - 'v*'
   workflow_dispatch:
@@ -24,6 +22,35 @@ jobs:
 
       - name: Restore dependencies
         run: dotnet restore
+
+      - name: Run unit tests
+        run: dotnet test --no-restore -c Release --verbosity normal --collect:"XPlat Code Coverage" --settings coverlet.runsettings
+
+      - name: Verify code coverage thresholds
+        run: |
+          python -c '
+          import glob, sys, xml.etree.ElementTree as ET
+          files = glob.glob("tests/**/TestResults/**/coverage.cobertura.xml", recursive=True)
+          if not files:
+              print("ERROR: No coverage.cobertura.xml found!")
+              sys.exit(1)
+          tree = ET.parse(files[0])
+          root = tree.getroot()
+          line_rate = float(root.attrib.get("line-rate", 0)) * 100
+          branch_rate = float(root.attrib.get("branch-rate", 0)) * 100
+          print(f"Verified Code Coverage - Line: {line_rate:.2f}%, Branch: {branch_rate:.2f}%")
+          if line_rate < 80.0 or branch_rate < 80.0:
+              print("ERROR: Code coverage dropped below 80% threshold!")
+              sys.exit(1)
+          print("SUCCESS: Code coverage threshold (>= 80%) met.")
+          '
+
+      - name: Upload coverage results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-results-release
+          path: tests/**/TestResults/**/*.xml
 
       - name: Publish (linux-x64, self-contained, single file)
         run: |

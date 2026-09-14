@@ -11,11 +11,11 @@ var builder = WebApplication.CreateBuilder(args);
 var config = builder.Configuration;
 var missingFields = new List<string>();
 
-if (config.GetValue<int>("GitHubApp:AppId") == 0)      missingFields.Add("GitHubApp:AppId");
+if (config.GetValue<int>("GitHubApp:AppId") == 0) missingFields.Add("GitHubApp:AppId");
 if (string.IsNullOrWhiteSpace(config["GitHubApp:PrivateKey"])) missingFields.Add("GitHubApp:PrivateKey");
-if (config.GetValue<long>("GitHubApp:InstallationId") == 0)    missingFields.Add("GitHubApp:InstallationId");
+if (config.GetValue<long>("GitHubApp:InstallationId") == 0) missingFields.Add("GitHubApp:InstallationId");
 if (string.IsNullOrWhiteSpace(config["GitHubApp:WebhookSecret"])) missingFields.Add("GitHubApp:WebhookSecret");
-if (string.IsNullOrWhiteSpace(config["GitHubApp:TeamName"]))      missingFields.Add("GitHubApp:TeamName");
+if (string.IsNullOrWhiteSpace(config["GitHubApp:TeamName"])) missingFields.Add("GitHubApp:TeamName");
 
 if (missingFields.Count > 0)
 {
@@ -27,6 +27,27 @@ if (missingFields.Count > 0)
     Console.Error.WriteLine("Did you forget to create appsettings.json?");
     Console.Error.WriteLine("  cp appsettings.demo.json appsettings.json");
     Console.Error.WriteLine("Then fill in your GitHub App credentials.");
+    Console.ResetColor();
+    return;
+}
+
+// Fail-fast validation of GitHub App RSA private key
+var privateKey = config["GitHubApp:PrivateKey"]!;
+if (privateKey.Contains("\\n") && !privateKey.Contains('\n'))
+{
+    privateKey = privateKey.Replace("\\n", "\n");
+    config["GitHubApp:PrivateKey"] = privateKey;
+}
+try
+{
+    using var rsa = System.Security.Cryptography.RSA.Create();
+    rsa.ImportFromPem(privateKey);
+}
+catch (Exception ex)
+{
+    Console.ForegroundColor = ConsoleColor.Red;
+    Console.Error.WriteLine($"ERROR: GitHubApp:PrivateKey could not be parsed as RSA PEM: {ex.Message}");
+    Console.Error.WriteLine("Hint: Ensure the private key preserves newlines or uses standard PEM format.");
     Console.ResetColor();
     return;
 }

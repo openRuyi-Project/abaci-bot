@@ -9,9 +9,10 @@ public class GitHubService : IGitHubService
 {
     private readonly int _appId;
     private readonly string _privateKey;
-    private long _installationId;
+    private readonly long _installationId;
     private IGitHubClient _client;
     private DateTimeOffset _tokenExpiry;
+    private readonly SemaphoreSlim _authLock = new(1, 1);
 
     public GitHubService(int appId, string privateKey, long installationId)
         : this(appId, privateKey, installationId, new GitHubClient(new ProductHeaderValue("abaci-bot")))
@@ -26,28 +27,30 @@ public class GitHubService : IGitHubService
         _client = client;
     }
 
-    public void SetInstallationId(long installationId)
-    {
-        if (_installationId != installationId)
-        {
-            _installationId = installationId;
-            _tokenExpiry = DateTimeOffset.MinValue; // 强制刷新 token
-        }
-    }
-
     // Ensures the GitHub client has a valid installation access token before API calls.
-    private async Task EnsureAuthenticatedAsync()
+    private async Task EnsureAuthenticatedAsync(CancellationToken cancellationToken = default)
     {
         if (_tokenExpiry > DateTimeOffset.UtcNow.AddMinutes(5))
             return;
 
-        var jwt = GenerateJwt();
+        await _authLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_tokenExpiry > DateTimeOffset.UtcNow.AddMinutes(5))
+                return;
 
-        _client.Connection.Credentials = new Credentials(jwt, AuthenticationType.Bearer);
-        var token = await _client.GitHubApps.CreateInstallationToken(_installationId);
+            var jwt = GenerateJwt();
 
-        _client.Connection.Credentials = new Credentials(token.Token);
-        _tokenExpiry = token.ExpiresAt;
+            _client.Connection.Credentials = new Credentials(jwt, AuthenticationType.Bearer);
+            var token = await _client.GitHubApps.CreateInstallationToken(_installationId);
+
+            _client.Connection.Credentials = new Credentials(token.Token);
+            _tokenExpiry = token.ExpiresAt;
+        }
+        finally
+        {
+            _authLock.Release();
+        }
     }
 
     // Generates a GitHub App JWT
@@ -90,16 +93,20 @@ public class GitHubService : IGitHubService
     // API Call
 
     public async Task<IReadOnlyList<PullRequestFile>> GetPullRequestFilesAsync(
-        string owner, string repo, int prNumber)
+        string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
     {
-        await EnsureAuthenticatedAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         return await _client.PullRequest.Files(owner, repo, prNumber);
     }
 
     public async Task<string?> GetPullRequestAuthorEmailAsync(
-        string owner, string repo, int prNumber)
+        string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
     {
-        await EnsureAuthenticatedAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         // Get commits from the PR endpoint (works on the base repo, no need to access fork)
         var commits = await _client.PullRequest.Commits(owner, repo, prNumber);
         if (commits.Count > 0)
@@ -111,24 +118,30 @@ public class GitHubService : IGitHubService
     }
 
     public async Task<string> GetFileContentAsync(
-        string owner, string repo, string path, string sha)
+        string owner, string repo, string path, string sha, CancellationToken cancellationToken = default)
     {
-        await EnsureAuthenticatedAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         var contents = await _client.Repository.Content.GetRawContentByRef(owner, repo, path, sha);
         return Encoding.UTF8.GetString(contents);
     }
 
     public async Task AddLabelsAsync(
-        string owner, string repo, int issueNumber, params string[] labels)
+        string owner, string repo, int issueNumber, string[] labels, CancellationToken cancellationToken = default)
     {
-        await EnsureAuthenticatedAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         await _client.Issue.Labels.AddToIssue(owner, repo, issueNumber, labels);
     }
 
     public async Task RemoveLabelAsync(
-        string owner, string repo, int issueNumber, string label)
+        string owner, string repo, int issueNumber, string label, CancellationToken cancellationToken = default)
     {
-        await EnsureAuthenticatedAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         try
         {
             await _client.Issue.Labels.RemoveFromIssue(owner, repo, issueNumber, label);
@@ -137,18 +150,22 @@ public class GitHubService : IGitHubService
     }
 
     public async Task<HashSet<string>> GetTeamMembersAsync(
-        string owner, string teamName)
+        string owner, string teamName, CancellationToken cancellationToken = default)
     {
-        await EnsureAuthenticatedAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         var teamSlug = await _client.Organization.Team.GetByName(owner, teamName.ToLowerInvariant());
         var members = await _client.Organization.Team.GetAllMembers(teamSlug.Id);
-        return members.Select(m => m.Login.ToLowerInvariant()).ToHashSet();
+        return members.Select(m => m.Login).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     // Add more GitHub API methods as needed.
-    public async Task<PullRequest> GetPullRequestAsync(string owner, string repo, int prNumber)
+    public async Task<PullRequest> GetPullRequestAsync(string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
     {
-        await EnsureAuthenticatedAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         return await _client.PullRequest.Get(owner, repo, prNumber);
     }
 }

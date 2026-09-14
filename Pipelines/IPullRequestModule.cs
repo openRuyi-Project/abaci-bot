@@ -15,7 +15,7 @@ public interface IPullRequestModule
     string ModuleName { get; }
 
     /// <summary>
-    /// Execution priority in the pipeline. Lower values run first (e.g. Workflow=10, User=20, BuildSystem=30, AI=40).
+    /// Execution priority in the pipeline. Modules with lower priority values run earlier.
     /// </summary>
     int Priority { get; }
 

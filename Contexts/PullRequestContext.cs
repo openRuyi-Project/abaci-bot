@@ -28,12 +28,17 @@ public enum PullRequestEventType
 public class PullRequestContext
 {
     private readonly IGitHubService _gitHubService;
-    private readonly ConcurrentDictionary<string, Task<string>> _fileContentCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Lazy<Task<string>>> _fileContentCache = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Raw webhook headers, containing delivery IDs and signature details.
     /// </summary>
     public WebhookHeaders? Headers { get; }
+
+    /// <summary>
+    /// Cancellation token associated with the current pipeline execution.
+    /// </summary>
+    public CancellationToken CancellationToken { get; }
 
     /// <summary>
     /// Type of the incoming webhook event (PullRequest, Review, or IssueComment).
@@ -163,15 +168,31 @@ public class PullRequestContext
     public bool IsBlocked => ExistingLabels.Contains(GitHubLabels.WorkflowBlocked);
 
     /// <summary>
+    /// Indicates whether the pull request is closed or merged.
+    /// </summary>
+    public bool IsClosed =>
+        IsMerged == true ||
+        PullRequestAction == Octokit.Webhooks.Events.PullRequest.PullRequestAction.Closed ||
+        string.Equals(PullRequestEvent?.PullRequest?.State?.StringValue, "closed", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(PullRequestReviewEvent?.PullRequest?.State?.StringValue, "closed", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Indicates whether the pull request has reached a terminal lifecycle state (closed, merged, or tagged as Complete).
+    /// </summary>
+    public bool IsTerminal => IsClosed || ExistingLabels.Contains(GitHubLabels.WorkflowComplete);
+
+    /// <summary>
     /// Labels that governance modules intend to add to the pull request.
     /// The pipeline applies mutual-exclusion rules and syncs these in a batch at the end.
+    /// Preserves insertion order to support deterministic conflict resolution.
     /// </summary>
-    public HashSet<string> LabelsToAdd { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public ISet<string> LabelsToAdd { get; } = new OrderedSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Labels that governance modules intend to remove from the pull request.
+    /// Preserves insertion order to support deterministic conflict resolution.
     /// </summary>
-    public HashSet<string> LabelsToRemove { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public ISet<string> LabelsToRemove { get; } = new OrderedSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Pending comments to be posted to the pull request.
@@ -206,9 +227,11 @@ public class PullRequestContext
         IssueCommentAction? commentAction = null,
         PullRequestEvent? prEvent = null,
         WebhookPullRequestReviewEvent? reviewEvent = null,
-        IssueCommentEvent? commentEvent = null)
+        IssueCommentEvent? commentEvent = null,
+        CancellationToken cancellationToken = default)
     {
         _gitHubService = gitHubService;
+        CancellationToken = cancellationToken;
         Headers = headers;
         EventType = eventType;
         Owner = owner;
@@ -233,13 +256,13 @@ public class PullRequestContext
         ExistingLabels = new HashSet<string>(existingLabels, StringComparer.OrdinalIgnoreCase);
 
         ChangedFiles = new Lazy<Task<IReadOnlyList<PullRequestFile>>>(() =>
-            _gitHubService.GetPullRequestFilesAsync(Owner, Repo, PrNumber));
+            _gitHubService.GetPullRequestFilesAsync(Owner, Repo, PrNumber, CancellationToken));
 
         AuthorEmail = new Lazy<Task<string?>>(async () =>
         {
             try
             {
-                return await _gitHubService.GetPullRequestAuthorEmailAsync(Owner, Repo, PrNumber);
+                return await _gitHubService.GetPullRequestAuthorEmailAsync(Owner, Repo, PrNumber, CancellationToken);
             }
             catch (Exception ex)
             {
@@ -249,11 +272,14 @@ public class PullRequestContext
             }
         });
 
-        TeamCaptains = new Lazy<Task<HashSet<string>>>(() =>
-            _gitHubService.GetTeamMembersAsync(Owner, teamName));
+        TeamCaptains = new Lazy<Task<HashSet<string>>>(async () =>
+        {
+            var members = await _gitHubService.GetTeamMembersAsync(Owner, teamName, CancellationToken);
+            return new HashSet<string>(members, StringComparer.OrdinalIgnoreCase);
+        });
 
         PullRequest = new Lazy<Task<PullRequest>>(() =>
-            _gitHubService.GetPullRequestAsync(Owner, Repo, PrNumber));
+            _gitHubService.GetPullRequestAsync(Owner, Repo, PrNumber, CancellationToken));
     }
 
     /// <summary>
@@ -264,7 +290,8 @@ public class PullRequestContext
         string teamName,
         WebhookHeaders? headers,
         PullRequestEvent prEvent,
-        PullRequestAction action)
+        PullRequestAction action,
+        CancellationToken cancellationToken = default)
     {
         var owner = prEvent.Repository?.Owner?.Login ?? string.Empty;
         var repo = prEvent.Repository?.Name ?? string.Empty;
@@ -290,7 +317,8 @@ public class PullRequestContext
             action: action.ToString(),
             existingLabels: labels,
             prAction: action,
-            prEvent: prEvent);
+            prEvent: prEvent,
+            cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -301,7 +329,8 @@ public class PullRequestContext
         string teamName,
         WebhookHeaders? headers,
         WebhookPullRequestReviewEvent reviewEvent,
-        PullRequestReviewAction action)
+        PullRequestReviewAction action,
+        CancellationToken cancellationToken = default)
     {
         var owner = reviewEvent.Repository?.Owner?.Login ?? string.Empty;
         var repo = reviewEvent.Repository?.Name ?? string.Empty;
@@ -327,7 +356,8 @@ public class PullRequestContext
             action: action.ToString(),
             existingLabels: labels,
             reviewAction: action,
-            reviewEvent: reviewEvent);
+            reviewEvent: reviewEvent,
+            cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -339,7 +369,8 @@ public class PullRequestContext
         string teamName,
         WebhookHeaders? headers,
         IssueCommentEvent commentEvent,
-        IssueCommentAction action)
+        IssueCommentAction action,
+        CancellationToken cancellationToken = default)
     {
         var owner = commentEvent.Repository?.Owner?.Login ?? string.Empty;
         var repo = commentEvent.Repository?.Name ?? string.Empty;
@@ -366,7 +397,8 @@ public class PullRequestContext
             action: action.ToString(),
             existingLabels: labels,
             commentAction: action,
-            commentEvent: commentEvent);
+            commentEvent: commentEvent,
+            cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -377,19 +409,26 @@ public class PullRequestContext
         string teamName,
         WebhookHeaders? headers,
         IssueCommentEvent commentEvent,
-        IssueCommentAction action)
+        IssueCommentAction action,
+        CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(FromIssueCommentEvent(gitHub, teamName, headers, commentEvent, action));
+        return Task.FromResult(FromIssueCommentEvent(gitHub, teamName, headers, commentEvent, action, cancellationToken));
     }
 
     /// <summary>
     /// Fetches file contents with thread-safe path-and-SHA caching.
     /// Subsequent calls for the same path in the current context return the cached content without network I/O.
     /// </summary>
-    public Task<string> GetFileContentAsync(string path, string? sha = null)
+    public Task<string> GetFileContentAsync(string path, string? sha = null, CancellationToken cancellationToken = default)
     {
         var targetSha = sha ?? HeadSha;
         var key = $"{path}@{targetSha}";
-        return _fileContentCache.GetOrAdd(key, _ => _gitHubService.GetFileContentAsync(Owner, Repo, path, targetSha));
+        var token = cancellationToken != default ? cancellationToken : CancellationToken;
+        return _fileContentCache.GetOrAdd(
+            key,
+            _ => new Lazy<Task<string>>(
+                () => _gitHubService.GetFileContentAsync(Owner, Repo, path, targetSha, token),
+                LazyThreadSafetyMode.ExecutionAndPublication)
+        ).Value;
     }
 }

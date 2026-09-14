@@ -14,16 +14,19 @@ RUN dotnet publish -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
-# Create a non-root user for security
-RUN adduser --disabled-password --gecos "" appuser
+# Install curl for HEALTHCHECK
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Default container listening port
+ENV ASPNETCORE_HTTP_PORTS=3456
 
 # Copy published files
 COPY --from=build /app/publish .
 
-# Change ownership to appuser
-RUN chown -R appuser:appuser /app
-
-USER appuser
+# Use the official built-in non-root app user (UID 1654)
+USER $APP_UID
 
 # Expose the default port
 EXPOSE 3456

@@ -7,8 +7,10 @@
           <Format>cobertura,opencover</Format>
           <Include>[abaci-bot]*</Include>
           <Exclude>[*Tests*]*</Exclude>
-          <ExcludeByAttribute>ExcludeFromCodeCoverageAttribute,CompilerGeneratedAttribute</ExcludeByAttribute>
+          <ExcludeByAttribute>ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
           <SingleHit>false</SingleHit>
+          <!-- Note: Coverlet VSTest collector (collector integration) does not validate Threshold at process exit.
+               Coverage thresholds (line >= 80%, branch >= 80%) are explicitly asserted in CI via test verification step. -->
         </Configuration>
       </DataCollector>
     </DataCollectors>

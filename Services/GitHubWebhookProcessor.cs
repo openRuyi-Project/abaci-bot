@@ -68,10 +68,10 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             return;
 
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromPullRequestEvent(_github, teamName, headers, pullRequestEvent, action);
+        var context = PullRequestContext.FromPullRequestEvent(_github, teamName, headers, pullRequestEvent, action, cancellationToken);
 
         // Pre-flight check: skip lock acquisition and execution if no module processes this action
-        if (!_pipeline.Modules.Any(m => m.ShouldProcess(context)))
+        if (!_pipeline.HasEligibleModule(context))
             return;
 
         using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
@@ -97,9 +97,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             return;
 
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromReviewEvent(_github, teamName, headers, pullRequestReviewEvent, action);
+        var context = PullRequestContext.FromReviewEvent(_github, teamName, headers, pullRequestReviewEvent, action, cancellationToken);
 
-        if (!_pipeline.Modules.Any(m => m.ShouldProcess(context)))
+        if (!_pipeline.HasEligibleModule(context))
             return;
 
         using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
@@ -129,9 +129,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             return;
 
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromIssueCommentEvent(_github, teamName, headers, issueCommentEvent, action);
+        var context = PullRequestContext.FromIssueCommentEvent(_github, teamName, headers, issueCommentEvent, action, cancellationToken);
 
-        if (!_pipeline.Modules.Any(m => m.ShouldProcess(context)))
+        if (!_pipeline.HasEligibleModule(context))
             return;
 
         using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))

@@ -3,6 +3,7 @@ using abaci_bot.Modules;
 using abaci_bot.Pipelines;
 using abaci_bot.Services;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Octokit;
 using WebhookIssue = Octokit.Webhooks.Models.Issue;
@@ -10,6 +11,7 @@ using WebhookIssueCommentCreatedEvent = Octokit.Webhooks.Events.IssueComment.Iss
 using WebhookIssueCommentEvent = Octokit.Webhooks.Events.IssueCommentEvent;
 using WebhookIssueCommentAction = Octokit.Webhooks.Events.IssueComment.IssueCommentAction;
 using WebhookIssuePullRequest = Octokit.Webhooks.Models.IssuePullRequest;
+using WebhookLabel = Octokit.Webhooks.Models.Label;
 using WebhookPullRequest = Octokit.Webhooks.Models.PullRequestEvent.PullRequest;
 using WebhookPullRequestAction = Octokit.Webhooks.Events.PullRequest.PullRequestAction;
 using WebhookPullRequestAssignedEvent = Octokit.Webhooks.Events.PullRequest.PullRequestAssignedEvent;
@@ -17,6 +19,7 @@ using WebhookPullRequestEvent = Octokit.Webhooks.Events.PullRequestEvent;
 using WebhookPullRequestReviewAction = Octokit.Webhooks.Events.PullRequestReview.PullRequestReviewAction;
 using WebhookPullRequestReviewEvent = Octokit.Webhooks.Events.PullRequestReviewEvent;
 using WebhookPullRequestReviewSubmittedEvent = Octokit.Webhooks.Events.PullRequestReview.PullRequestReviewSubmittedEvent;
+using WebhookPullRequestUnlabeledEvent = Octokit.Webhooks.Events.PullRequest.PullRequestUnlabeledEvent;
 using WebhookRepository = Octokit.Webhooks.Models.Repository;
 using WebhookSimplePullRequest = Octokit.Webhooks.Models.SimplePullRequest;
 using WebhookUser = Octokit.Webhooks.Models.User;
@@ -120,6 +123,118 @@ public class PipelineAndModulesTests
         Assert.Empty(diff.LabelsToRemove);
     }
 
+    [Fact]
+    public void LabelMutexEngine_CompetingLabelsInSameGroup_DeterministicLastWins()
+    {
+        var engine = new LabelMutexEngine();
+        var existing = new[] { GitHubLabels.WorkflowBlocked };
+        var toAddForward = new[] { GitHubLabels.WorkflowInDev, GitHubLabels.WorkflowInReview, GitHubLabels.WorkflowReadyForReview };
+        var diffForward = engine.ComputeDiff(existing, toAddForward, Array.Empty<string>());
+
+        Assert.Equal(new[] { GitHubLabels.WorkflowReadyForReview }, diffForward.LabelsToAdd);
+        Assert.Contains(GitHubLabels.WorkflowBlocked, diffForward.LabelsToRemove);
+
+        // Reversed order should pick the reversed winner (last scheduled addition)
+        var toAddReverse = new[] { GitHubLabels.WorkflowReadyForReview, GitHubLabels.WorkflowInDev };
+        var diffReverse = engine.ComputeDiff(existing, toAddReverse, Array.Empty<string>());
+
+        Assert.Equal(new[] { GitHubLabels.WorkflowInDev }, diffReverse.LabelsToAdd);
+        Assert.Contains(GitHubLabels.WorkflowBlocked, diffReverse.LabelsToRemove);
+    }
+
+    [Fact]
+    public void LabelMutexEngine_RedundantAdditions_FilteredOut()
+    {
+        var engine = new LabelMutexEngine();
+        var existing = new[] { GitHubLabels.WorkflowInReview, "CI" };
+        var toAdd = new[] { "CI" };
+        var toRemove = new List<string>();
+
+        var diff = engine.ComputeDiff(existing, toAdd, toRemove);
+
+        Assert.Empty(diff.LabelsToAdd);
+        Assert.Empty(diff.LabelsToRemove);
+    }
+
+    [Fact]
+    public void LabelMutexEngine_RemovalsForMissingLabels_FilteredOut()
+    {
+        var engine = new LabelMutexEngine();
+        var existing = new[] { GitHubLabels.WorkflowInReview };
+        var toAdd = Array.Empty<string>();
+        var toRemove = new[] { GitHubLabels.WorkflowInDev, GitHubLabels.WorkflowReadyForReview };
+
+        var diff = engine.ComputeDiff(existing, toAdd, toRemove);
+
+        // Neither InDev nor ReadyForReview exist on the PR, so redundant removals are filtered out
+        Assert.Empty(diff.LabelsToRemove);
+        Assert.Empty(diff.LabelsToAdd);
+    }
+
+    [Fact]
+    public void LabelMutexEngine_MixedCaseCandidatesAndExisting_DeterministicResolutionAndFiltering()
+    {
+        var engine = new LabelMutexEngine();
+        // Existing has mixed-case label from group 1 ("workflow: in dev")
+        var existing = new[] { "workflow: in dev", "ci" };
+        // Competing additions with various casings: lowercase then uppercase
+        var toAdd = new[] { "workflow: ready for review", "WORKFLOW: IN REVIEW" };
+        // Redundant removal with mixed case for a label that does NOT exist
+        var toRemove = new[] { "WORKFLOW: BLOCKED" };
+
+        var diff = engine.ComputeDiff(existing, toAdd, toRemove);
+
+        // Deterministic last-wins: "WORKFLOW: IN REVIEW" wins over "workflow: ready for review"
+        Assert.Single(diff.LabelsToAdd);
+        Assert.Contains("WORKFLOW: IN REVIEW", diff.LabelsToAdd);
+
+        // Existing conflicting member "workflow: in dev" must be evicted
+        Assert.Single(diff.LabelsToRemove);
+        Assert.Contains(GitHubLabels.WorkflowInDev, diff.LabelsToRemove);
+
+        // Redundant removal "WORKFLOW: BLOCKED" was filtered out because it did not exist
+        Assert.DoesNotContain("WORKFLOW: BLOCKED", diff.LabelsToRemove);
+    }
+
+    [Fact]
+    public void LabelMutexEngine_RedundantAdditionWithDifferentCasing_FilteredOut()
+    {
+        var engine = new LabelMutexEngine();
+        var existing = new[] { "Workflow: In Review" };
+        var toAdd = new[] { "workflow: in review" };
+
+        var diff = engine.ComputeDiff(existing, toAdd, Array.Empty<string>());
+
+        Assert.Empty(diff.LabelsToAdd);
+        Assert.Empty(diff.LabelsToRemove);
+    }
+
+    [Fact]
+    public void LabelMutexEngine_SecondRunAfterApplyingDiff_ProducesEmptyDiff()
+    {
+        var engine = new LabelMutexEngine();
+        var initialExisting = new[] { GitHubLabels.WorkflowReadyForReview };
+        var desiredAdd = new[] { GitHubLabels.WorkflowInReview };
+        var desiredRemove = new[] { GitHubLabels.WorkflowReadyForReview };
+
+        // First run: schedules addition of InReview and removal of ReadyForReview
+        var diff1 = engine.ComputeDiff(initialExisting, desiredAdd, desiredRemove);
+        Assert.Equal(new[] { GitHubLabels.WorkflowInReview }, diff1.LabelsToAdd);
+        Assert.Equal(new[] { GitHubLabels.WorkflowReadyForReview }, diff1.LabelsToRemove);
+
+        // Apply diff to simulate remote state
+        var updatedExisting = initialExisting
+            .Except(diff1.LabelsToRemove, StringComparer.OrdinalIgnoreCase)
+            .Concat(diff1.LabelsToAdd)
+            .ToList();
+
+        // Second run with the same module desires: must produce empty diff
+        var diff2 = engine.ComputeDiff(updatedExisting, desiredAdd, desiredRemove);
+
+        Assert.Empty(diff2.LabelsToAdd);
+        Assert.Empty(diff2.LabelsToRemove);
+    }
+
     #endregion
 
     #region PullRequestLockManager Tests
@@ -129,19 +244,21 @@ public class PipelineAndModulesTests
     {
         var manager = new PullRequestLockManager();
         var executionOrder = new List<int>();
+        var task1Acquired = new TaskCompletionSource();
 
         var task1 = Task.Run(async () =>
         {
             using (await manager.AcquireLockAsync("owner", "repo", 1))
             {
+                task1Acquired.SetResult();
                 executionOrder.Add(1);
                 await Task.Delay(50);
                 executionOrder.Add(2);
             }
         });
 
-        // Ensure task1 starts first
-        await Task.Delay(10);
+        // Ensure task1 has acquired the lock before launching task2
+        await task1Acquired.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var task2 = Task.Run(async () =>
         {
@@ -277,6 +394,430 @@ public class PipelineAndModulesTests
         await gitHub.DidNotReceiveWithAnyArgs().RemoveLabelAsync(default!, default!, default, default!);
     }
 
+    [Fact]
+    public async Task PullRequestPipeline_PartialWriteFailure_RecoversAndRetries()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var ctx = ci.Arg<PullRequestContext>();
+                ctx.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                return Task.CompletedTask;
+            });
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub);
+
+        var context = CreateMockContext(gitHub, prNumber: 100, existingLabels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        // AddLabelsAsync succeeds
+        gitHub.AddLabelsAsync("owner", "repo", 100, Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        // First call to RemoveLabelAsync fails with simulated network error
+        var removeCallCount = 0;
+        gitHub.RemoveLabelAsync("owner", "repo", 100, GitHubLabels.WorkflowReadyForReview, Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                removeCallCount++;
+                if (removeCallCount == 1)
+                {
+                    throw new InvalidOperationException("Simulated transient socket reset");
+                }
+                return Task.CompletedTask;
+            });
+
+        // Fresh PR loaded during recovery reflects the newly added label and old label
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var labelInReview = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelInReview, GitHubLabels.WorkflowInReview);
+        var labelReady = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelReady, GitHubLabels.WorkflowReadyForReview);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, new[] { labelInReview, labelReady });
+
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>()).Returns(freshPr);
+
+        // Execute pipeline: should catch the partial failure, query GetPullRequestAsync, recompute diff, and retry
+        await pipeline.ExecuteAsync(context);
+
+        // Verify recovery fetched fresh PR state and retried removal
+        await gitHub.Received(1).GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>());
+        Assert.Equal(2, removeCallCount);
+
+        // Verify final state: addition occurred once, removal retried to completion
+        await gitHub.Received(1).AddLabelsAsync("owner", "repo", 100, Arg.Is<string[]>(a => a.Contains(GitHubLabels.WorkflowInReview)), Arg.Any<CancellationToken>());
+        await gitHub.Received(2).RemoveLabelAsync("owner", "repo", 100, GitHubLabels.WorkflowReadyForReview, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_RecoveryFailure_ThrowsAggregateException()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var ctx = ci.Arg<PullRequestContext>();
+                ctx.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                return Task.CompletedTask;
+            });
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub);
+        var context = CreateMockContext(gitHub, prNumber: 100, existingLabels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        // Initial write fails
+        gitHub.AddLabelsAsync("owner", "repo", 100, Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException(new InvalidOperationException("Initial write failed")));
+
+        // Recovery query fails
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException<PullRequest>(new HttpRequestException("Remote network unreachable")));
+
+        var aggEx = await Assert.ThrowsAsync<AggregateException>(() => pipeline.ExecuteAsync(context));
+        Assert.Equal(2, aggEx.InnerExceptions.Count);
+        Assert.IsType<InvalidOperationException>(aggEx.InnerExceptions[0]);
+        Assert.IsType<HttpRequestException>(aggEx.InnerExceptions[1]);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_RecoveryNullPrState_ThrowsAggregateException()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var ctx = ci.Arg<PullRequestContext>();
+                ctx.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                ctx.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
+                return Task.CompletedTask;
+            });
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub);
+        var context = CreateMockContext(gitHub, prNumber: 100, existingLabels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        // Initial write fails
+        gitHub.AddLabelsAsync("owner", "repo", 100, Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException(new InvalidOperationException("Initial write failed")));
+
+        // Recovery query returns null
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<PullRequest>(null!));
+
+        var aggEx = await Assert.ThrowsAsync<AggregateException>(() => pipeline.ExecuteAsync(context));
+        Assert.Equal(2, aggEx.InnerExceptions.Count);
+        Assert.IsType<InvalidOperationException>(aggEx.InnerExceptions[0]);
+        Assert.IsType<InvalidOperationException>(aggEx.InnerExceptions[1]);
+        Assert.Contains("unable to fetch authoritative remote pull request state or labels", aggEx.InnerExceptions[1].Message);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_RecoveryNullLabels_ThrowsAggregateException()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var ctx = ci.Arg<PullRequestContext>();
+                ctx.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                ctx.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
+                return Task.CompletedTask;
+            });
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub);
+        var context = CreateMockContext(gitHub, prNumber: 100, existingLabels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        // Initial write fails
+        gitHub.AddLabelsAsync("owner", "repo", 100, Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException(new InvalidOperationException("Initial write failed")));
+
+        // Recovery query returns PR with null Labels collection
+        var freshPrWithoutLabels = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPrWithoutLabels, null);
+
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(freshPrWithoutLabels));
+
+        var aggEx = await Assert.ThrowsAsync<AggregateException>(() => pipeline.ExecuteAsync(context));
+        Assert.Equal(2, aggEx.InnerExceptions.Count);
+        Assert.IsType<InvalidOperationException>(aggEx.InnerExceptions[0]);
+        Assert.IsType<InvalidOperationException>(aggEx.InnerExceptions[1]);
+        Assert.Contains("unable to fetch authoritative remote pull request state or labels", aggEx.InnerExceptions[1].Message);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_CustomRecoveryTimeout_Respected()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var ctx = ci.Arg<PullRequestContext>();
+                ctx.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                return Task.CompletedTask;
+            });
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var customTimeout = TimeSpan.FromMilliseconds(50);
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub, recoveryTimeout: customTimeout);
+        var context = CreateMockContext(gitHub, prNumber: 100, existingLabels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        // Initial write fails
+        gitHub.AddLabelsAsync("owner", "repo", 100, Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException(new InvalidOperationException("Initial write failed")));
+
+        // Recovery call hangs until recoveryToken is cancelled by the custom timeout
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>())
+            .Returns(async ci =>
+            {
+                var ct = ci.Arg<CancellationToken>();
+                await Task.Delay(10000, ct);
+                return (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+            });
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var aggEx = await Assert.ThrowsAsync<AggregateException>(() => pipeline.ExecuteAsync(context));
+        stopwatch.Stop();
+
+        // Must abort promptly via custom timeout (around 50ms) rather than waiting 15s default
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5));
+        Assert.Contains(aggEx.InnerExceptions, ex => ex is OperationCanceledException or TaskCanceledException);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_ExecutesModulesWithLiveCancellationToken()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+
+        CancellationToken receivedToken = default;
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                receivedToken = ci.Arg<CancellationToken>();
+                return Task.CompletedTask;
+            });
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub);
+        var context = CreateMockContext(gitHub, prNumber: 100);
+
+        using var cts = new CancellationTokenSource();
+        await pipeline.ExecuteAsync(context, cts.Token);
+
+        Assert.True(receivedToken.CanBeCanceled);
+        Assert.Equal(cts.Token, receivedToken);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_FactoryMethods_PropagateLiveCancellationToken()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        using var cts = new CancellationTokenSource();
+
+        var prEvent = (Octokit.Webhooks.Events.PullRequest.PullRequestOpenedEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Events.PullRequest.PullRequestOpenedEvent));
+        var pr = (Octokit.Webhooks.Models.PullRequestEvent.PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Models.PullRequestEvent.PullRequest));
+        typeof(Octokit.Webhooks.Events.PullRequestEvent).GetProperty(nameof(Octokit.Webhooks.Events.PullRequestEvent.PullRequest))?.SetValue(prEvent, pr);
+
+        var ctx = PullRequestContext.FromPullRequestEvent(gitHub, "captains", null, prEvent, Octokit.Webhooks.Events.PullRequest.PullRequestAction.Opened, cts.Token);
+        Assert.True(ctx.CancellationToken.CanBeCanceled);
+        Assert.Equal(cts.Token, ctx.CancellationToken);
+
+        // Verify lazy I/O passes the live token to IGitHubService
+        gitHub.GetPullRequestFilesAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<Octokit.PullRequestFile>>(Array.Empty<Octokit.PullRequestFile>()));
+        await ctx.ChangedFiles.Value;
+        await gitHub.Received(1).GetPullRequestFilesAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), cts.Token);
+    }
+
+    [Fact]
+    public void PullRequestPipeline_HasEligibleModule_ReturnsCorrectStatus()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub);
+        var context = CreateMockContext(gitHub, prNumber: 100);
+
+        Assert.True(pipeline.HasEligibleModule(context));
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_CancellationDuringRecovery_ThrowsOperationCanceledExceptionDirectly()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var ctx = ci.Arg<PullRequestContext>();
+                ctx.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                return Task.CompletedTask;
+            });
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub);
+        var context = CreateMockContext(gitHub, prNumber: 100, existingLabels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        using var cts = new CancellationTokenSource();
+
+        // Initial write fails and cancels token during execution
+        gitHub.AddLabelsAsync("owner", "repo", 100, Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                cts.Cancel();
+                throw new InvalidOperationException("Initial write failed");
+            });
+
+        // Pipeline should throw OperationCanceledException directly without wrapping in AggregateException
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pipeline.ExecuteAsync(context, cts.Token));
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_CancellationAfterPartialWrite_ExecutesRecoveryAndRethrowsCancellation()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var ctx = ci.Arg<PullRequestContext>();
+                ctx.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                ctx.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
+                return Task.CompletedTask;
+            });
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var logger = Substitute.For<ILogger<PullRequestPipeline>>();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub, logger);
+        var context = CreateMockContext(gitHub, prNumber: 100, existingLabels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        using var cts = new CancellationTokenSource();
+
+        // Step 1: AddLabelsAsync succeeds, but cancels the token right after
+        gitHub.AddLabelsAsync("owner", "repo", 100, Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                cts.Cancel(); // Token is cancelled after the write succeeds
+                return Task.CompletedTask;
+            });
+
+        // Step 2: During recovery, fresh PR state is fetched
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var labelInReview = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelInReview, GitHubLabels.WorkflowInReview);
+        var labelReady = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelReady, GitHubLabels.WorkflowReadyForReview);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, new[] { labelInReview, labelReady });
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>()).Returns(freshPr);
+
+        // Step 3: Recovery retries RemoveLabelAsync and succeeds
+        gitHub.RemoveLabelAsync("owner", "repo", 100, GitHubLabels.WorkflowReadyForReview, Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        // Execute pipeline: must throw OperationCanceledException
+        var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pipeline.ExecuteAsync(context, cts.Token));
+
+        // Verify recovery executed: GetPullRequestAsync was called once
+        await gitHub.Received(1).GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>());
+
+        // Verify RemoveLabelAsync was called during recovery
+        await gitHub.Received(1).RemoveLabelAsync("owner", "repo", 100, GitHubLabels.WorkflowReadyForReview, Arg.Any<CancellationToken>());
+
+        // Verify structured warning was logged
+        logger.ReceivedWithAnyArgs().Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_CancellationRequested_AbortsWithoutWrites()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub);
+        var context = CreateMockContext(gitHub);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pipeline.ExecuteAsync(context, cts.Token));
+
+        await gitHub.DidNotReceiveWithAnyArgs().AddLabelsAsync(default!, default!, default, default(string[])!, default);
+        await gitHub.DidNotReceiveWithAnyArgs().RemoveLabelAsync(default!, default!, default, default!, default);
+    }
+
+    [Fact]
+    public async Task GitHubWebhookProcessor_Cancellation_ReleasesPullRequestLock()
+    {
+        var lockManager = new PullRequestLockManager();
+        var gitHub = Substitute.For<IGitHubService>();
+
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+
+        using var cts = new CancellationTokenSource();
+
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                cts.Cancel();
+                cts.Token.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            });
+
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub);
+        var context = CreateMockContext(gitHub, prNumber: 999);
+
+        // Process under lock with cancellation token
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            using (await lockManager.AcquireLockAsync("owner", "repo", 999, cts.Token))
+            {
+                await pipeline.ExecuteAsync(context, cts.Token);
+            }
+        });
+
+        // Verify the lock was cleanly released and can be acquired immediately by a subsequent request
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        using var newLock = await lockManager.AcquireLockAsync("owner", "repo", 999, testCts.Token);
+        Assert.NotNull(newLock);
+    }
+
     #endregion
 
     #region Context Caching Tests
@@ -314,6 +855,42 @@ public class PipelineAndModulesTests
         Assert.Equal("Content of spec", content1);
         Assert.Equal("Content of spec", content2);
         await gitHub.Received(1).GetFileContentAsync("owner", "repo", "test.spec", "sha123");
+    }
+
+    [Fact]
+    public async Task PullRequestContext_GetFileContentAsync_IsCaseSensitiveAndThreadSafe()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        gitHub.GetFileContentAsync("owner", "repo", "SPECS/Foo.spec", "sha123", Arg.Any<CancellationToken>())
+            .Returns("Content of upper Foo");
+        gitHub.GetFileContentAsync("owner", "repo", "SPECS/foo.spec", "sha123", Arg.Any<CancellationToken>())
+            .Returns("Content of lower foo");
+
+        // Concurrent uncached key: mock adds simulated delay to guarantee simultaneous contention
+        gitHub.GetFileContentAsync("owner", "repo", "SPECS/Concurrent.spec", "sha123", Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                await Task.Delay(20);
+                return "Content of concurrent";
+            });
+
+        var context = CreateMockContext(gitHub, headSha: "sha123");
+
+        // 1. Case-sensitivity test (case must not be folded on Linux/git paths)
+        var contentUpper = await context.GetFileContentAsync("SPECS/Foo.spec");
+        var contentLower = await context.GetFileContentAsync("SPECS/foo.spec");
+
+        Assert.Equal("Content of upper Foo", contentUpper);
+        Assert.Equal("Content of lower foo", contentLower);
+
+        // 2. Concurrency test on an uncached key: Lazy execution guarantees underlying loader is invoked strictly once
+        var tasks = Enumerable.Range(0, 20)
+            .Select(_ => Task.Run(() => context.GetFileContentAsync("SPECS/Concurrent.spec")))
+            .ToArray();
+
+        var results = await Task.WhenAll(tasks);
+        Assert.All(results, r => Assert.Equal("Content of concurrent", r));
+        await gitHub.Received(1).GetFileContentAsync("owner", "repo", "SPECS/Concurrent.spec", "sha123", Arg.Any<CancellationToken>());
     }
 
     #endregion
@@ -543,6 +1120,221 @@ public class PipelineAndModulesTests
         Assert.DoesNotContain(GitHubLabels.CommitsUpdated, context.LabelsToRemove);
     }
 
+    [Fact]
+    public async Task WorkflowStateModule_MergedPr_DoesNotMoveBackToInReview_OnUnlabeledBlocked()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var module = new WorkflowStateModule();
+
+        var prEvent = CreatePullRequestEvent();
+        var unlabeledEvent = (WebhookPullRequestUnlabeledEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookPullRequestUnlabeledEvent));
+        typeof(WebhookPullRequestEvent).GetProperty(nameof(WebhookPullRequestEvent.Repository))?.SetValue(unlabeledEvent, prEvent.Repository);
+        typeof(WebhookPullRequestEvent).GetProperty(nameof(WebhookPullRequestEvent.PullRequest))?.SetValue(unlabeledEvent, prEvent.PullRequest);
+        typeof(WebhookPullRequest).GetProperty(nameof(WebhookPullRequest.Merged))?.SetValue(prEvent.PullRequest, true);
+
+        var blockedLabel = (WebhookLabel)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookLabel));
+        typeof(WebhookLabel).GetProperty(nameof(WebhookLabel.Name))?.SetValue(blockedLabel, GitHubLabels.WorkflowBlocked);
+        typeof(WebhookPullRequestUnlabeledEvent).GetProperty(nameof(WebhookPullRequestUnlabeledEvent.Label))?.SetValue(unlabeledEvent, blockedLabel);
+
+        var context = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 100,
+            headSha: "sha",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: true,
+            title: "Merged PR",
+            body: null,
+            senderLogin: "captain",
+            authorLogin: "author",
+            action: "unlabeled",
+            existingLabels: new[] { GitHubLabels.WorkflowComplete },
+            prAction: WebhookPullRequestAction.Unlabeled,
+            prEvent: unlabeledEvent);
+
+        await module.ProcessAsync(context);
+
+        Assert.DoesNotContain(GitHubLabels.WorkflowInReview, context.LabelsToAdd);
+    }
+
+    [Fact]
+    public async Task WorkflowStateModule_ClosedPr_DoesNotMoveToInReview_OnCaptainCommentOrReview()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        gitHub.GetTeamMembersAsync("owner", "captains")
+            .Returns(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CaptainAlice" });
+
+        var closedPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(closedPr, new Octokit.StringEnum<ItemState>(ItemState.Closed));
+        gitHub.GetPullRequestAsync("owner", "repo", 100).Returns(closedPr);
+
+        var module = new WorkflowStateModule();
+
+        // 1. Captain comment on closed PR
+        var commentEvent = CreateCommentEvent(sender: "CaptainAlice", isPr: true);
+        var commentContext = PullRequestContext.FromIssueCommentEvent(gitHub, "captains", null, commentEvent, WebhookIssueCommentAction.Created);
+
+        await module.ProcessAsync(commentContext);
+        Assert.DoesNotContain(GitHubLabels.WorkflowInReview, commentContext.LabelsToAdd);
+
+        // 2. Captain review on closed PR (with Workflow: Complete label)
+        var reviewEvent = CreateReviewEvent(sender: "CaptainAlice");
+        var reviewContext = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.Review,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 100,
+            headSha: "sha",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: true,
+            title: "Closed PR",
+            body: null,
+            senderLogin: "CaptainAlice",
+            authorLogin: "author",
+            action: "submitted",
+            existingLabels: new[] { GitHubLabels.WorkflowComplete },
+            reviewAction: WebhookPullRequestReviewAction.Submitted,
+            reviewEvent: reviewEvent);
+
+        await module.ProcessAsync(reviewContext);
+        Assert.DoesNotContain(GitHubLabels.WorkflowInReview, reviewContext.LabelsToAdd);
+    }
+
+    [Fact]
+    public async Task WorkflowStateModule_MergeEvent_FollowedByUnlabeledEvent_PreservesCompleteAndDoesNotAddInReview()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var module = new WorkflowStateModule();
+        var mutexEngine = new LabelMutexEngine();
+
+        // 1. Initial State: PR is open with Blocked and InReview
+        var initialLabels = new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.WorkflowInReview };
+
+        // Step A: Process Merge Event (Closed with Merged = true)
+        var mergePrEvent = CreatePullRequestEvent();
+        typeof(WebhookPullRequest).GetProperty(nameof(WebhookPullRequest.Merged))?.SetValue(mergePrEvent.PullRequest, true);
+        var prStateProp = typeof(WebhookPullRequest).GetProperty(nameof(WebhookPullRequest.State));
+        if (prStateProp != null)
+        {
+            var prStateVal = Activator.CreateInstance(prStateProp.PropertyType, "closed");
+            prStateProp.SetValue(mergePrEvent.PullRequest, prStateVal);
+        }
+
+        var mergeContext = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 100,
+            headSha: "sha",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: true,
+            title: "Merged PR",
+            body: null,
+            senderLogin: "captain",
+            authorLogin: "author",
+            action: "closed",
+            existingLabels: initialLabels,
+            prAction: WebhookPullRequestAction.Closed,
+            prEvent: mergePrEvent);
+
+        await module.ProcessAsync(mergeContext);
+
+        // Diff after merge event
+        var mergeDiff = mutexEngine.ComputeDiff(initialLabels, mergeContext.LabelsToAdd, mergeContext.LabelsToRemove);
+        Assert.Contains(GitHubLabels.WorkflowComplete, mergeDiff.LabelsToAdd);
+        Assert.Contains(GitHubLabels.WorkflowInReview, mergeDiff.LabelsToRemove);
+
+        // Remote state after applying merge diff: Blocked (still there) + Complete
+        var postMergeLabels = initialLabels
+            .Except(mergeDiff.LabelsToRemove, StringComparer.OrdinalIgnoreCase)
+            .Concat(mergeDiff.LabelsToAdd)
+            .ToList();
+        Assert.Contains(GitHubLabels.WorkflowComplete, postMergeLabels);
+        Assert.DoesNotContain(GitHubLabels.WorkflowInReview, postMergeLabels);
+
+        // Step B: Subsequent Unlabeled Event (unlabeling Blocked on the now-merged PR)
+        var unlabeledEvent = (WebhookPullRequestUnlabeledEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookPullRequestUnlabeledEvent));
+        typeof(WebhookPullRequestEvent).GetProperty(nameof(WebhookPullRequestEvent.Repository))?.SetValue(unlabeledEvent, mergePrEvent.Repository);
+        typeof(WebhookPullRequestEvent).GetProperty(nameof(WebhookPullRequestEvent.PullRequest))?.SetValue(unlabeledEvent, mergePrEvent.PullRequest);
+
+        var blockedLabel = (WebhookLabel)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookLabel));
+        typeof(WebhookLabel).GetProperty(nameof(WebhookLabel.Name))?.SetValue(blockedLabel, GitHubLabels.WorkflowBlocked);
+        typeof(WebhookPullRequestUnlabeledEvent).GetProperty(nameof(WebhookPullRequestUnlabeledEvent.Label))?.SetValue(unlabeledEvent, blockedLabel);
+
+        var unlabeledContext = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 100,
+            headSha: "sha",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: true,
+            title: "Merged PR",
+            body: null,
+            senderLogin: "captain",
+            authorLogin: "author",
+            action: "unlabeled",
+            existingLabels: postMergeLabels,
+            prAction: WebhookPullRequestAction.Unlabeled,
+            prEvent: unlabeledEvent);
+
+        await module.ProcessAsync(unlabeledContext);
+
+        // Must NOT attempt to add InReview, and must NOT remove Complete
+        Assert.DoesNotContain(GitHubLabels.WorkflowInReview, unlabeledContext.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.WorkflowComplete, unlabeledContext.LabelsToRemove);
+    }
+
+    [Fact]
+    public async Task WorkflowStateModule_ClosedPrWithoutComplete_ReviewEvent_DoesNotAddInReview()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        gitHub.GetTeamMembersAsync("owner", "captains", Arg.Any<CancellationToken>())
+            .Returns(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CaptainAlice" });
+
+        var module = new WorkflowStateModule();
+
+        // Review on a closed PR (closed without merging, so NO Workflow: Complete label)
+        var reviewEvent = CreateReviewEvent(sender: "CaptainAlice");
+        var simpleStateProp = typeof(WebhookSimplePullRequest).GetProperty(nameof(WebhookSimplePullRequest.State));
+        if (simpleStateProp != null)
+        {
+            var simpleStateVal = Activator.CreateInstance(simpleStateProp.PropertyType, "closed");
+            simpleStateProp.SetValue(reviewEvent.PullRequest, simpleStateVal);
+        }
+
+        var reviewContext = PullRequestContext.FromReviewEvent(
+            gitHub,
+            "captains",
+            null,
+            reviewEvent,
+            WebhookPullRequestReviewAction.Submitted);
+
+        Assert.True(reviewContext.IsClosed);
+        Assert.True(reviewContext.IsTerminal);
+
+        await module.ProcessAsync(reviewContext);
+
+        Assert.DoesNotContain(GitHubLabels.WorkflowInReview, reviewContext.LabelsToAdd);
+    }
+
     #endregion
 
     #region Helpers & Test Processor
@@ -574,7 +1366,8 @@ public class PipelineAndModulesTests
         IGitHubService gitHub,
         int prNumber = 1,
         string headSha = "headsha",
-        string? body = "")
+        string? body = "",
+        IEnumerable<string>? existingLabels = null)
     {
         return new PullRequestContext(
             gitHubService: gitHub,
@@ -593,7 +1386,7 @@ public class PipelineAndModulesTests
             senderLogin: "contributor",
             authorLogin: "contributor",
             action: nameof(WebhookPullRequestAction.Opened),
-            existingLabels: Array.Empty<string>(),
+            existingLabels: existingLabels ?? Array.Empty<string>(),
             prAction: WebhookPullRequestAction.Opened);
     }
 

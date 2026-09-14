@@ -56,7 +56,9 @@ public class GitHubWebhookProcessorTests
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
 
-        await processor.ProcessPullRequestAsync(LabeledEvent(GitHubLabels.WorkflowBlocked), PullRequestAction.Labeled);
+        await processor.ProcessPullRequestAsync(
+            LabeledEvent(GitHubLabels.WorkflowBlocked, new[] { GitHubLabels.WorkflowInReview, GitHubLabels.WorkflowReadyForReview }),
+            PullRequestAction.Labeled);
 
         Assert.Equal(
             new[] { $"remove:{GitHubLabels.WorkflowInReview}", $"remove:{GitHubLabels.WorkflowReadyForReview}" },
@@ -104,7 +106,9 @@ public class GitHubWebhookProcessorTests
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
 
-        await processor.ProcessIssueCommentAsync(IssueCommentEvent(author: "contributor", sender: "captain"), IssueCommentAction.Created);
+        await processor.ProcessIssueCommentAsync(
+            IssueCommentEvent(author: "contributor", sender: "captain", labels: new[] { GitHubLabels.CommitsUpdated }),
+            IssueCommentAction.Created);
 
         Assert.Contains($"remove:{GitHubLabels.CommitsUpdated}", github.LabelOperations);
     }
@@ -137,7 +141,9 @@ public class GitHubWebhookProcessorTests
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
 
-        await processor.ProcessPullRequestReviewAsync(PullRequestReviewEvent(author: "contributor", sender: "captain"), PullRequestReviewAction.Submitted);
+        await processor.ProcessPullRequestReviewAsync(
+            PullRequestReviewEvent(author: "contributor", sender: "captain", labels: new[] { GitHubLabels.CommitsUpdated, GitHubLabels.WorkflowReadyForReview }),
+            PullRequestReviewAction.Submitted);
 
         Assert.Contains($"remove:{GitHubLabels.CommitsUpdated}", github.LabelOperations);
     }
@@ -162,7 +168,10 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: false, title: "Feature: Add RISC-V support");
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            draft: false,
+            title: "Feature: Add RISC-V support",
+            labels: new[] { GitHubLabels.WorkflowInDev });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
 
@@ -175,7 +184,10 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: true, title: "Feature: Under construction");
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            draft: true,
+            title: "Feature: Under construction",
+            labels: new[] { GitHubLabels.WorkflowReadyForReview });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
 
@@ -188,7 +200,10 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: false, title: "wip: not ready yet");
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            draft: false,
+            title: "wip: not ready yet",
+            labels: new[] { GitHubLabels.WorkflowReadyForReview });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
 
@@ -204,7 +219,7 @@ public class GitHubWebhookProcessorTests
         var payload = CreatePREvent<PullRequestOpenedEvent>(
             draft: false,
             title: "Normal PR",
-            labels: new[] { GitHubLabels.WorkflowInReview });
+            labels: new[] { GitHubLabels.WorkflowInReview, GitHubLabels.WorkflowInDev });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
 
@@ -281,7 +296,9 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = CreatePREvent<PullRequestClosedEvent>(merged: true);
+        var payload = CreatePREvent<PullRequestClosedEvent>(
+            merged: true,
+            labels: new[] { GitHubLabels.WorkflowInDev, GitHubLabels.WorkflowReadyForReview, GitHubLabels.WorkflowInReview });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Closed);
 
@@ -296,7 +313,9 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = CreatePREvent<PullRequestClosedEvent>(merged: false);
+        var payload = CreatePREvent<PullRequestClosedEvent>(
+            merged: false,
+            labels: new[] { GitHubLabels.WorkflowInDev, GitHubLabels.WorkflowReadyForReview, GitHubLabels.WorkflowInReview });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Closed);
 
@@ -371,7 +390,7 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = PullRequestReviewEvent(author: "contributor", sender: "captain");
+        var payload = PullRequestReviewEvent(author: "contributor", sender: "captain", labels: new[] { GitHubLabels.WorkflowReadyForReview });
 
         await processor.ProcessPullRequestReviewAsync(payload, PullRequestReviewAction.Submitted);
 
@@ -404,6 +423,44 @@ public class GitHubWebhookProcessorTests
         await processor.ProcessPullRequestReviewAsync(payload, PullRequestReviewAction.Submitted);
 
         Assert.DoesNotContain($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Theory]
+    [InlineData("CaptainAlice")]
+    [InlineData("CAPTAINALICE")]
+    [InlineData("captainalice")]
+    public async Task ReviewSubmittedByMixedCaseCaptain_TransitionsToInReview(string senderLogin)
+    {
+        var github = new FakeGitHubService();
+        github.TeamMembers.Clear();
+        github.TeamMembers.Add("CaptainAlice");
+
+        var processor = CreateProcessor(github);
+        var payload = PullRequestReviewEvent(author: "contributor", sender: senderLogin, labels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        await processor.ProcessPullRequestReviewAsync(payload, PullRequestReviewAction.Submitted);
+
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Theory]
+    [InlineData("CaptainAlice")]
+    [InlineData("CAPTAINALICE")]
+    [InlineData("captainalice")]
+    public async Task IssueCommentByMixedCaseCaptain_TransitionsToInReview(string senderLogin)
+    {
+        var github = new FakeGitHubService();
+        github.TeamMembers.Clear();
+        github.TeamMembers.Add("CaptainAlice");
+
+        var processor = CreateProcessor(github);
+        var payload = IssueCommentEvent(author: "contributor", sender: senderLogin, labels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Created);
+
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
     }
 
     [Fact]
@@ -501,7 +558,7 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = IssueCommentEvent(author: "contributor", sender: "captain", title: "Clean PR");
+        var payload = IssueCommentEvent(author: "contributor", sender: "captain", title: "Clean PR", labels: new[] { GitHubLabels.WorkflowReadyForReview });
 
         await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Created);
 
@@ -559,7 +616,7 @@ public class GitHubWebhookProcessorTests
             PullRequest = CreateOctokitPullRequestWithUser("pr_author")
         };
         var processor = CreateProcessor(github);
-        var payload = IssueCommentEvent(author: null, sender: "captain");
+        var payload = IssueCommentEvent(author: null, sender: "captain", labels: new[] { GitHubLabels.CommitsUpdated });
 
         await processor.ProcessIssueCommentAsync(payload, IssueCommentAction.Created);
 
@@ -775,7 +832,9 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = CreatePREvent<PullRequestOpenedEvent>(body: AiCheckboxLineUnchecked);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            body: AiCheckboxLineUnchecked,
+            labels: new[] { GitHubLabels.AiAssistance });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
 
@@ -788,7 +847,9 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = CreatePREvent<PullRequestOpenedEvent>(body: "This is a regular description without checkboxes.");
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            body: "This is a regular description without checkboxes.",
+            labels: new[] { GitHubLabels.AiAssistance });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
 
@@ -800,7 +861,9 @@ public class GitHubWebhookProcessorTests
     {
         var github = new FakeGitHubService();
         var processor = CreateProcessor(github);
-        var payload = CreatePREvent<PullRequestOpenedEvent>(body: null);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            body: null,
+            labels: new[] { GitHubLabels.AiAssistance });
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
 
@@ -920,9 +983,9 @@ public class GitHubWebhookProcessorTests
         return new TestGitHubWebhookProcessor(github, config);
     }
 
-    private static PullRequestLabeledEvent LabeledEvent(string labelName)
+    private static PullRequestLabeledEvent LabeledEvent(string labelName, IReadOnlyList<string>? labels = null)
     {
-        var pullRequest = PullRequest();
+        var pullRequest = PullRequest(labels: labels);
         return Create<PullRequestLabeledEvent>(
             (nameof(PullRequestLabeledEvent.Number), pullRequest.Number),
             (nameof(PullRequestLabeledEvent.PullRequest), pullRequest),
@@ -1111,16 +1174,16 @@ public class GitHubWebhookProcessorTests
 
         public bool ThrowOnGetAuthorEmail { get; set; }
 
-        public Dictionary<string, string> FileContents { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> FileContents { get; } = new(StringComparer.Ordinal);
 
         public Task<IReadOnlyList<OctokitPullRequestFile>> GetPullRequestFilesAsync(
-            string owner, string repo, int prNumber)
+            string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(PullRequestFiles);
         }
 
         public Task<string?> GetPullRequestAuthorEmailAsync(
-            string owner, string repo, int prNumber)
+            string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
         {
             if (ThrowOnGetAuthorEmail)
                 throw new InvalidOperationException("Simulated GitHub API error");
@@ -1128,7 +1191,7 @@ public class GitHubWebhookProcessorTests
         }
 
         public Task<string> GetFileContentAsync(
-            string owner, string repo, string path, string sha)
+            string owner, string repo, string path, string sha, CancellationToken cancellationToken = default)
         {
             if (FileContents.TryGetValue(path, out var content))
                 return Task.FromResult(content);
@@ -1136,27 +1199,27 @@ public class GitHubWebhookProcessorTests
         }
 
         public Task AddLabelsAsync(
-            string owner, string repo, int issueNumber, params string[] labels)
+            string owner, string repo, int issueNumber, string[] labels, CancellationToken cancellationToken = default)
         {
             LabelOperations.AddRange(labels.Select(label => $"add:{label}"));
             return Task.CompletedTask;
         }
 
         public Task RemoveLabelAsync(
-            string owner, string repo, int issueNumber, string label)
+            string owner, string repo, int issueNumber, string label, CancellationToken cancellationToken = default)
         {
             LabelOperations.Add($"remove:{label}");
             return Task.CompletedTask;
         }
 
         public Task<HashSet<string>> GetTeamMembersAsync(
-            string owner, string teamName)
+            string owner, string teamName, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(TeamMembers);
         }
 
         public Task<OctokitPullRequest> GetPullRequestAsync(
-            string owner, string repo, int prNumber)
+            string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(PullRequest);
         }

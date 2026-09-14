@@ -75,30 +75,6 @@ public class GitHubServiceTests
         await client.GitHubApps.Received(1).CreateInstallationToken(5555);
     }
 
-    [Fact]
-    public async Task SetInstallationIdUpdatesIdAndResetsTokenExpiry()
-    {
-        var (pem, _) = GenerateRsaKeyPair();
-        var (service, client) = CreateTestService(pem, appId: 9999, installationId: 1000);
-
-        var prClient = Substitute.For<IPullRequestsClient>();
-        client.PullRequest.Returns(prClient);
-        prClient.Files("owner", "repo", 1).Returns(Task.FromResult<IReadOnlyList<PullRequestFile>>(Array.Empty<PullRequestFile>()));
-
-        // First call with installation 1000
-        await service.GetPullRequestFilesAsync("owner", "repo", 1);
-        await client.GitHubApps.Received(1).CreateInstallationToken(1000);
-
-        // Setting the SAME installation ID should not invalidate cache
-        service.SetInstallationId(1000);
-        await service.GetPullRequestFilesAsync("owner", "repo", 1);
-        await client.GitHubApps.Received(1).CreateInstallationToken(1000);
-
-        // Changing installation ID should invalidate cache and fetch with new ID
-        service.SetInstallationId(2000);
-        await service.GetPullRequestFilesAsync("owner", "repo", 1);
-        await client.GitHubApps.Received(1).CreateInstallationToken(2000);
-    }
 
     [Fact]
     public async Task GetPullRequestFilesAsyncReturnsFiles()
@@ -185,7 +161,7 @@ public class GitHubServiceTests
         client.Issue.Returns(issueClient);
         issueClient.Labels.Returns(issueLabelsClient);
 
-        await service.AddLabelsAsync("owner", "repo", 100, "label1", "label2");
+        await service.AddLabelsAsync("owner", "repo", 100, new[] { "label1", "label2" });
 
         await issueLabelsClient.Received(1).AddToIssue("owner", "repo", 100, Arg.Is<string[]>(l => l.SequenceEqual(new[] { "label1", "label2" })));
     }
@@ -217,16 +193,17 @@ public class GitHubServiceTests
         client.Issue.Returns(issueClient);
         issueClient.Labels.Returns(issueLabelsClient);
 
-        var notFoundEx = CreateNotFoundException();
-        issueLabelsClient.RemoveFromIssue("owner", "repo", 100, "label1").Throws(notFoundEx);
+        issueLabelsClient.RemoveFromIssue("owner", "repo", 100, "label1")
+            .Returns(Task.FromException<IReadOnlyList<Label>>(new NotFoundException("Label not found", System.Net.HttpStatusCode.NotFound)));
 
-        var exception = await Record.ExceptionAsync(() => service.RemoveLabelAsync("owner", "repo", 100, "label1"));
+        var exception = await Record.ExceptionAsync(() =>
+            service.RemoveLabelAsync("owner", "repo", 100, "label1"));
 
         Assert.Null(exception);
     }
 
     [Fact]
-    public async Task GetTeamMembersAsyncReturnsLowercasedLogins()
+    public async Task GetTeamMembersAsync_PreservesOriginalCasing_WithCaseInsensitiveComparer()
     {
         var (pem, _) = GenerateRsaKeyPair();
         var (service, client) = CreateTestService(pem);
@@ -246,9 +223,21 @@ public class GitHubServiceTests
 
         var result = await service.GetTeamMembersAsync("owner", "Captains");
 
+        // Verify case-insensitive set behavior
         Assert.Contains("captainalice", result);
+        Assert.Contains("CaptainAlice", result);
         Assert.Contains("captainbob", result);
+        Assert.Contains("CAPTAINBOB", result);
         Assert.Equal(2, result.Count);
+
+        // Verify original casing preservation (R5)
+        Assert.Contains(result, m => m == "CaptainAlice");
+        Assert.Contains(result, m => m == "CAPTAINBOB");
+
+        // Verify that raw elements preserved their original casing
+        var rawList = result.ToList();
+        Assert.Contains("CaptainAlice", rawList);
+        Assert.Contains("CAPTAINBOB", rawList);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using abaci_bot.Contexts;
 using abaci_bot.Pipelines;
 using abaci_bot.Services;
+using Octokit;
 using Octokit.Webhooks.Events.PullRequest;
 using Octokit.Webhooks.Events.PullRequestReview;
 using Octokit.Webhooks.Events.IssueComment;
@@ -76,12 +77,16 @@ public class WorkflowStateModule : IPullRequestModule
         }
 
         // When "Workflow: Blocked" is removed, restore the pull request to "In Review"
+        // provided the PR is open and not already completed or merged.
         if (action == PullRequestAction.Unlabeled)
         {
             if (context.PullRequestEvent is PullRequestUnlabeledEvent unlabeledEvent &&
                 GitHubWebhookProcessor.IsBlockedLabel(unlabeledEvent.Label?.Name))
             {
-                context.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                if (!context.IsTerminal)
+                {
+                    context.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                }
             }
             return Task.CompletedTask;
         }
@@ -105,8 +110,8 @@ public class WorkflowStateModule : IPullRequestModule
             context.LabelsToAdd.Add(GitHubLabels.CommitsUpdated);
         }
 
-        // Blocked PRs should not advance their workflow state until unblocked
-        if (isBlocked)
+        // Closed, merged, or blocked PRs should not advance their workflow state
+        if (context.IsTerminal || isBlocked)
         {
             return Task.CompletedTask;
         }
@@ -131,6 +136,9 @@ public class WorkflowStateModule : IPullRequestModule
 
     private async Task ProcessReviewEventAsync(PullRequestContext context)
     {
+        if (context.IsTerminal)
+            return;
+
         var captains = await context.TeamCaptains.Value;
         var sender = context.SenderLogin;
         var author = context.AuthorLogin;
@@ -154,6 +162,9 @@ public class WorkflowStateModule : IPullRequestModule
 
     private async Task ProcessIssueCommentEventAsync(PullRequestContext context)
     {
+        if (context.IsTerminal)
+            return;
+
         var captains = await context.TeamCaptains.Value;
         var sender = context.SenderLogin;
         var author = context.AuthorLogin;
@@ -162,6 +173,9 @@ public class WorkflowStateModule : IPullRequestModule
             return;
 
         var pullRequest = await context.PullRequest.Value;
+        if (string.Equals(pullRequest.State.StringValue, "closed", StringComparison.OrdinalIgnoreCase) || pullRequest.Merged)
+            return;
+
         var effectiveAuthor = author ?? pullRequest.User?.Login;
         var isDraft = pullRequest.Draft;
 

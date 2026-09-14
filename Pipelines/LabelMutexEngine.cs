@@ -72,6 +72,9 @@ public class LabelMutexEngine
     /// <summary>
     /// Computes the net label additions and removals required to reflect module intents
     /// while enforcing mutual-exclusion rules across known label groups.
+    /// In case of competing additions within the same mutex group, the last scheduled addition
+    /// wins deterministically (respecting execution/declaration order), and all losers are evicted.
+    /// Redundant writes (adding labels already present, removing labels not present) are filtered out.
     /// </summary>
     public LabelDiffResult ComputeDiff(
         IEnumerable<string> existingLabels,
@@ -82,23 +85,34 @@ public class LabelMutexEngine
         var toAdd = new List<string>(labelsToAdd.Distinct(StringComparer.OrdinalIgnoreCase));
         var toRemove = new List<string>(labelsToRemove.Distinct(StringComparer.OrdinalIgnoreCase));
 
-        // Enforce mutex rules: adding a label in a single-choice group requires evicting any other labels in that group.
-        foreach (var adding in toAdd.ToList())
+        // Enforce mutex rules:
+        // 1. If multiple labels in toAdd belong to the same mutex group, the last addition wins.
+        foreach (var group in _mutexGroups)
         {
-            foreach (var group in _mutexGroups)
+            var candidates = toAdd.Where(group.Contains).ToList();
+            if (candidates.Count > 1)
             {
-                if (group.Contains(adding))
+                var winner = candidates.Last();
+                foreach (var loser in candidates.Take(candidates.Count - 1))
                 {
-                    foreach (var other in group)
+                    toAdd.RemoveAll(l => string.Equals(l, loser, StringComparison.OrdinalIgnoreCase));
+                }
+            }
+
+            // 2. For the winning/single addition in this group, evict all other group members from existing labels.
+            var activeAdditions = toAdd.Where(group.Contains).ToList();
+            foreach (var adding in activeAdditions)
+            {
+                foreach (var other in group)
+                {
+                    if (!string.Equals(other, adding, StringComparison.OrdinalIgnoreCase))
                     {
-                        if (!string.Equals(other, adding, StringComparison.OrdinalIgnoreCase))
+                        toAdd.RemoveAll(l => string.Equals(l, other, StringComparison.OrdinalIgnoreCase));
+                        if (existingSet.Contains(other))
                         {
-                            toAdd.Remove(other);
-                            // Mark other conflicting label for removal if it already exists or was scheduled for eviction.
-                            if (existingSet.Contains(other) || toRemove.Contains(other, StringComparer.OrdinalIgnoreCase))
+                            if (!toRemove.Contains(other, StringComparer.OrdinalIgnoreCase))
                             {
-                                if (!toRemove.Contains(other, StringComparer.OrdinalIgnoreCase))
-                                    toRemove.Add(other);
+                                toRemove.Add(other);
                             }
                         }
                     }
@@ -108,6 +122,12 @@ public class LabelMutexEngine
 
         // Conflict resolution: if a label appears in both toAdd and toRemove, addition wins.
         toRemove.RemoveAll(r => toAdd.Contains(r, StringComparer.OrdinalIgnoreCase));
+
+        // Redundant add filtering: avoid duplicate API additions if already present.
+        toAdd.RemoveAll(a => existingSet.Contains(a));
+
+        // Redundant remove filtering: avoid duplicate API removals if not currently present.
+        toRemove.RemoveAll(r => !existingSet.Contains(r));
 
         return new LabelDiffResult(toAdd, toRemove);
     }

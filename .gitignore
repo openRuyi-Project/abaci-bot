@@ -64,3 +64,5 @@ appsettings.json
 .vs/
 .vscode/
 Properties/launchSettings.json
+*.log
+*AUDIT*.md

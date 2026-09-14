@@ -45,7 +45,7 @@ public class BuildSystemAnalysisModule : IPullRequestModule
             {
                 if (file.FileName.EndsWith(".spec"))
                 {
-                    var content = await context.GetFileContentAsync(file.FileName, context.HeadSha);
+                    var content = await context.GetFileContentAsync(file.FileName, context.HeadSha, cancellationToken);
 
                     // Identify declared build systems in RPM spec files
                     if (content.Contains("BuildSystem:    autotools", StringComparison.OrdinalIgnoreCase))

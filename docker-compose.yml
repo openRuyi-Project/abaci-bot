@@ -17,7 +17,8 @@ services:
       # These will override appsettings.json values
       # - GitHubApp__AppId=123456
       # - GitHubApp__InstallationId=78901234
-      # - GitHubApp__PrivateKey=-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----
+      # - GitHubApp__PrivateKey="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+      # Note: For private keys, mounting via appsettings.json is recommended.
       - ASPNETCORE_ENVIRONMENT=Production
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3456/health"]
