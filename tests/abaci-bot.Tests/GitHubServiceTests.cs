@@ -230,7 +230,7 @@ public class GitHubServiceTests
         Assert.Contains("CAPTAINBOB", result);
         Assert.Equal(2, result.Count);
 
-        // Verify original casing preservation (R5)
+        // Verify original casing preservation
         Assert.Contains(result, m => m == "CaptainAlice");
         Assert.Contains(result, m => m == "CAPTAINBOB");
 
@@ -289,5 +289,118 @@ public class GitHubServiceTests
     private static NotFoundException CreateNotFoundException()
     {
         return (NotFoundException)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(NotFoundException));
+    }
+
+    [Fact]
+    public async Task GetPullRequestAsync_EnforcesTransportLayerCancellation()
+    {
+        var (pem, _) = GenerateRsaKeyPair();
+        using var cts = new CancellationTokenSource();
+        CancellationToken receivedTokenInTransport = default;
+
+        var handler = new ControllableHttpMessageHandler(async (req, ct) =>
+        {
+            // Handle installation token request first
+            if (req.RequestUri?.AbsolutePath.Contains("access_tokens") == true)
+            {
+                return new HttpResponseMessage(HttpStatusCode.Created)
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(new { token = "ghs_test", expires_at = DateTimeOffset.UtcNow.AddHours(1) }),
+                        Encoding.UTF8,
+                        "application/json")
+                };
+            }
+
+            // For the API request, record token and trigger cancellation at transport layer
+            receivedTokenInTransport = ct;
+            cts.Cancel();
+            await Task.Delay(10000, ct);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        var service = new GitHubService(12345, pem, 67890, handler);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.GetPullRequestAsync("owner", "repo", 1, cts.Token));
+        stopwatch.Stop();
+
+        // Must abort promptly at transport layer
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(3));
+        Assert.True(receivedTokenInTransport.CanBeCanceled);
+        Assert.True(receivedTokenInTransport.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task AddLabelsAsync_EnforcesTransportLayerCancellation()
+    {
+        var (pem, _) = GenerateRsaKeyPair();
+        using var cts = new CancellationTokenSource();
+        CancellationToken receivedTokenInTransport = default;
+
+        var handler = new ControllableHttpMessageHandler(async (req, ct) =>
+        {
+            if (req.RequestUri?.AbsolutePath.Contains("access_tokens") == true)
+            {
+                return new HttpResponseMessage(HttpStatusCode.Created)
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(new { token = "ghs_test", expires_at = DateTimeOffset.UtcNow.AddHours(1) }),
+                        Encoding.UTF8,
+                        "application/json")
+                };
+            }
+
+            receivedTokenInTransport = ct;
+            cts.Cancel();
+            await Task.Delay(10000, ct);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        var service = new GitHubService(12345, pem, 67890, handler);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.AddLabelsAsync("owner", "repo", 1, new[] { "label-1" }, cts.Token));
+        stopwatch.Stop();
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(3));
+        Assert.True(receivedTokenInTransport.CanBeCanceled);
+        Assert.True(receivedTokenInTransport.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task EnsureAuthenticatedAsync_AbortsAtTransportLayer_WhenTokenCancelled()
+    {
+        var (pem, _) = GenerateRsaKeyPair();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel(); // Pre-cancelled token
+
+        var handler = new ControllableHttpMessageHandler((req, ct) =>
+        {
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+
+        var service = new GitHubService(12345, pem, 67890, handler);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.GetPullRequestAsync("owner", "repo", 1, cts.Token));
+    }
+
+    private sealed class ControllableHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
+
+        public ControllableHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
+        {
+            _handler = handler;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return _handler(request, cancellationToken);
+        }
     }
 }

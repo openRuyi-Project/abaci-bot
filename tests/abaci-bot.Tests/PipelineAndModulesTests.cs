@@ -432,20 +432,24 @@ public class PipelineAndModulesTests
             });
 
         // Fresh PR loaded during recovery reflects the newly added label and old label
+        var initialPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
         var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
         var labelInReview = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
         typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelInReview, GitHubLabels.WorkflowInReview);
         var labelReady = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
         typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelReady, GitHubLabels.WorkflowReadyForReview);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(initialPr, new[] { labelReady });
         typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, new[] { labelInReview, labelReady });
 
-        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>()).Returns(freshPr);
+        var prCallCount = 0;
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromResult(++prCallCount == 1 ? initialPr : freshPr));
 
         // Execute pipeline: should catch the partial failure, query GetPullRequestAsync, recompute diff, and retry
         await pipeline.ExecuteAsync(context);
 
         // Verify recovery fetched fresh PR state and retried removal
-        await gitHub.Received(1).GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>());
+        await gitHub.Received(2).GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>());
         Assert.Equal(2, removeCallCount);
 
         // Verify final state: addition occurred once, removal retried to completion
@@ -583,13 +587,23 @@ public class PipelineAndModulesTests
         gitHub.AddLabelsAsync("owner", "repo", 100, Arg.Any<string[]>(), Arg.Any<CancellationToken>())
             .Returns(_ => Task.FromException(new InvalidOperationException("Initial write failed")));
 
-        // Recovery call hangs until recoveryToken is cancelled by the custom timeout
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var labelReady = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelReady, GitHubLabels.WorkflowReadyForReview);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, new[] { labelReady });
+
+        var recoveryCallCount = 0;
+        // Initial refresh returns immediately; recovery call hangs until recoveryToken is cancelled by custom timeout
         gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>())
             .Returns(async ci =>
             {
+                recoveryCallCount++;
+                if (recoveryCallCount == 1)
+                    return freshPr;
+
                 var ct = ci.Arg<CancellationToken>();
                 await Task.Delay(10000, ct);
-                return (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+                return freshPr;
             });
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -692,6 +706,18 @@ public class PipelineAndModulesTests
                 throw new InvalidOperationException("Initial write failed");
             });
 
+        var initialPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(initialPr, Array.Empty<Label>());
+
+        var labelInReview = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelInReview, GitHubLabels.WorkflowInReview);
+        var recoveryPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(recoveryPr, new[] { labelInReview });
+
+        var prCalls = 0;
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromResult(++prCalls == 1 ? initialPr : recoveryPr));
+
         // Pipeline should throw OperationCanceledException directly without wrapping in AggregateException
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pipeline.ExecuteAsync(context, cts.Token));
     }
@@ -727,6 +753,11 @@ public class PipelineAndModulesTests
                 return Task.CompletedTask;
             });
 
+        var initialPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var labelReadyInitial = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelReadyInitial, GitHubLabels.WorkflowReadyForReview);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(initialPr, new[] { labelReadyInitial });
+
         // Step 2: During recovery, fresh PR state is fetched
         var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
         var labelInReview = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
@@ -734,7 +765,10 @@ public class PipelineAndModulesTests
         var labelReady = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
         typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelReady, GitHubLabels.WorkflowReadyForReview);
         typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, new[] { labelInReview, labelReady });
-        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>()).Returns(freshPr);
+
+        var getPrCalls = 0;
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromResult(++getPrCalls == 1 ? initialPr : freshPr));
 
         // Step 3: Recovery retries RemoveLabelAsync and succeeds
         gitHub.RemoveLabelAsync("owner", "repo", 100, GitHubLabels.WorkflowReadyForReview, Arg.Any<CancellationToken>())
@@ -743,13 +777,96 @@ public class PipelineAndModulesTests
         // Execute pipeline: must throw OperationCanceledException
         var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pipeline.ExecuteAsync(context, cts.Token));
 
-        // Verify recovery executed: GetPullRequestAsync was called once
-        await gitHub.Received(1).GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>());
+        // Verify recovery executed: GetPullRequestAsync was called for lock refresh and recovery
+        await gitHub.Received(2).GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>());
 
         // Verify RemoveLabelAsync was called during recovery
         await gitHub.Received(1).RemoveLabelAsync("owner", "repo", 100, GitHubLabels.WorkflowReadyForReview, Arg.Any<CancellationToken>());
 
         // Verify structured warning was logged
+        logger.ReceivedWithAnyArgs().Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_InFlightWriteTimeoutWithCallerTokenActive_ExecutesRecoveryAndReconcilesRemoteState()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var ctx = ci.Arg<PullRequestContext>();
+                ctx.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                ctx.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
+                return Task.CompletedTask;
+            });
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var logger = Substitute.For<ILogger<PullRequestPipeline>>();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub, logger);
+        var context = CreateMockContext(gitHub, prNumber: 100, existingLabels: new[] { GitHubLabels.WorkflowReadyForReview });
+
+        using var callerCts = new CancellationTokenSource();
+        var remoteLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { GitHubLabels.WorkflowReadyForReview };
+
+        // Initial write: AddLabelsAsync adds to fake remote state, but throws TaskCanceledException (simulating transport timeout)
+        gitHub.AddLabelsAsync("owner", "repo", 100, Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var labels = ci.Arg<string[]>();
+                foreach (var l in labels)
+                {
+                    remoteLabels.Add(l);
+                }
+                throw new TaskCanceledException("HTTP request timed out at transport layer");
+            });
+
+        // Set up fresh PR returned during recovery reflecting remote state
+        var initialPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var labelReady = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelReady, GitHubLabels.WorkflowReadyForReview);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(initialPr, new[] { labelReady });
+
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var labelInReview = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(labelInReview, GitHubLabels.WorkflowInReview);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, new[] { labelReady, labelInReview });
+
+        var getPrCalls = 0;
+        gitHub.GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromResult(++getPrCalls == 1 ? initialPr : freshPr));
+
+        // Recovery write: RemoveLabelAsync removes label from fake remote state
+        gitHub.RemoveLabelAsync("owner", "repo", 100, GitHubLabels.WorkflowReadyForReview, Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                remoteLabels.Remove(ci.ArgAt<string>(3));
+                return Task.CompletedTask;
+            });
+
+        // Pipeline execution should throw TaskCanceledException after executing recovery
+        var ex = await Assert.ThrowsAsync<TaskCanceledException>(() => pipeline.ExecuteAsync(context, callerCts.Token));
+        Assert.False(callerCts.IsCancellationRequested);
+
+        // Assert that recovery was entered and executed:
+        // 1. Initial lock refresh + recovery fetch = 2 calls to GetPullRequestAsync
+        await gitHub.Received(2).GetPullRequestAsync("owner", "repo", 100, Arg.Any<CancellationToken>());
+
+        // 2. Recovery performed removal of Workflow: Ready For Review
+        await gitHub.Received(1).RemoveLabelAsync("owner", "repo", 100, GitHubLabels.WorkflowReadyForReview, Arg.Any<CancellationToken>());
+
+        // 3. Fake remote state was reconciled: contains Workflow: In Review and NOT Workflow: Ready For Review
+        Assert.Contains(GitHubLabels.WorkflowInReview, remoteLabels);
+        Assert.DoesNotContain(GitHubLabels.WorkflowReadyForReview, remoteLabels);
+
+        // 4. Warning was logged indicating recovery commenced
         logger.ReceivedWithAnyArgs().Log(
             LogLevel.Warning,
             Arg.Any<EventId>(),
@@ -891,6 +1008,103 @@ public class PipelineAndModulesTests
         var results = await Task.WhenAll(tasks);
         Assert.All(results, r => Assert.Equal("Content of concurrent", r));
         await gitHub.Received(1).GetFileContentAsync("owner", "repo", "SPECS/Concurrent.spec", "sha123", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PullRequestContext_RefreshAsync_UpdatesAllPropertiesAndRefreshesExistingLabels()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var label = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(label, "Workflow: Ready For Review");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, new[] { label });
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, false);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Title))?.SetValue(freshPr, "Updated Title");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Body))?.SetValue(freshPr, "Updated Body");
+
+        var head = (GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(GitReference));
+        typeof(GitReference).GetProperty(nameof(GitReference.Sha))?.SetValue(head, "new-sha");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Head))?.SetValue(freshPr, head);
+
+        var baseRef = (GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(GitReference));
+        typeof(GitReference).GetProperty(nameof(GitReference.Ref))?.SetValue(baseRef, "target-branch");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Base))?.SetValue(freshPr, baseRef);
+
+        gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(freshPr));
+
+        var context = CreateMockContext(gitHub, prNumber: 42, existingLabels: new[] { "Stale: Label" });
+        await context.RefreshAsync();
+
+        Assert.Contains("Workflow: Ready For Review", context.ExistingLabels);
+        Assert.DoesNotContain("Stale: Label", context.ExistingLabels);
+        Assert.Equal("Updated Title", context.Title);
+        Assert.Equal("Updated Body", context.Body);
+        Assert.Equal("new-sha", context.HeadSha);
+        Assert.Equal("target-branch", context.BaseBranch);
+
+        var resolvedPr = await context.PullRequest.Value;
+        Assert.Same(freshPr, resolvedPr);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_RefreshAsync_HandlesReadyForReviewAction()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, true);
+
+        gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(freshPr));
+
+        var prEvent = (Octokit.Webhooks.Events.PullRequest.PullRequestReadyForReviewEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Events.PullRequest.PullRequestReadyForReviewEvent));
+        var pr = (Octokit.Webhooks.Models.PullRequestEvent.PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Models.PullRequestEvent.PullRequest));
+        typeof(Octokit.Webhooks.Events.PullRequestEvent).GetProperty(nameof(Octokit.Webhooks.Events.PullRequestEvent.PullRequest))?.SetValue(prEvent, pr);
+
+        var context = PullRequestContext.FromPullRequestEvent(gitHub, "captains", null, prEvent, Octokit.Webhooks.Events.PullRequest.PullRequestAction.ReadyForReview);
+        await context.RefreshAsync();
+
+        Assert.False(context.IsDraft);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_RefreshAsync_HandlesNullPrResponse()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<PullRequest>(null!));
+
+        var context = CreateMockContext(gitHub, prNumber: 42, existingLabels: new[] { "Original: Label" });
+        await context.RefreshAsync();
+
+        Assert.Contains("Original: Label", context.ExistingLabels);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_RefreshAsync_TransientFailure_PreservesWebhookPayload()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+            .Returns<PullRequest>(_ => throw new InvalidOperationException("Simulated API glitch"));
+
+        var context = CreateMockContext(gitHub, prNumber: 42, existingLabels: new[] { "Original: Label" });
+        await context.RefreshAsync();
+
+        Assert.Contains("Original: Label", context.ExistingLabels);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_RefreshAsync_Cancellation_ThrowsOperationCanceledException()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+            .Returns<PullRequest>(_ => throw new OperationCanceledException(cts.Token));
+
+        var context = CreateMockContext(gitHub, prNumber: 42);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => context.RefreshAsync(cts.Token));
     }
 
     #endregion

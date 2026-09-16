@@ -75,6 +75,10 @@ public class OrderedSet<T> : ISet<T>, IReadOnlyCollection<T>
 
     public void UnionWith(IEnumerable<T> other)
     {
+        ArgumentNullException.ThrowIfNull(other);
+        if (ReferenceEquals(this, other))
+            return;
+
         foreach (var item in other)
         {
             Add(item);
@@ -83,6 +87,10 @@ public class OrderedSet<T> : ISet<T>, IReadOnlyCollection<T>
 
     public void IntersectWith(IEnumerable<T> other)
     {
+        ArgumentNullException.ThrowIfNull(other);
+        if (ReferenceEquals(this, other))
+            return;
+
         var otherSet = new HashSet<T>(other, _comparer);
         _set.IntersectWith(otherSet);
         _list.RemoveAll(item => !otherSet.Contains(item));
@@ -90,7 +98,15 @@ public class OrderedSet<T> : ISet<T>, IReadOnlyCollection<T>
 
     public void ExceptWith(IEnumerable<T> other)
     {
-        foreach (var item in other)
+        ArgumentNullException.ThrowIfNull(other);
+        if (ReferenceEquals(this, other))
+        {
+            Clear();
+            return;
+        }
+
+        var otherSet = new HashSet<T>(other, _comparer);
+        foreach (var item in otherSet)
         {
             Remove(item);
         }
@@ -98,11 +114,19 @@ public class OrderedSet<T> : ISet<T>, IReadOnlyCollection<T>
 
     public void SymmetricExceptWith(IEnumerable<T> other)
     {
-        foreach (var item in other)
+        ArgumentNullException.ThrowIfNull(other);
+        if (ReferenceEquals(this, other))
         {
-            if (!Add(item))
+            Clear();
+            return;
+        }
+
+        var otherSet = new HashSet<T>(other, _comparer);
+        foreach (var item in otherSet)
+        {
+            if (!Remove(item))
             {
-                Remove(item);
+                Add(item);
             }
         }
     }

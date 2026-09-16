@@ -326,6 +326,39 @@ public class GitHubWebhookProcessorTests
     }
 
     [Fact]
+    public async Task ConsecutiveEventsWithStalePayloads_RefreshesRemoteLabelsAndAvoidsCompetingWorkflowLabels()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+
+        // Event 1: Opened event arrives with no workflow labels in payload
+        var openedPayload = CreatePREvent<PullRequestOpenedEvent>(
+            draft: false,
+            title: "Feature: New feature",
+            labels: Array.Empty<string>());
+
+        await processor.ProcessPullRequestAsync(openedPayload, PullRequestAction.Opened);
+
+        // After opened event, remote state should carry Workflow: Ready For Review
+        Assert.Contains(GitHubLabels.WorkflowReadyForReview, github.RemoteLabels);
+        Assert.DoesNotContain(GitHubLabels.WorkflowInDev, github.RemoteLabels);
+
+        // Event 2: Converted to draft arrives shortly after, but still carries stale payload with NO workflow labels
+        var draftPayload = CreatePREvent<PullRequestConvertedToDraftEvent>(
+            draft: true,
+            title: "Feature: New feature",
+            labels: Array.Empty<string>());
+
+        await processor.ProcessPullRequestAsync(draftPayload, PullRequestAction.ConvertedToDraft);
+
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"add:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+        // Final remote labels must only carry Workflow: In Dev, and NOT Workflow: Ready For Review
+        Assert.Contains(GitHubLabels.WorkflowInDev, github.RemoteLabels);
+        Assert.DoesNotContain(GitHubLabels.WorkflowReadyForReview, github.RemoteLabels);
+    }
+
+    [Fact]
     public async Task UnhandledPrActionDoesNothing()
     {
         var github = new FakeGitHubService();
@@ -1161,6 +1194,8 @@ public class GitHubWebhookProcessorTests
     {
         public List<string> LabelOperations { get; } = new();
 
+        public HashSet<string> RemoteLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
+
         public OctokitPullRequest PullRequest { get; set; } = new();
 
         public HashSet<string> TeamMembers { get; } = new(StringComparer.OrdinalIgnoreCase)
@@ -1202,6 +1237,10 @@ public class GitHubWebhookProcessorTests
             string owner, string repo, int issueNumber, string[] labels, CancellationToken cancellationToken = default)
         {
             LabelOperations.AddRange(labels.Select(label => $"add:{label}"));
+            foreach (var label in labels)
+            {
+                RemoteLabels.Add(label);
+            }
             return Task.CompletedTask;
         }
 
@@ -1209,6 +1248,7 @@ public class GitHubWebhookProcessorTests
             string owner, string repo, int issueNumber, string label, CancellationToken cancellationToken = default)
         {
             LabelOperations.Add($"remove:{label}");
+            RemoteLabels.Remove(label);
             return Task.CompletedTask;
         }
 
@@ -1221,6 +1261,25 @@ public class GitHubWebhookProcessorTests
         public Task<OctokitPullRequest> GetPullRequestAsync(
             string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
         {
+            if (RemoteLabels.Count > 0)
+            {
+                var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
+                var labelObjs = RemoteLabels.Select(name =>
+                {
+                    var l = (Octokit.Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Label));
+                    typeof(Octokit.Label).GetProperty(nameof(Octokit.Label.Name))?.SetValue(l, name);
+                    return l;
+                }).ToArray();
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Labels))?.SetValue(pr, labelObjs);
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Draft))?.SetValue(pr, PullRequest.Draft);
+                if (PullRequest.Merged)
+                {
+                    typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.MergedAt))?.SetValue(pr, (DateTimeOffset?)DateTimeOffset.UtcNow);
+                }
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.State))?.SetValue(pr, PullRequest.State);
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Title))?.SetValue(pr, PullRequest.Title);
+                return Task.FromResult(pr);
+            }
             return Task.FromResult(PullRequest);
         }
     }

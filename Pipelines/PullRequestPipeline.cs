@@ -57,6 +57,11 @@ public class PullRequestPipeline
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Refresh PR state and labels after lock acquisition to ensure workflow decisions
+        // and diff calculations evaluate against fresh remote state rather than stale payloads.
+        await context.RefreshAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
         foreach (var module in _modules)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -88,16 +93,17 @@ public class PullRequestPipeline
         }
         catch (Exception ex)
         {
-            // If cancellation is requested before any writes succeeded, fail-fast without attempting recovery.
-            if ((ex is OperationCanceledException || cancellationToken.IsCancellationRequested) && tracker.CompletedWrites == 0)
+            // If cancellation is requested before any write attempt was sent to GitHub,
+            // fail-fast without attempting recovery because remote state has not been touched.
+            if ((ex is OperationCanceledException || cancellationToken.IsCancellationRequested) && tracker.AttemptedWrites == 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 throw;
             }
 
             _logger?.LogWarning(ex,
-                "Partial label write failure or cancellation on pull request {Owner}/{Repo}#{PrNumber} after {Completed} writes. Commencing automated recovery.",
-                context.Owner, context.Repo, context.PrNumber, tracker.CompletedWrites);
+                "Partial label write failure or cancellation on pull request {Owner}/{Repo}#{PrNumber} after {Attempted} attempted ({Completed} completed) writes. Commencing automated recovery.",
+                context.Owner, context.Repo, context.PrNumber, tracker.AttemptedWrites, tracker.CompletedWrites);
 
             // Recovery plan for partial writes or API failures:
             // Fetch fresh labels from GitHub, recalculate diff, and retry the remaining operations.
@@ -124,8 +130,8 @@ public class PullRequestPipeline
                 if (ex is OperationCanceledException || cancellationToken.IsCancellationRequested)
                 {
                     _logger?.LogWarning(
-                        "Pipeline cancelled after {InitialWrites} writes (recovery applied {RecoveryWrites} writes) for pull request {Owner}/{Repo}#{PrNumber}; automated recovery successfully reconciled state. Re-throwing cancellation.",
-                        tracker.CompletedWrites, recoveryTracker.CompletedWrites, context.Owner, context.Repo, context.PrNumber);
+                        "Pipeline cancelled after {AttemptedWrites} attempted writes (recovery applied {RecoveryWrites} writes) for pull request {Owner}/{Repo}#{PrNumber}; automated recovery successfully reconciled state. Re-throwing cancellation.",
+                        tracker.AttemptedWrites, recoveryTracker.CompletedWrites, context.Owner, context.Repo, context.PrNumber);
                     cancellationToken.ThrowIfCancellationRequested();
                     throw;
                 }
@@ -148,7 +154,7 @@ public class PullRequestPipeline
                 if (ex is OperationCanceledException || cancellationToken.IsCancellationRequested)
                 {
                     throw new AggregateException(
-                        $"Pipeline cancelled after {tracker.CompletedWrites} writes and recovery attempt failed.",
+                        $"Pipeline cancelled after {tracker.AttemptedWrites} attempted writes and recovery attempt failed.",
                         ex, recoveryEx);
                 }
 
@@ -161,6 +167,7 @@ public class PullRequestPipeline
 
     private sealed class WriteTracker
     {
+        public int AttemptedWrites;
         public int CompletedWrites;
     }
 
@@ -169,6 +176,7 @@ public class PullRequestPipeline
         if (diff.LabelsToAdd.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            tracker.AttemptedWrites++;
             await _gitHubService.AddLabelsAsync(
                 context.Owner,
                 context.Repo,
@@ -181,6 +189,7 @@ public class PullRequestPipeline
         foreach (var label in diff.LabelsToRemove)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            tracker.AttemptedWrites++;
             await _gitHubService.RemoveLabelAsync(
                 context.Owner,
                 context.Repo,

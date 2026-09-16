@@ -151,4 +151,46 @@ public class OrderedSetTests
         col.Add("four");
         Assert.Contains("four", set);
     }
+
+    [Fact]
+    public void SymmetricExceptWith_WithDuplicateInputs_YieldsCorrectSymmetricDifference()
+    {
+        var emptySet = new OrderedSet<string>();
+        emptySet.SymmetricExceptWith(new[] { "CI", "CI" });
+        Assert.Equal(new[] { "CI" }, emptySet);
+
+        var existingSet = new OrderedSet<string> { "CI" };
+        existingSet.SymmetricExceptWith(new[] { "CI", "CI" });
+        Assert.Empty(existingSet);
+    }
+
+    [Fact]
+    public void SetOperations_WithSelf_ExecuteSafelyWithoutModifyingEnumeratedCollection()
+    {
+        var set1 = new OrderedSet<string> { "a", "b", "c" };
+        set1.ExceptWith(set1);
+        Assert.Empty(set1);
+
+        var set2 = new OrderedSet<string> { "a", "b", "c" };
+        set2.SymmetricExceptWith(set2);
+        Assert.Empty(set2);
+
+        var set3 = new OrderedSet<string> { "a", "b", "c" };
+        set3.UnionWith(set3);
+        Assert.Equal(new[] { "a", "b", "c" }, set3);
+
+        var set4 = new OrderedSet<string> { "a", "b", "c" };
+        set4.IntersectWith(set4);
+        Assert.Equal(new[] { "a", "b", "c" }, set4);
+    }
+
+    [Fact]
+    public void SetOperations_WithNullOther_ThrowsArgumentNullException()
+    {
+        var set = new OrderedSet<string> { "a" };
+        Assert.Throws<ArgumentNullException>(() => set.UnionWith(null!));
+        Assert.Throws<ArgumentNullException>(() => set.IntersectWith(null!));
+        Assert.Throws<ArgumentNullException>(() => set.ExceptWith(null!));
+        Assert.Throws<ArgumentNullException>(() => set.SymmetricExceptWith(null!));
+    }
 }

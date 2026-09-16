@@ -1,4 +1,5 @@
 using Octokit;
+using Octokit.Internal;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -7,6 +8,8 @@ namespace abaci_bot.Services;
 
 public class GitHubService : IGitHubService
 {
+    private static readonly AsyncLocal<CancellationToken> _ambientCancellationToken = new();
+
     private readonly int _appId;
     private readonly string _privateKey;
     private readonly long _installationId;
@@ -15,7 +18,17 @@ public class GitHubService : IGitHubService
     private readonly SemaphoreSlim _authLock = new(1, 1);
 
     public GitHubService(int appId, string privateKey, long installationId)
-        : this(appId, privateKey, installationId, new GitHubClient(new ProductHeaderValue("abaci-bot")))
+        : this(appId, privateKey, installationId, CreateDefaultClient())
+    {
+    }
+
+    internal GitHubService(int appId, string privateKey, long installationId, Octokit.Internal.IHttpClient httpClient)
+        : this(appId, privateKey, installationId, CreateClientWithTransport(httpClient))
+    {
+    }
+
+    internal GitHubService(int appId, string privateKey, long installationId, HttpMessageHandler httpMessageHandler)
+        : this(appId, privateKey, installationId, new HttpClientAdapter(() => httpMessageHandler))
     {
     }
 
@@ -27,9 +40,38 @@ public class GitHubService : IGitHubService
         _client = client;
     }
 
+    private static IGitHubClient CreateDefaultClient()
+    {
+        var adapter = new HttpClientAdapter(() => new HttpClientHandler());
+        return CreateClientWithTransport(adapter);
+    }
+
+    private static IGitHubClient CreateClientWithTransport(Octokit.Internal.IHttpClient httpClient)
+    {
+        var productHeader = new ProductHeaderValue("abaci-bot");
+        var cancellable = new CancellableHttpClient(httpClient, () => _ambientCancellationToken.Value);
+        var connection = new Connection(productHeader, cancellable);
+        return new GitHubClient(connection);
+    }
+
+    private static IDisposable SetAmbientToken(CancellationToken cancellationToken)
+    {
+        var prior = _ambientCancellationToken.Value;
+        _ambientCancellationToken.Value = cancellationToken;
+        return new TokenScope(prior);
+    }
+
+    private sealed class TokenScope : IDisposable
+    {
+        private readonly CancellationToken _prior;
+        public TokenScope(CancellationToken prior) => _prior = prior;
+        public void Dispose() => _ambientCancellationToken.Value = _prior;
+    }
+
     // Ensures the GitHub client has a valid installation access token before API calls.
     private async Task EnsureAuthenticatedAsync(CancellationToken cancellationToken = default)
     {
+        using var _ = SetAmbientToken(cancellationToken);
         if (_tokenExpiry > DateTimeOffset.UtcNow.AddMinutes(5))
             return;
 
@@ -95,6 +137,7 @@ public class GitHubService : IGitHubService
     public async Task<IReadOnlyList<PullRequestFile>> GetPullRequestFilesAsync(
         string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
     {
+        using var _ = SetAmbientToken(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await EnsureAuthenticatedAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -104,6 +147,7 @@ public class GitHubService : IGitHubService
     public async Task<string?> GetPullRequestAuthorEmailAsync(
         string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
     {
+        using var _ = SetAmbientToken(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await EnsureAuthenticatedAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -120,6 +164,7 @@ public class GitHubService : IGitHubService
     public async Task<string> GetFileContentAsync(
         string owner, string repo, string path, string sha, CancellationToken cancellationToken = default)
     {
+        using var _ = SetAmbientToken(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await EnsureAuthenticatedAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -130,6 +175,7 @@ public class GitHubService : IGitHubService
     public async Task AddLabelsAsync(
         string owner, string repo, int issueNumber, string[] labels, CancellationToken cancellationToken = default)
     {
+        using var _ = SetAmbientToken(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await EnsureAuthenticatedAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -139,6 +185,7 @@ public class GitHubService : IGitHubService
     public async Task RemoveLabelAsync(
         string owner, string repo, int issueNumber, string label, CancellationToken cancellationToken = default)
     {
+        using var _ = SetAmbientToken(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await EnsureAuthenticatedAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -152,6 +199,7 @@ public class GitHubService : IGitHubService
     public async Task<HashSet<string>> GetTeamMembersAsync(
         string owner, string teamName, CancellationToken cancellationToken = default)
     {
+        using var _ = SetAmbientToken(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await EnsureAuthenticatedAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -163,6 +211,7 @@ public class GitHubService : IGitHubService
     // Add more GitHub API methods as needed.
     public async Task<PullRequest> GetPullRequestAsync(string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
     {
+        using var _ = SetAmbientToken(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await EnsureAuthenticatedAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();

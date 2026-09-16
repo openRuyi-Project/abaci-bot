@@ -63,32 +63,37 @@ public class PullRequestContext
     /// <summary>
     /// Git commit SHA of the pull request HEAD.
     /// </summary>
-    public string HeadSha { get; }
+    public string HeadSha { get; private set; }
 
     /// <summary>
     /// Target (base) branch of the pull request, if available.
     /// </summary>
-    public string? BaseBranch { get; }
+    public string? BaseBranch { get; private set; }
 
     /// <summary>
     /// Indicates whether the pull request is currently marked as draft.
     /// </summary>
-    public bool IsDraft { get; }
+    public bool IsDraft { get; private set; }
 
     /// <summary>
     /// Indicates whether the pull request has been merged. Null if not closed or not applicable.
     /// </summary>
-    public bool? IsMerged { get; }
+    public bool? IsMerged { get; private set; }
+
+    /// <summary>
+    /// The remote pull request state string (e.g. "open", "closed") from the authoritative PR entity.
+    /// </summary>
+    public string? RemoteState { get; private set; }
 
     /// <summary>
     /// Title of the pull request or associated issue.
     /// </summary>
-    public string Title { get; }
+    public string Title { get; private set; }
 
     /// <summary>
     /// Description body of the pull request or comment content.
     /// </summary>
-    public string? Body { get; }
+    public string? Body { get; private set; }
 
     /// <summary>
     /// Username of the sender who triggered this webhook action.
@@ -155,7 +160,7 @@ public class PullRequestContext
     /// <summary>
     /// Lazily fetches the full pull request entity when needed (e.g. from comment webhooks).
     /// </summary>
-    public Lazy<Task<PullRequest>> PullRequest { get; }
+    public Lazy<Task<PullRequest>> PullRequest { get; private set; }
 
     /// <summary>
     /// Labels present on the pull request at the moment this webhook event occurred.
@@ -173,6 +178,7 @@ public class PullRequestContext
     public bool IsClosed =>
         IsMerged == true ||
         PullRequestAction == Octokit.Webhooks.Events.PullRequest.PullRequestAction.Closed ||
+        string.Equals(RemoteState, "closed", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(PullRequestEvent?.PullRequest?.State?.StringValue, "closed", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(PullRequestReviewEvent?.PullRequest?.State?.StringValue, "closed", StringComparison.OrdinalIgnoreCase);
 
@@ -252,6 +258,7 @@ public class PullRequestContext
         PullRequestEvent = prEvent;
         PullRequestReviewEvent = reviewEvent;
         IssueCommentEvent = commentEvent;
+        RemoteState = prEvent?.PullRequest?.State?.StringValue ?? reviewEvent?.PullRequest?.State?.StringValue;
 
         ExistingLabels = new HashSet<string>(existingLabels, StringComparer.OrdinalIgnoreCase);
 
@@ -430,5 +437,69 @@ public class PullRequestContext
                 () => _gitHubService.GetFileContentAsync(Owner, Repo, path, targetSha, token),
                 LazyThreadSafetyMode.ExecutionAndPublication)
         ).Value;
+    }
+
+    /// <summary>
+    /// Refreshes the pull request state and existing labels from GitHub after acquiring the concurrency lock.
+    /// Ensures that modules and mutex calculation evaluate against current remote state rather than stale webhook payloads.
+    /// </summary>
+    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    {
+        var token = cancellationToken != default ? cancellationToken : CancellationToken;
+        PullRequest? freshPr;
+        try
+        {
+            freshPr = await _gitHubService.GetPullRequestAsync(Owner, Repo, PrNumber, token);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // If remote refresh fails due to transient error, fall back to webhook payload state
+            return;
+        }
+
+        if (freshPr == null)
+            return;
+
+        if (freshPr.Labels != null)
+        {
+            ExistingLabels.Clear();
+            foreach (var label in freshPr.Labels)
+            {
+                if (!string.IsNullOrWhiteSpace(label.Name))
+                {
+                    ExistingLabels.Add(label.Name);
+                }
+            }
+        }
+
+        if (PullRequestAction == Octokit.Webhooks.Events.PullRequest.PullRequestAction.ConvertedToDraft)
+        {
+            IsDraft = true;
+        }
+        else if (PullRequestAction == Octokit.Webhooks.Events.PullRequest.PullRequestAction.ReadyForReview)
+        {
+            IsDraft = false;
+        }
+        else
+        {
+            IsDraft = IsDraft || freshPr.Draft;
+        }
+
+        IsMerged = (IsMerged == true) || freshPr.Merged;
+        RemoteState = freshPr.State.StringValue;
+        if (!string.IsNullOrEmpty(freshPr.Title))
+            Title = freshPr.Title;
+        if (freshPr.Body != null)
+            Body = freshPr.Body;
+        if (!string.IsNullOrEmpty(freshPr.Head?.Sha))
+            HeadSha = freshPr.Head.Sha;
+        if (!string.IsNullOrEmpty(freshPr.Base?.Ref))
+            BaseBranch = freshPr.Base.Ref;
+
+        PullRequest = new Lazy<Task<PullRequest>>(() => Task.FromResult(freshPr));
     }
 }
