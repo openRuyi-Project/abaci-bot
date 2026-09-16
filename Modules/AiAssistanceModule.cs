@@ -30,7 +30,7 @@ public class AiAssistanceModule : IPullRequestModule
                 context.PullRequestAction == PullRequestAction.Edited);
     }
 
-    public Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken = default)
+    public Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
         // The pull request description is the source of truth for AI assistance.
         // When checked, apply the label; otherwise, ensure it is removed.

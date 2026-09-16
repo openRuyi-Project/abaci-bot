@@ -28,7 +28,7 @@ public class BuildSystemAnalysisModule : IPullRequestModule
                 context.PullRequestAction == PullRequestAction.ReadyForReview);
     }
 
-    public async Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken = default)
+    public async Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
         var files = await context.ChangedFiles.Value;
 

@@ -442,8 +442,9 @@ public class PullRequestContext
     /// <summary>
     /// Refreshes the pull request state and existing labels from GitHub after acquiring the concurrency lock.
     /// Ensures that modules and mutex calculation evaluate against current remote state rather than stale webhook payloads.
+    /// Returns true if remote state was refreshed successfully; false if a transient failure occurred and payload state was retained.
     /// </summary>
-    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    public async Task<bool> RefreshAsync(CancellationToken cancellationToken = default)
     {
         var token = cancellationToken != default ? cancellationToken : CancellationToken;
         PullRequest? freshPr;
@@ -455,14 +456,14 @@ public class PullRequestContext
         {
             throw;
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // If remote refresh fails due to transient error, fall back to webhook payload state
-            return;
+            return false;
         }
 
         if (freshPr == null)
-            return;
+            return false;
 
         if (freshPr.Labels != null)
         {
@@ -486,6 +487,9 @@ public class PullRequestContext
         }
         else
         {
+            // Bias towards draft: if either webhook payload or authoritative remote state indicates draft,
+            // treat as draft to prevent stale payload or unpropagated API replication from clearing draft state.
+            // Explicit transitions to non-draft are governed by the ReadyForReview action above.
             IsDraft = IsDraft || freshPr.Draft;
         }
 
@@ -493,7 +497,7 @@ public class PullRequestContext
         RemoteState = freshPr.State.StringValue;
         if (!string.IsNullOrEmpty(freshPr.Title))
             Title = freshPr.Title;
-        if (freshPr.Body != null)
+        if (EventType != PullRequestEventType.IssueComment && freshPr.Body != null)
             Body = freshPr.Body;
         if (!string.IsNullOrEmpty(freshPr.Head?.Sha))
             HeadSha = freshPr.Head.Sha;
@@ -501,5 +505,6 @@ public class PullRequestContext
             BaseBranch = freshPr.Base.Ref;
 
         PullRequest = new Lazy<Task<PullRequest>>(() => Task.FromResult(freshPr));
+        return true;
     }
 }

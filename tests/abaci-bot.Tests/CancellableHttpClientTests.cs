@@ -55,6 +55,36 @@ public class CancellableHttpClientTests
         using var paramCts = new CancellationTokenSource();
 
         CancellationToken capturedToken = default;
+        var wasCancelledInFlight = false;
+        inner.Send(request, Arg.Any<CancellationToken>(), Arg.Any<Func<object, object>>())
+            .Returns(ci =>
+            {
+                capturedToken = ci.Arg<CancellationToken>();
+                Assert.True(capturedToken.CanBeCanceled);
+                Assert.False(capturedToken.IsCancellationRequested);
+
+                ambientCts.Cancel();
+                wasCancelledInFlight = capturedToken.IsCancellationRequested;
+                return Task.FromResult(Substitute.For<IResponse>());
+            });
+
+        var client = new CancellableHttpClient(inner, () => ambientCts.Token);
+        Func<object, object> preprocess = o => o;
+
+        await client.Send(request, paramCts.Token, preprocess);
+
+        Assert.True(wasCancelledInFlight);
+    }
+
+    [Fact]
+    public async Task Send_DisposesLinkedTokenSource_WhenBothTokensCanBeCanceled()
+    {
+        var inner = Substitute.For<IHttpClient>();
+        var request = Substitute.For<IRequest>();
+        using var ambientCts = new CancellationTokenSource();
+        using var paramCts = new CancellationTokenSource();
+
+        CancellationToken capturedToken = default;
         inner.Send(request, Arg.Any<CancellationToken>(), Arg.Any<Func<object, object>>())
             .Returns(ci =>
             {
@@ -67,12 +97,9 @@ public class CancellableHttpClientTests
 
         await client.Send(request, paramCts.Token, preprocess);
 
-        Assert.True(capturedToken.CanBeCanceled);
-        Assert.False(capturedToken.IsCancellationRequested);
-
-        ambientCts.Cancel();
-        Assert.True(capturedToken.IsCancellationRequested);
+        Assert.Throws<ObjectDisposedException>(() => capturedToken.WaitHandle);
     }
+
 
     [Fact]
     public void SetRequestTimeout_DelegatesToInner()

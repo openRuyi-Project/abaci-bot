@@ -29,7 +29,7 @@ public class UserContributionModule : IPullRequestModule
                 context.PullRequestAction == PullRequestAction.ReadyForReview);
     }
 
-    public async Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken = default)
+    public async Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
         var userEmail = await context.AuthorEmail.Value;
         var domain = GitHubWebhookProcessor.ExtractEmailDomain(userEmail);

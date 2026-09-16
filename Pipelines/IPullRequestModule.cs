@@ -29,5 +29,5 @@ public interface IPullRequestModule
     /// Evaluates domain rules against the context and records desired additions or removals in
     /// <see cref="PullRequestContext.LabelsToAdd"/> and <see cref="PullRequestContext.LabelsToRemove"/>.
     /// </summary>
-    Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken = default);
+    Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken);
 }

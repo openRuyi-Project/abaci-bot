@@ -20,14 +20,17 @@ public sealed class CancellableHttpClient : IHttpClient
         _tokenAccessor = tokenAccessor ?? throw new ArgumentNullException(nameof(tokenAccessor));
     }
 
-    public Task<IResponse> Send(IRequest request, CancellationToken cancellationToken, Func<object, object> preprocessResponseBody)
+    public async Task<IResponse> Send(IRequest request, CancellationToken cancellationToken, Func<object, object> preprocessResponseBody)
     {
         var ambientToken = _tokenAccessor();
-        var effectiveToken = ambientToken.CanBeCanceled
-            ? (cancellationToken.CanBeCanceled ? CancellationTokenSource.CreateLinkedTokenSource(ambientToken, cancellationToken).Token : ambientToken)
-            : cancellationToken;
+        if (!ambientToken.CanBeCanceled)
+            return await _inner.Send(request, cancellationToken, preprocessResponseBody);
 
-        return _inner.Send(request, effectiveToken, preprocessResponseBody);
+        if (!cancellationToken.CanBeCanceled)
+            return await _inner.Send(request, ambientToken, preprocessResponseBody);
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ambientToken, cancellationToken);
+        return await _inner.Send(request, linkedCts.Token, preprocessResponseBody);
     }
 
     public void SetRequestTimeout(TimeSpan timeout)

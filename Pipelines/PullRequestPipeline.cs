@@ -59,7 +59,12 @@ public class PullRequestPipeline
 
         // Refresh PR state and labels after lock acquisition to ensure workflow decisions
         // and diff calculations evaluate against fresh remote state rather than stale payloads.
-        await context.RefreshAsync(cancellationToken);
+        if (!await context.RefreshAsync(cancellationToken))
+        {
+            _logger?.LogWarning(
+                "Post-lock refresh failed for {Owner}/{Repo}#{PrNumber}; falling back to webhook payload labels.",
+                context.Owner, context.Repo, context.PrNumber);
+        }
         cancellationToken.ThrowIfCancellationRequested();
 
         foreach (var module in _modules)
@@ -75,6 +80,10 @@ public class PullRequestPipeline
             try
             {
                 await module.ProcessAsync(context, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {

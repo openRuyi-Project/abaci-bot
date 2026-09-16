@@ -897,6 +897,57 @@ public class PipelineAndModulesTests
     }
 
     [Fact]
+    public async Task PullRequestPipeline_PostLockRefreshFails_LogsWarningAndFallsBackToPayload()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+
+        var gitHub = Substitute.For<IGitHubService>();
+        gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+            .Returns<PullRequest>(_ => throw new HttpRequestException("Simulated API failure"));
+
+        var logger = Substitute.For<ILogger<PullRequestPipeline>>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub, logger);
+        var context = CreateMockContext(gitHub, prNumber: 42, existingLabels: new[] { "Existing: Label" });
+
+        await pipeline.ExecuteAsync(context, CancellationToken.None);
+
+        logger.ReceivedWithAnyArgs().Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Post-lock refresh failed")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_ModuleCancellation_RethrowsWithoutLoggingError()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new OperationCanceledException());
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var logger = Substitute.For<ILogger<PullRequestPipeline>>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub, logger);
+        var context = CreateMockContext(gitHub, prNumber: 42);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pipeline.ExecuteAsync(context, CancellationToken.None));
+
+        logger.DidNotReceive().Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
     public async Task GitHubWebhookProcessor_Cancellation_ReleasesPullRequestLock()
     {
         var lockManager = new PullRequestLockManager();
@@ -1034,8 +1085,9 @@ public class PipelineAndModulesTests
             .Returns(Task.FromResult(freshPr));
 
         var context = CreateMockContext(gitHub, prNumber: 42, existingLabels: new[] { "Stale: Label" });
-        await context.RefreshAsync();
+        var refreshed = await context.RefreshAsync();
 
+        Assert.True(refreshed);
         Assert.Contains("Workflow: Ready For Review", context.ExistingLabels);
         Assert.DoesNotContain("Stale: Label", context.ExistingLabels);
         Assert.Equal("Updated Title", context.Title);
@@ -1054,7 +1106,7 @@ public class PipelineAndModulesTests
         var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
         typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, true);
 
-        gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+        gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(freshPr));
 
         var prEvent = (Octokit.Webhooks.Events.PullRequest.PullRequestReadyForReviewEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Events.PullRequest.PullRequestReadyForReviewEvent));
@@ -1062,9 +1114,56 @@ public class PipelineAndModulesTests
         typeof(Octokit.Webhooks.Events.PullRequestEvent).GetProperty(nameof(Octokit.Webhooks.Events.PullRequestEvent.PullRequest))?.SetValue(prEvent, pr);
 
         var context = PullRequestContext.FromPullRequestEvent(gitHub, "captains", null, prEvent, Octokit.Webhooks.Events.PullRequest.PullRequestAction.ReadyForReview);
-        await context.RefreshAsync();
+        var refreshed = await context.RefreshAsync();
 
+        Assert.True(refreshed);
         Assert.False(context.IsDraft);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_RefreshAsync_SynchronizeAction_BiasesTowardsRemoteDraftStatus()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, true);
+
+        gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(freshPr));
+
+        var context = CreateMockContext(
+            gitHub,
+            prNumber: 42,
+            isDraft: false,
+            action: nameof(WebhookPullRequestAction.Synchronize),
+            prAction: WebhookPullRequestAction.Synchronize);
+        Assert.False(context.IsDraft);
+
+        var refreshed = await context.RefreshAsync();
+        Assert.True(refreshed);
+        Assert.True(context.IsDraft);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_RefreshAsync_IssueCommentEvent_DoesNotOverwriteCommentBody()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Body))?.SetValue(freshPr, "PR description body");
+
+        gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(freshPr));
+
+        var context = CreateMockContext(
+            gitHub,
+            prNumber: 42,
+            body: "/lgtm comment command",
+            eventType: PullRequestEventType.IssueComment,
+            action: "created");
+        Assert.Equal("/lgtm comment command", context.Body);
+
+        var refreshed = await context.RefreshAsync();
+        Assert.True(refreshed);
+        Assert.Equal("/lgtm comment command", context.Body);
     }
 
     [Fact]
@@ -1075,8 +1174,9 @@ public class PipelineAndModulesTests
             .Returns(Task.FromResult<PullRequest>(null!));
 
         var context = CreateMockContext(gitHub, prNumber: 42, existingLabels: new[] { "Original: Label" });
-        await context.RefreshAsync();
+        var refreshed = await context.RefreshAsync();
 
+        Assert.False(refreshed);
         Assert.Contains("Original: Label", context.ExistingLabels);
     }
 
@@ -1088,8 +1188,9 @@ public class PipelineAndModulesTests
             .Returns<PullRequest>(_ => throw new InvalidOperationException("Simulated API glitch"));
 
         var context = CreateMockContext(gitHub, prNumber: 42, existingLabels: new[] { "Original: Label" });
-        await context.RefreshAsync();
+        var refreshed = await context.RefreshAsync();
 
+        Assert.False(refreshed);
         Assert.Contains("Original: Label", context.ExistingLabels);
     }
 
@@ -1189,7 +1290,7 @@ public class PipelineAndModulesTests
             .Returns(staffEmail);
 
         var context = CreateMockContext(gitHub);
-        await module.ProcessAsync(context);
+        await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Empty(context.LabelsToAdd);
     }
@@ -1207,7 +1308,7 @@ public class PipelineAndModulesTests
             .Returns(invalidEmail);
 
         var context = CreateMockContext(gitHub);
-        await module.ProcessAsync(context);
+        await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Empty(context.LabelsToAdd);
     }
@@ -1226,7 +1327,7 @@ public class PipelineAndModulesTests
             .Returns(new List<PullRequestFile> { removedFile });
 
         var context = CreateMockContext(gitHub);
-        await module.ProcessAsync(context);
+        await module.ProcessAsync(context, CancellationToken.None);
 
         await gitHub.DidNotReceiveWithAnyArgs().GetFileContentAsync(default!, default!, default!, default!);
         Assert.DoesNotContain(context.LabelsToAdd, l => l.StartsWith("BuildSystem:"));
@@ -1246,7 +1347,7 @@ public class PipelineAndModulesTests
             .Returns(new List<PullRequestFile> { regularFile });
 
         var context = CreateMockContext(gitHub);
-        await module.ProcessAsync(context);
+        await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.DoesNotContain(context.LabelsToAdd, l => l.StartsWith("BuildSystem:"));
     }
@@ -1261,7 +1362,7 @@ public class PipelineAndModulesTests
         var gitHub = Substitute.For<IGitHubService>();
         var context = CreateMockContext(gitHub, body: body);
 
-        await module.ProcessAsync(context);
+        await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Contains(GitHubLabels.AiAssistance, context.LabelsToRemove);
         Assert.DoesNotContain(GitHubLabels.AiAssistance, context.LabelsToAdd);
@@ -1295,7 +1396,7 @@ public class PipelineAndModulesTests
             existingLabels: new[] { GitHubLabels.WorkflowReadyForReview },
             reviewAction: WebhookPullRequestReviewAction.Submitted);
 
-        await module.ProcessAsync(context);
+        await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.DoesNotContain(GitHubLabels.WorkflowInReview, context.LabelsToAdd);
     }
@@ -1328,7 +1429,7 @@ public class PipelineAndModulesTests
             existingLabels: new[] { GitHubLabels.CommitsUpdated },
             reviewAction: WebhookPullRequestReviewAction.Submitted);
 
-        await module.ProcessAsync(context);
+        await module.ProcessAsync(context, CancellationToken.None);
 
         // When captain is the author, their review does NOT acknowledge Commits: Updated
         Assert.DoesNotContain(GitHubLabels.CommitsUpdated, context.LabelsToRemove);
@@ -1371,7 +1472,7 @@ public class PipelineAndModulesTests
             prAction: WebhookPullRequestAction.Unlabeled,
             prEvent: unlabeledEvent);
 
-        await module.ProcessAsync(context);
+        await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.DoesNotContain(GitHubLabels.WorkflowInReview, context.LabelsToAdd);
     }
@@ -1393,7 +1494,7 @@ public class PipelineAndModulesTests
         var commentEvent = CreateCommentEvent(sender: "CaptainAlice", isPr: true);
         var commentContext = PullRequestContext.FromIssueCommentEvent(gitHub, "captains", null, commentEvent, WebhookIssueCommentAction.Created);
 
-        await module.ProcessAsync(commentContext);
+        await module.ProcessAsync(commentContext, CancellationToken.None);
         Assert.DoesNotContain(GitHubLabels.WorkflowInReview, commentContext.LabelsToAdd);
 
         // 2. Captain review on closed PR (with Workflow: Complete label)
@@ -1419,7 +1520,7 @@ public class PipelineAndModulesTests
             reviewAction: WebhookPullRequestReviewAction.Submitted,
             reviewEvent: reviewEvent);
 
-        await module.ProcessAsync(reviewContext);
+        await module.ProcessAsync(reviewContext, CancellationToken.None);
         Assert.DoesNotContain(GitHubLabels.WorkflowInReview, reviewContext.LabelsToAdd);
     }
 
@@ -1464,7 +1565,7 @@ public class PipelineAndModulesTests
             prAction: WebhookPullRequestAction.Closed,
             prEvent: mergePrEvent);
 
-        await module.ProcessAsync(mergeContext);
+        await module.ProcessAsync(mergeContext, CancellationToken.None);
 
         // Diff after merge event
         var mergeDiff = mutexEngine.ComputeDiff(initialLabels, mergeContext.LabelsToAdd, mergeContext.LabelsToRemove);
@@ -1509,7 +1610,7 @@ public class PipelineAndModulesTests
             prAction: WebhookPullRequestAction.Unlabeled,
             prEvent: unlabeledEvent);
 
-        await module.ProcessAsync(unlabeledContext);
+        await module.ProcessAsync(unlabeledContext, CancellationToken.None);
 
         // Must NOT attempt to add InReview, and must NOT remove Complete
         Assert.DoesNotContain(GitHubLabels.WorkflowInReview, unlabeledContext.LabelsToAdd);
@@ -1544,7 +1645,7 @@ public class PipelineAndModulesTests
         Assert.True(reviewContext.IsClosed);
         Assert.True(reviewContext.IsTerminal);
 
-        await module.ProcessAsync(reviewContext);
+        await module.ProcessAsync(reviewContext, CancellationToken.None);
 
         Assert.DoesNotContain(GitHubLabels.WorkflowInReview, reviewContext.LabelsToAdd);
     }
@@ -1581,27 +1682,31 @@ public class PipelineAndModulesTests
         int prNumber = 1,
         string headSha = "headsha",
         string? body = "",
-        IEnumerable<string>? existingLabels = null)
+        IEnumerable<string>? existingLabels = null,
+        PullRequestEventType eventType = PullRequestEventType.PullRequest,
+        bool isDraft = false,
+        string action = nameof(WebhookPullRequestAction.Opened),
+        WebhookPullRequestAction? prAction = null)
     {
         return new PullRequestContext(
             gitHubService: gitHub,
             teamName: "captains",
             headers: null,
-            eventType: PullRequestEventType.PullRequest,
+            eventType: eventType,
             owner: "owner",
             repo: "repo",
             prNumber: prNumber,
             headSha: headSha,
             baseBranch: "main",
-            isDraft: false,
+            isDraft: isDraft,
             isMerged: false,
             title: "Test PR",
             body: body,
             senderLogin: "contributor",
             authorLogin: "contributor",
-            action: nameof(WebhookPullRequestAction.Opened),
+            action: action,
             existingLabels: existingLabels ?? Array.Empty<string>(),
-            prAction: WebhookPullRequestAction.Opened);
+            prAction: prAction ?? WebhookPullRequestAction.Opened);
     }
 
     private static WebhookPullRequestReviewEvent CreateReviewEvent(string sender)

@@ -50,7 +50,7 @@ Before deploying the bot, ensure that target repositories have created the requi
 
 - **Workflow states**: `Workflow: In Review`, `Workflow: Approved`, `Workflow: Changes Requested`, `Workflow: Blocked`, `Workflow: Complete`
 - **Contributor & Status**: `first-time-contributor`, `Status: Pinned`, `Status: Stale`
-- **Classification**: `Type: Packaging`, `Type: Documentation`, `Type: Infrastructure`, `Target: Rolling`, `Target: Releases`
+- **Classification**: `Type: Packaging`, `Type: Documentation`, `Type: Infrastructure`, `Target: Rolling`, `Target: LTS`
 
 ### 4. Run
 

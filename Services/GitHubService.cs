@@ -22,13 +22,8 @@ public class GitHubService : IGitHubService
     {
     }
 
-    internal GitHubService(int appId, string privateKey, long installationId, Octokit.Internal.IHttpClient httpClient)
-        : this(appId, privateKey, installationId, CreateClientWithTransport(httpClient))
-    {
-    }
-
     internal GitHubService(int appId, string privateKey, long installationId, HttpMessageHandler httpMessageHandler)
-        : this(appId, privateKey, installationId, new HttpClientAdapter(() => httpMessageHandler))
+        : this(appId, privateKey, installationId, CreateClientWithTransport(new HttpClientAdapter(() => httpMessageHandler)))
     {
     }
 
