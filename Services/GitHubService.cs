@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace abaci_bot.Services;
 
-public class GitHubService : IGitHubService
+public class GitHubService : IGitHubService, IDisposable
 {
     private static readonly AsyncLocal<CancellationToken> _ambientCancellationToken = new();
 
@@ -211,5 +211,11 @@ public class GitHubService : IGitHubService
         await EnsureAuthenticatedAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         return await _client.PullRequest.Get(owner, repo, prNumber);
+    }
+
+    public void Dispose()
+    {
+        _authLock.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

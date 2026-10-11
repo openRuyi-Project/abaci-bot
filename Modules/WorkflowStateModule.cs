@@ -59,12 +59,12 @@ public class WorkflowStateModule : IPullRequestModule
         }
     }
 
-    private Task ProcessPullRequestEventAsync(PullRequestContext context)
+    private static Task ProcessPullRequestEventAsync(PullRequestContext context)
     {
         var action = context.PullRequestAction;
         var isBlocked = context.IsBlocked;
 
-        // When "Workflow: Blocked" is added, temporarily remove active review labels
+        // When "Workflow: Blocked" is added, temporarily remove active review and development labels
         if (action == PullRequestAction.Labeled)
         {
             if (context.PullRequestEvent is PullRequestLabeledEvent labeledEvent &&
@@ -72,11 +72,12 @@ public class WorkflowStateModule : IPullRequestModule
             {
                 context.LabelsToRemove.Add(GitHubLabels.WorkflowInReview);
                 context.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
+                context.LabelsToRemove.Add(GitHubLabels.WorkflowInDev);
             }
             return Task.CompletedTask;
         }
 
-        // When "Workflow: Blocked" is removed, restore the pull request to "In Review"
+        // When "Workflow: Blocked" is removed, restore the pull request to development or review
         // provided the PR is open and not already completed or merged.
         if (action == PullRequestAction.Unlabeled)
         {
@@ -85,7 +86,14 @@ public class WorkflowStateModule : IPullRequestModule
             {
                 if (!context.IsTerminal)
                 {
-                    context.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                    if (context.IsDraft || context.Title.StartsWith("WIP", StringComparison.OrdinalIgnoreCase))
+                    {
+                        context.LabelsToAdd.Add(GitHubLabels.WorkflowInDev);
+                    }
+                    else
+                    {
+                        context.LabelsToAdd.Add(GitHubLabels.WorkflowInReview);
+                    }
                 }
             }
             return Task.CompletedTask;
@@ -134,7 +142,7 @@ public class WorkflowStateModule : IPullRequestModule
         return Task.CompletedTask;
     }
 
-    private async Task ProcessReviewEventAsync(PullRequestContext context)
+    private static async Task ProcessReviewEventAsync(PullRequestContext context)
     {
         if (context.IsTerminal)
             return;
@@ -160,7 +168,7 @@ public class WorkflowStateModule : IPullRequestModule
         }
     }
 
-    private async Task ProcessIssueCommentEventAsync(PullRequestContext context)
+    private static async Task ProcessIssueCommentEventAsync(PullRequestContext context)
     {
         if (context.IsTerminal)
             return;

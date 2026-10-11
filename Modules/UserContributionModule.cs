@@ -9,12 +9,24 @@ namespace abaci_bot.Modules;
 /// Contributor identification governance module (Priority: 20).
 /// Categorizes pull requests based on the commit author's email domain into
 /// student intern contributions or general community contributions, excluding official staff.
+/// Reconciles its complete managed-label set to clear stale classifications.
 /// </summary>
 public class UserContributionModule : IPullRequestModule
 {
     public string ModuleName => "UserContributionModule";
 
     public int Priority => 20;
+
+    /// <summary>
+    /// Complete set of labels managed by this module for community contributor classification.
+    /// </summary>
+    public static readonly IReadOnlyCollection<string> ManagedLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        GitHubLabels.CommunityStudent,
+        GitHubLabels.CommunityContribution
+    };
+
+    IReadOnlyCollection<string> IPullRequestModule.ManagedLabels => ManagedLabels;
 
     /// <summary>
     /// Processes opened, updated, or reopened pull requests to classify contributor identity.
@@ -32,23 +44,34 @@ public class UserContributionModule : IPullRequestModule
     public async Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
         var userEmail = await context.AuthorEmail.Value;
+
+        // If author email lookup failed due to transient API/network error, preserve existing labels without mutating.
+        if (context.AuthorEmailLookupFailed)
+        {
+            return;
+        }
+
         var domain = GitHubWebhookProcessor.ExtractEmailDomain(userEmail);
+
+        // If author email is absent or unparseable, identity is undetermined: do not modify existing community labels.
         if (string.IsNullOrWhiteSpace(domain))
-            return;
-
-        // Official institute staff members are excluded from community labeling
-        if (domain.Equals("iscas.ac.cn", StringComparison.OrdinalIgnoreCase))
-            return;
-
-        // Intern email addresses match designated subdomains
-        if (GitHubWebhookProcessor.IsInternEmail(userEmail))
         {
-            context.LabelsToAdd.Add("Community: Student contribution");
+            return;
         }
-        else
+
+        string? desiredLabel = null;
+
+        // Official ISCAS staff members are excluded from community contribution labels.
+        // For non-staff contributors, classify as student intern or general community contribution.
+        if (!domain.Equals("iscas.ac.cn", StringComparison.OrdinalIgnoreCase))
         {
-            // All other non-staff domains are counted as general community contributions
-            context.LabelsToAdd.Add("Community: Contribution");
+            desiredLabel = GitHubWebhookProcessor.IsInternEmail(userEmail)
+                ? GitHubLabels.CommunityStudent
+                : GitHubLabels.CommunityContribution;
         }
+
+        // Reconcile managed label set: apply current classification and clear stale classifications.
+        // For staff (desiredLabel == null), this removes any pre-existing community labels.
+        context.ReconcileLabels(ManagedLabels, desiredLabel);
     }
 }

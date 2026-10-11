@@ -48,9 +48,12 @@ Your GitHub App must also subscribe to these webhook events:
 
 Before deploying the bot, ensure that target repositories have created the required workflow and status labels (GitHub API does not automatically create missing labels when applying them):
 
-- **Workflow states**: `Workflow: In Review`, `Workflow: Approved`, `Workflow: Changes Requested`, `Workflow: Blocked`, `Workflow: Complete`
-- **Contributor & Status**: `first-time-contributor`, `Status: Pinned`, `Status: Stale`
-- **Classification**: `Type: Packaging`, `Type: Documentation`, `Type: Infrastructure`, `Target: Rolling`, `Target: LTS`
+- **Workflow states**: `Workflow: In Dev`, `Workflow: Ready For Review`, `Workflow: In Review`, `Workflow: Blocked`, `Workflow: Complete`
+- **Contributor & Status**: `Community: Contribution`, `Community: Student contribution`, `Commits: Updated`, `AI Assistance`
+- **Build & CI**: `CI`, `Target: Rolling`, `Target: LTS`
+- **Build Systems**: `BuildSystem: autotools`, `BuildSystem: cmake`, `BuildSystem: golang`, `BuildSystem: golangmodule`, `BuildSystem: meson`, `BuildSystem: misc`, `BuildSystem: pyproject`, `BuildSystem: rust`, `BuildSystem: rustcrate`
+
+> **Note**: For the complete, authoritative list of runtime label constants managed by the governance engine, refer to [`Services/GitHubLabels.cs`](Services/GitHubLabels.cs).
 
 ### 4. Run
 

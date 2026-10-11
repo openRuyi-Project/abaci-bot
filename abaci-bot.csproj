@@ -6,6 +6,7 @@
         <RootNamespace>abaci_bot</RootNamespace>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <AnalysisMode>Recommended</AnalysisMode>
     </PropertyGroup>
 
     <ItemGroup>

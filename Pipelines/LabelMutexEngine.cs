@@ -29,43 +29,43 @@ public class LabelMutexEngine
         // 2. Community contributor classification (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
-            "Community: Student contribution",
-            "Community: Contribution"
+            GitHubLabels.CommunityStudent,
+            GitHubLabels.CommunityContribution
         },
         // 3. Target release branch classification (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
-            "Target: Rolling",
-            "Target: LTS"
+            GitHubLabels.TargetRolling,
+            GitHubLabels.TargetLts
         },
         // 4. Security vulnerability severity mapping (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
-            "Severity: 1",
-            "Severity: 2",
-            "Severity: 3",
-            "Severity: 4"
+            GitHubLabels.Severity1,
+            GitHubLabels.Severity2,
+            GitHubLabels.Severity3,
+            GitHubLabels.Severity4
         },
         // 5. CVE tracking lifecycle state (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
-            "Vulnerability: Detected",
-            "Vulnerability: Fixed-Pending",
-            "Vulnerability: Resolved",
-            "Vulnerability: Dismissed",
-            "Vulnerability: Pending Verification"
+            GitHubLabels.VulnerabilityDetected,
+            GitHubLabels.VulnerabilityFixedPending,
+            GitHubLabels.VulnerabilityResolved,
+            GitHubLabels.VulnerabilityDismissed,
+            GitHubLabels.VulnerabilityPendingVerification
         },
         // 6. Downstream rebuild package count tier (single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
-            "Rebuild: 0",
-            "Rebuild: 1-10",
-            "Rebuild: 11-100",
-            "Rebuild: 101-500",
-            "Rebuild: 501-1000",
-            "Rebuild: 1001-2500",
-            "Rebuild: 2501-5000",
-            "Rebuild: 5001+"
+            GitHubLabels.Rebuild0,
+            GitHubLabels.Rebuild1To10,
+            GitHubLabels.Rebuild11To100,
+            GitHubLabels.Rebuild101To500,
+            GitHubLabels.Rebuild501To1000,
+            GitHubLabels.Rebuild1001To2500,
+            GitHubLabels.Rebuild2501To5000,
+            GitHubLabels.Rebuild5001Plus
         }
     };
 

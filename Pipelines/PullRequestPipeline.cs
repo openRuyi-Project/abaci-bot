@@ -1,6 +1,7 @@
 using abaci_bot.Contexts;
 using abaci_bot.Services;
 using Microsoft.Extensions.Logging;
+using Octokit;
 
 namespace abaci_bot.Pipelines;
 
@@ -59,13 +60,60 @@ public class PullRequestPipeline
 
         // Refresh PR state and labels after lock acquisition to ensure workflow decisions
         // and diff calculations evaluate against fresh remote state rather than stale payloads.
-        if (!await context.RefreshAsync(cancellationToken))
+        // Apply bounded retries; if authoritative remote state cannot be obtained, abort label
+        // mutation to prevent stale payload states from writing inconsistent labels to GitHub.
+        var refreshed = false;
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            _logger?.LogWarning(
-                "Post-lock refresh failed for {Owner}/{Repo}#{PrNumber}; falling back to webhook payload labels.",
-                context.Owner, context.Repo, context.PrNumber);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await context.RefreshAsync(cancellationToken))
+            {
+                refreshed = true;
+                break;
+            }
+
+            var lastEx = context.LastRefreshException;
+            if (lastEx != null && IsNonRetriable(lastEx))
+            {
+                _logger?.LogError(lastEx,
+                    "Non-retriable error refreshing remote PR {Owner}/{Repo}#{PrNumber}; aborting refresh.",
+                    context.Owner, context.Repo, context.PrNumber);
+                break;
+            }
+
+            if (attempt < 2)
+            {
+                var delay = TimeSpan.FromMilliseconds(50 * (attempt + 1) + Random.Shared.Next(10, 30));
+                _logger?.LogWarning(lastEx,
+                    "Transient error refreshing remote PR {Owner}/{Repo}#{PrNumber} on attempt {Attempt}; retrying in {DelayMs}ms...",
+                    context.Owner, context.Repo, context.PrNumber, attempt + 1, delay.TotalMilliseconds);
+                await Task.Delay(delay, cancellationToken);
+            }
+            else
+            {
+                _logger?.LogError(lastEx,
+                    "Failed to refresh remote PR {Owner}/{Repo}#{PrNumber} on final attempt {Attempt}.",
+                    context.Owner, context.Repo, context.PrNumber, attempt + 1);
+            }
         }
+
+        if (!refreshed)
+        {
+            _logger?.LogError(
+                "Post-lock refresh failed for {Owner}/{Repo}#{PrNumber} after retries; aborting label mutation to prevent stale state writes.",
+                context.Owner, context.Repo, context.PrNumber);
+            return;
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
+
+        // Evaluate module eligibility against refreshed authoritative remote state
+        if (!HasEligibleModule(context))
+        {
+            _logger?.LogDebug("No eligible governance modules to process {Owner}/{Repo}#{PrNumber} after post-lock refresh.",
+                context.Owner, context.Repo, context.PrNumber);
+            return;
+        }
 
         foreach (var module in _modules)
         {
@@ -118,6 +166,10 @@ public class PullRequestPipeline
             // Fetch fresh labels from GitHub, recalculate diff, and retry the remaining operations.
             // If cancellation arrived after a write succeeded, we use a bounded recovery token to reconcile
             // the partial update on GitHub so competing/mutex labels are not left in an inconsistent state.
+            var recoverySucceeded = false;
+            WriteTracker? recoveryTracker = null;
+            Exception? recoveryFailure = null;
+
             try
             {
                 using var recoveryCts = new CancellationTokenSource(_recoveryTimeout);
@@ -133,43 +185,41 @@ public class PullRequestPipeline
                 var freshLabels = freshPr.Labels.Select(l => l.Name);
                 var recoveryDiff = _mutexEngine.ComputeDiff(freshLabels, context.LabelsToAdd, context.LabelsToRemove);
 
-                var recoveryTracker = new WriteTracker();
+                recoveryTracker = new WriteTracker();
                 await ApplyDiffAsync(context, recoveryDiff, recoveryTracker, recoveryToken);
+                recoverySucceeded = true;
+            }
+            catch (Exception recEx)
+            {
+                recoveryFailure = recEx;
+            }
 
+            if (recoverySucceeded)
+            {
                 if (ex is OperationCanceledException || cancellationToken.IsCancellationRequested)
                 {
                     _logger?.LogWarning(
                         "Pipeline cancelled after {AttemptedWrites} attempted writes (recovery applied {RecoveryWrites} writes) for pull request {Owner}/{Repo}#{PrNumber}; automated recovery successfully reconciled state. Re-throwing cancellation.",
-                        tracker.AttemptedWrites, recoveryTracker.CompletedWrites, context.Owner, context.Repo, context.PrNumber);
+                        tracker.AttemptedWrites, recoveryTracker?.CompletedWrites ?? 0, context.Owner, context.Repo, context.PrNumber);
                     cancellationToken.ThrowIfCancellationRequested();
                     throw;
                 }
 
                 _logger?.LogInformation(
                     "Automated recovery succeeded for pull request {Owner}/{Repo}#{PrNumber} after initial write failure (initial writes: {InitialWrites}, recovery writes: {RecoveryWrites}).",
-                    context.Owner, context.Repo, context.PrNumber, tracker.CompletedWrites, recoveryTracker.CompletedWrites);
+                    context.Owner, context.Repo, context.PrNumber, tracker.CompletedWrites, recoveryTracker?.CompletedWrites ?? 0);
             }
-            catch (OperationCanceledException) when (ex is OperationCanceledException || cancellationToken.IsCancellationRequested)
+            else
             {
-                // Re-throw original cancellation after successful recovery
-                throw;
-            }
-            catch (Exception recoveryEx)
-            {
-                _logger?.LogError(recoveryEx,
+                _logger?.LogError(recoveryFailure,
                     "Failed to recover partial label updates for pull request {Owner}/{Repo}#{PrNumber} after initial failure.",
                     context.Owner, context.Repo, context.PrNumber);
 
-                if (ex is OperationCanceledException || cancellationToken.IsCancellationRequested)
-                {
-                    throw new AggregateException(
-                        $"Pipeline cancelled after {tracker.AttemptedWrites} attempted writes and recovery attempt failed.",
-                        ex, recoveryEx);
-                }
-
                 throw new AggregateException(
-                    "Failed to synchronize pull request labels after recovery attempt.",
-                    ex, recoveryEx);
+                    (ex is OperationCanceledException || cancellationToken.IsCancellationRequested)
+                        ? $"Pipeline cancelled after {tracker.AttemptedWrites} attempted writes and recovery attempt failed."
+                        : "Failed to synchronize pull request labels after recovery attempt.",
+                    ex, recoveryFailure!);
             }
         }
     }
@@ -207,5 +257,33 @@ public class PullRequestPipeline
                 cancellationToken);
             tracker.CompletedWrites++;
         }
+    }
+
+    private static bool IsNonRetriable(Exception ex)
+    {
+        // Rate limiting and abuse detection are transient: honour backoff/retry instead of failing fast.
+        if (ex is RateLimitExceededException or AbuseException)
+            return false;
+
+        // Specific Octokit client error exception types are always non-retriable.
+        if (ex is AuthorizationException or ForbiddenException or NotFoundException)
+            return true;
+
+        // Octokit throws the ApiException family for HTTP response failures.
+        if (ex is ApiException api)
+        {
+            var code = (int)api.StatusCode;
+            return code is >= 400 and < 500;
+        }
+
+        // Transport-level HttpRequestException with a specific status code
+        if (ex is HttpRequestException httpEx && httpEx.StatusCode.HasValue)
+        {
+            var code = (int)httpEx.StatusCode.Value;
+            if (code is >= 400 and < 500 && code != 429)
+                return true;
+        }
+
+        return false;
     }
 }

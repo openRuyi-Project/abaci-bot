@@ -7,9 +7,10 @@ namespace abaci_bot.Pipelines;
 /// Serializes webhook deliveries targeting the exact same pull request to prevent race conditions
 /// and out-of-order label overwrites, while permitting distinct pull requests to execute concurrently.
 /// </summary>
-public class PullRequestLockManager
+public class PullRequestLockManager : IDisposable
 {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.OrdinalIgnoreCase);
+    private bool _disposed;
 
     /// <summary>
     /// Asynchronously acquires an exclusive lock for the specified pull request.
@@ -17,10 +18,37 @@ public class PullRequestLockManager
     /// </summary>
     public async Task<IDisposable> AcquireLockAsync(string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         var key = $"{owner}/{repo}#{prNumber}";
         var semaphore = _locks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
         await semaphore.WaitAsync(cancellationToken);
         return new Releaser(semaphore);
+    }
+
+    /// <summary>
+    /// Disposes all allocated semaphores and releases resources.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        foreach (var semaphore in _locks.Values)
+        {
+            try
+            {
+                semaphore.Dispose();
+            }
+            catch
+            {
+                // Ignore disposal errors on shutdown
+            }
+        }
+
+        _locks.Clear();
+        GC.SuppressFinalize(this);
     }
 
     /// <summary>

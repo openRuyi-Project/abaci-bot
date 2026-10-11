@@ -389,6 +389,17 @@ public class GitHubServiceTests
             service.GetPullRequestAsync("owner", "repo", 1, cts.Token));
     }
 
+    [Fact]
+    public void GitHubService_Dispose_CanBeCalledSafely()
+    {
+        var (pem, rsa) = GenerateRsaKeyPair();
+        using (rsa)
+        {
+            var (service, _) = CreateTestService(pem);
+            service.Dispose();
+        }
+    }
+
     private sealed class ControllableHttpMessageHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;

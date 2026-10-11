@@ -28,6 +28,7 @@ if (missingFields.Count > 0)
     Console.Error.WriteLine("  cp appsettings.demo.json appsettings.json");
     Console.Error.WriteLine("Then fill in your GitHub App credentials.");
     Console.ResetColor();
+    Environment.ExitCode = 1;
     return;
 }
 
@@ -49,6 +50,7 @@ catch (Exception ex)
     Console.Error.WriteLine($"ERROR: GitHubApp:PrivateKey could not be parsed as RSA PEM: {ex.Message}");
     Console.Error.WriteLine("Hint: Ensure the private key preserves newlines or uses standard PEM format.");
     Console.ResetColor();
+    Environment.ExitCode = 1;
     return;
 }
 

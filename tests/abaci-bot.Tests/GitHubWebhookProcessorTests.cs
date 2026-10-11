@@ -1169,23 +1169,38 @@ public class GitHubWebhookProcessorTests
 
     private sealed class TestGitHubWebhookProcessor : GitHubWebhookProcessor
     {
+        private readonly IGitHubService _testGithub;
+
         public TestGitHubWebhookProcessor(IGitHubService github, IConfiguration config)
             : base(github, config)
         {
+            _testGithub = github;
         }
 
         public ValueTask ProcessPullRequestAsync(PullRequestEvent payload, PullRequestAction action)
         {
+            if (_testGithub is FakeGitHubService fake)
+            {
+                fake.SyncFromPayload(payload);
+            }
             return ProcessPullRequestWebhookAsync(null!, payload, action);
         }
 
         public ValueTask ProcessIssueCommentAsync(IssueCommentEvent payload, IssueCommentAction action)
         {
+            if (_testGithub is FakeGitHubService fake)
+            {
+                fake.SyncFromComment(payload);
+            }
             return ProcessIssueCommentWebhookAsync(null!, payload, action);
         }
 
         public ValueTask ProcessPullRequestReviewAsync(WebhookPullRequestReviewEvent payload, PullRequestReviewAction action)
         {
+            if (_testGithub is FakeGitHubService fake)
+            {
+                fake.SyncFromReview(payload);
+            }
             return ProcessPullRequestReviewWebhookAsync(null!, payload, action);
         }
     }
@@ -1210,6 +1225,64 @@ public class GitHubWebhookProcessorTests
         public bool ThrowOnGetAuthorEmail { get; set; }
 
         public Dictionary<string, string> FileContents { get; } = new(StringComparer.Ordinal);
+
+        public void SyncFromPayload(PullRequestEvent payload)
+        {
+            if (payload.PullRequest != null)
+            {
+                var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Draft))?.SetValue(pr, payload.PullRequest.Draft);
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Title))?.SetValue(pr, payload.PullRequest.Title);
+                if (payload.PullRequest.Merged == true)
+                {
+                    typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.MergedAt))?.SetValue(pr, (DateTimeOffset?)DateTimeOffset.UtcNow);
+                }
+                var stateStr = payload.PullRequest.State?.StringValue ?? "open";
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.State))?.SetValue(pr, new Octokit.StringEnum<Octokit.ItemState>(string.Equals(stateStr, "closed", StringComparison.OrdinalIgnoreCase) ? Octokit.ItemState.Closed : Octokit.ItemState.Open));
+                PullRequest = pr;
+
+                if (payload.PullRequest.Labels != null && RemoteLabels.Count == 0)
+                {
+                    foreach (var l in payload.PullRequest.Labels)
+                    {
+                        if (!string.IsNullOrWhiteSpace(l.Name)) RemoteLabels.Add(l.Name);
+                    }
+                }
+            }
+        }
+
+        public void SyncFromReview(WebhookPullRequestReviewEvent payload)
+        {
+            if (payload.PullRequest != null)
+            {
+                var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Title))?.SetValue(pr, payload.PullRequest.Title);
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Draft))?.SetValue(pr, PullRequest.Draft);
+                PullRequest = pr;
+
+                if (payload.PullRequest.Labels != null && RemoteLabels.Count == 0)
+                {
+                    foreach (var l in payload.PullRequest.Labels)
+                    {
+                        if (!string.IsNullOrWhiteSpace(l.Name)) RemoteLabels.Add(l.Name);
+                    }
+                }
+            }
+        }
+
+        public void SyncFromComment(IssueCommentEvent payload)
+        {
+            if (payload.Issue != null)
+            {
+                if (payload.Issue.Labels != null && RemoteLabels.Count == 0)
+                {
+                    foreach (var l in payload.Issue.Labels)
+                    {
+                        if (!string.IsNullOrWhiteSpace(l.Name)) RemoteLabels.Add(l.Name);
+                    }
+                }
+            }
+        }
 
         public Task<IReadOnlyList<OctokitPullRequestFile>> GetPullRequestFilesAsync(
             string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
@@ -1261,26 +1334,22 @@ public class GitHubWebhookProcessorTests
         public Task<OctokitPullRequest> GetPullRequestAsync(
             string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
         {
-            if (RemoteLabels.Count > 0)
+            var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
+            var labelObjs = RemoteLabels.Select(name =>
             {
-                var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
-                var labelObjs = RemoteLabels.Select(name =>
-                {
-                    var l = (Octokit.Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Label));
-                    typeof(Octokit.Label).GetProperty(nameof(Octokit.Label.Name))?.SetValue(l, name);
-                    return l;
-                }).ToArray();
-                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Labels))?.SetValue(pr, labelObjs);
-                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Draft))?.SetValue(pr, PullRequest.Draft);
-                if (PullRequest.Merged)
-                {
-                    typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.MergedAt))?.SetValue(pr, (DateTimeOffset?)DateTimeOffset.UtcNow);
-                }
-                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.State))?.SetValue(pr, PullRequest.State);
-                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Title))?.SetValue(pr, PullRequest.Title);
-                return Task.FromResult(pr);
+                var l = (Octokit.Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Label));
+                typeof(Octokit.Label).GetProperty(nameof(Octokit.Label.Name))?.SetValue(l, name);
+                return l;
+            }).ToArray();
+            typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Labels))?.SetValue(pr, labelObjs);
+            typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Draft))?.SetValue(pr, PullRequest.Draft);
+            if (PullRequest.Merged)
+            {
+                typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.MergedAt))?.SetValue(pr, (DateTimeOffset?)DateTimeOffset.UtcNow);
             }
-            return Task.FromResult(PullRequest);
+            typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.State))?.SetValue(pr, PullRequest.State);
+            typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Title))?.SetValue(pr, PullRequest.Title);
+            return Task.FromResult(pr);
         }
     }
 

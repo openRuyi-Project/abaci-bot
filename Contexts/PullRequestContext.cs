@@ -29,6 +29,7 @@ public class PullRequestContext
 {
     private readonly IGitHubService _gitHubService;
     private readonly ConcurrentDictionary<string, Lazy<Task<string>>> _fileContentCache = new(StringComparer.Ordinal);
+    private bool _isRefreshed;
 
     /// <summary>
     /// Raw webhook headers, containing delivery IDs and signature details.
@@ -153,6 +154,18 @@ public class PullRequestContext
     public Lazy<Task<string?>> AuthorEmail { get; }
 
     /// <summary>
+    /// Indicates whether fetching the commit author's email failed due to a transient API or network exception.
+    /// Used by identity governance modules to avoid clearing valid contributor labels on uncertainty.
+    /// </summary>
+    public bool AuthorEmailLookupFailed { get; private set; }
+
+    /// <summary>
+    /// Holds the exception encountered during the most recent call to <see cref="RefreshAsync"/>, if any.
+    /// Used by the pipeline orchestrator to classify non-retriable errors.
+    /// </summary>
+    public Exception? LastRefreshException { get; private set; }
+
+    /// <summary>
     /// Lazily fetches the captain team member logins for authorization checks.
     /// </summary>
     public Lazy<Task<HashSet<string>>> TeamCaptains { get; }
@@ -174,13 +187,15 @@ public class PullRequestContext
 
     /// <summary>
     /// Indicates whether the pull request is closed or merged.
+    /// When refreshed post-lock, the refreshed remote entity state is authoritative.
     /// </summary>
-    public bool IsClosed =>
-        IsMerged == true ||
-        PullRequestAction == Octokit.Webhooks.Events.PullRequest.PullRequestAction.Closed ||
-        string.Equals(RemoteState, "closed", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(PullRequestEvent?.PullRequest?.State?.StringValue, "closed", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(PullRequestReviewEvent?.PullRequest?.State?.StringValue, "closed", StringComparison.OrdinalIgnoreCase);
+    public bool IsClosed => _isRefreshed
+        ? (IsMerged == true || string.Equals(RemoteState, "closed", StringComparison.OrdinalIgnoreCase))
+        : (IsMerged == true ||
+           PullRequestAction == Octokit.Webhooks.Events.PullRequest.PullRequestAction.Closed ||
+           string.Equals(RemoteState, "closed", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(PullRequestEvent?.PullRequest?.State?.StringValue, "closed", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(PullRequestReviewEvent?.PullRequest?.State?.StringValue, "closed", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Indicates whether the pull request has reached a terminal lifecycle state (closed, merged, or tagged as Complete).
@@ -269,10 +284,13 @@ public class PullRequestContext
         {
             try
             {
-                return await _gitHubService.GetPullRequestAuthorEmailAsync(Owner, Repo, PrNumber, CancellationToken);
+                var email = await _gitHubService.GetPullRequestAuthorEmailAsync(Owner, Repo, PrNumber, CancellationToken);
+                AuthorEmailLookupFailed = false;
+                return email;
             }
             catch (Exception ex)
             {
+                AuthorEmailLookupFailed = true;
                 // Define error out of existence: an email lookup failure should not block governance.
                 Console.WriteLine($"Warning: Failed to get commit author email for PR #{PrNumber}: {ex.Message}");
                 return null;
@@ -451,14 +469,16 @@ public class PullRequestContext
         try
         {
             freshPr = await _gitHubService.GetPullRequestAsync(Owner, Repo, PrNumber, token);
+            LastRefreshException = null;
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
-            // If remote refresh fails due to transient error, fall back to webhook payload state
+            // If remote refresh fails due to transient error, record exception and retain webhook payload state
+            LastRefreshException = ex;
             return false;
         }
 
@@ -477,24 +497,12 @@ public class PullRequestContext
             }
         }
 
-        if (PullRequestAction == Octokit.Webhooks.Events.PullRequest.PullRequestAction.ConvertedToDraft)
-        {
-            IsDraft = true;
-        }
-        else if (PullRequestAction == Octokit.Webhooks.Events.PullRequest.PullRequestAction.ReadyForReview)
-        {
-            IsDraft = false;
-        }
-        else
-        {
-            // Bias towards draft: if either webhook payload or authoritative remote state indicates draft,
-            // treat as draft to prevent stale payload or unpropagated API replication from clearing draft state.
-            // Explicit transitions to non-draft are governed by the ReadyForReview action above.
-            IsDraft = IsDraft || freshPr.Draft;
-        }
-
-        IsMerged = (IsMerged == true) || freshPr.Merged;
+        // The post-lock remote state is authoritative for draft, merge, and lifecycle state.
+        // Webhook event actions determine whether governance executes, but fresh entity determines actual state.
+        IsDraft = freshPr.Draft;
+        IsMerged = freshPr.Merged;
         RemoteState = freshPr.State.StringValue;
+        _isRefreshed = true;
         if (!string.IsNullOrEmpty(freshPr.Title))
             Title = freshPr.Title;
         if (EventType != PullRequestEventType.IssueComment && freshPr.Body != null)
@@ -506,5 +514,36 @@ public class PullRequestContext
 
         PullRequest = new Lazy<Task<PullRequest>>(() => Task.FromResult(freshPr));
         return true;
+    }
+
+    /// <summary>
+    /// Declaratively reconciles a set of module-managed labels against a predicate.
+    /// Labels satisfying the predicate are staged in <see cref="LabelsToAdd"/>;
+    /// pre-existing labels that do not satisfy the predicate are staged in <see cref="LabelsToRemove"/>.
+    /// </summary>
+    public void ReconcileLabels(IReadOnlyCollection<string> managedLabels, Func<string, bool> isDesired)
+    {
+        foreach (var label in managedLabels)
+        {
+            if (isDesired(label))
+            {
+                LabelsToAdd.Add(label);
+            }
+            else if (ExistingLabels.Contains(label))
+            {
+                LabelsToRemove.Add(label);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Declaratively reconciles a set of module-managed labels against an exact desired label.
+    /// If <paramref name="desiredLabel"/> matches a managed label, it is staged for addition;
+    /// all other pre-existing managed labels are staged for removal.
+    /// If <paramref name="desiredLabel"/> is null, all pre-existing managed labels are staged for removal.
+    /// </summary>
+    public void ReconcileLabels(IReadOnlyCollection<string> managedLabels, string? desiredLabel)
+    {
+        ReconcileLabels(managedLabels, label => string.Equals(label, desiredLabel, StringComparison.OrdinalIgnoreCase));
     }
 }

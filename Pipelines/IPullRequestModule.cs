@@ -20,6 +20,12 @@ public interface IPullRequestModule
     int Priority { get; }
 
     /// <summary>
+    /// Complete set of labels managed and reconciled by this module, if any.
+    /// Defaults to an empty collection for modules that do not declare explicit ownership.
+    /// </summary>
+    IReadOnlyCollection<string> ManagedLabels => Array.Empty<string>();
+
+    /// <summary>
     /// Determines whether this module should run for the given context.
     /// Allows modules to skip execution early based on event type or action.
     /// </summary>
