@@ -151,6 +151,7 @@ public class PullRequestPipeline
         try
         {
             await ApplyDiffAsync(context, diff, tracker, cancellationToken);
+            await FlushPendingCommentsAsync(context, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -212,6 +213,8 @@ public class PullRequestPipeline
                 _logger?.LogInformation(
                     "Automated recovery succeeded for pull request {Owner}/{Repo}#{PrNumber} after initial write failure (initial writes: {InitialWrites}, recovery writes: {RecoveryWrites}).",
                     context.Owner, context.Repo, context.PrNumber, tracker.CompletedWrites, recoveryTracker?.CompletedWrites ?? 0);
+
+                await FlushPendingCommentsAsync(context, cancellationToken);
             }
             else
             {
@@ -289,5 +292,38 @@ public class PullRequestPipeline
         }
 
         return false;
+    }
+
+    private async Task FlushPendingCommentsAsync(PullRequestContext context, CancellationToken cancellationToken)
+    {
+        if (context.PendingComments.Count == 0)
+            return;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("### 🛡️ abaci-bot 门禁与治理检查报告");
+        sb.AppendLine();
+        foreach (var comment in context.PendingComments)
+        {
+            sb.AppendLine(comment);
+            sb.AppendLine();
+        }
+
+        var consolidatedComment = sb.ToString().TrimEnd();
+        try
+        {
+            await _gitHubService.CreateCommentAsync(
+                context.Owner,
+                context.Repo,
+                context.PrNumber,
+                consolidatedComment,
+                cancellationToken);
+
+            context.PendingComments.Clear();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "Failed to post consolidated comment on PR {Owner}/{Repo}#{PrNumber}",
+                context.Owner, context.Repo, context.PrNumber);
+        }
     }
 }

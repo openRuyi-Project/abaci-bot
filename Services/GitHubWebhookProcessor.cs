@@ -10,6 +10,7 @@ using Octokit.Webhooks.Events.IssueComment;
 using Octokit.Webhooks.Events.PullRequest;
 using Octokit.Webhooks.Events.PullRequestReview;
 using Octokit.Webhooks.Events.PullRequestReviewComment;
+using Octokit.Webhooks.Events.WorkflowRun;
 
 namespace abaci_bot.Services;
 
@@ -194,6 +195,44 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
         {
             await _pipeline.ExecuteAsync(context, cancellationToken);
+        }
+    }
+
+    protected override async ValueTask ProcessWorkflowRunWebhookAsync(
+        WebhookHeaders headers,
+        WorkflowRunEvent workflowRunEvent,
+        WorkflowRunAction action,
+        CancellationToken cancellationToken = default)
+    {
+        if (action != WorkflowRunAction.Completed)
+            return;
+
+        if (!TryGetRepositoryContext(workflowRunEvent.Repository, out var owner, out var repo))
+            return;
+
+        var pullRequests = workflowRunEvent.WorkflowRun?.PullRequests;
+        if (pullRequests == null || pullRequests.Count == 0)
+            return;
+
+        var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
+
+        foreach (var pr in pullRequests)
+        {
+            var prNumber = (int)pr.Number;
+            using (await _lockManager.AcquireLockAsync(owner, repo, prNumber, cancellationToken))
+            {
+                try
+                {
+                    var fullPr = await _github.GetPullRequestAsync(owner, repo, prNumber, cancellationToken);
+                    var context = PullRequestContext.FromPullRequest(_github, teamName, owner, repo, fullPr, headers, cancellationToken);
+                    await _pipeline.ExecuteAsync(context, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(ex, "Failed to process workflow run for PR #{PrNumber} in {Owner}/{Repo}",
+                        prNumber, owner, repo);
+                }
+            }
         }
     }
 

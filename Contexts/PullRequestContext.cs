@@ -389,6 +389,46 @@ public class PullRequestContext
             cancellationToken: cancellationToken);
     }
 
+    /// <summary>
+    /// Creates a PullRequestContext from an authoritative Octokit PullRequest model.
+    /// </summary>
+    public static PullRequestContext FromPullRequest(
+        IGitHubService gitHub,
+        string teamName,
+        string owner,
+        string repo,
+        PullRequest pullRequest,
+        WebhookHeaders? headers = null,
+        CancellationToken cancellationToken = default)
+    {
+        var labels = pullRequest.Labels?
+            .Select(l => l.Name)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        return new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: teamName,
+            headers: headers,
+            eventType: PullRequestEventType.PullRequest,
+            owner: owner,
+            repo: repo,
+            prNumber: pullRequest.Number,
+            headSha: pullRequest.Head?.Sha ?? string.Empty,
+            baseBranch: pullRequest.Base?.Ref,
+            isDraft: pullRequest.Draft,
+            isMerged: pullRequest.Merged,
+            title: pullRequest.Title ?? string.Empty,
+            body: pullRequest.Body,
+            senderLogin: pullRequest.User?.Login,
+            authorLogin: pullRequest.User?.Login,
+            action: PullRequestAction.Synchronize.ToString(),
+            existingLabels: labels,
+            prAction: PullRequestAction.Synchronize,
+            senderType: pullRequest.User?.Type?.ToString(),
+            cancellationToken: cancellationToken);
+    }
+
 
     /// <summary>
     /// Creates a PullRequestContext from a native GitHub pull request review event.
