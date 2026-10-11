@@ -274,5 +274,42 @@ public class RebuildImpactModuleTests
         Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
         Assert.Empty(context.PendingComments);
     }
+
+    [Fact]
+    public async Task RpmDependencyService_ScriptletPathsLikeBinSh_AreExcludedFromDAG()
+    {
+        var xml = """
+        <metadata xmlns="http://linux.duke.edu/metadata/common" xmlns:rpm="http://linux.duke.edu/metadata/rpm">
+          <package type="rpm">
+            <name>bash</name>
+            <format>
+              <rpm:provides>
+                <rpm:entry name="/bin/sh"/>
+                <rpm:entry name="/bin/bash"/>
+              </rpm:provides>
+            </format>
+          </package>
+          <package type="rpm">
+            <name>myapp</name>
+            <format>
+              <rpm:requires>
+                <rpm:entry name="/bin/sh"/>
+              </rpm:requires>
+            </format>
+          </package>
+        </metadata>
+        """;
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { CalculationMode = "Transitive" });
+        var service = new RpmDependencyService(_httpClientFactory, options);
+
+        using var ms = new MemoryStream(Encoding.UTF8.GetBytes(xml));
+        await service.LoadMetadataAsync(ms, isGzipped: false);
+
+        // myapp requires /bin/sh which is a scriptlet interpreter path, not a rebuild dependency
+        var affectedByBash = service.GetAffectedPackages("bash");
+        Assert.Empty(affectedByBash);
+    }
 }
+
 

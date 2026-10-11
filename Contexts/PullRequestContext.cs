@@ -21,7 +21,8 @@ public enum PullRequestEventType
     PullRequest,
     Review,
     IssueComment,
-    ReviewComment
+    ReviewComment,
+    WorkflowRun
 }
 
 /// <summary>
@@ -251,6 +252,11 @@ public class PullRequestContext
     /// </summary>
     public ConcurrentDictionary<string, object?> Items { get; } = new();
 
+    /// <summary>
+    /// Binary ABI difference analysis result, if evaluated during workflow run or CI completion.
+    /// </summary>
+    public AbiDiffResult? AbiResult { get; set; }
+
     public PullRequestContext(
         IGitHubService gitHubService,
         string teamName,
@@ -427,6 +433,55 @@ public class PullRequestContext
             prAction: PullRequestAction.Synchronize,
             senderType: pullRequest.User?.Type?.ToString(),
             cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Creates a PullRequestContext from a GitHub workflow_run event associated with a pull request.
+    /// </summary>
+    public static PullRequestContext FromWorkflowRun(
+        IGitHubService gitHub,
+        string teamName,
+        string owner,
+        string repo,
+        PullRequest pullRequest,
+        AbiDiffResult? abiResult = null,
+        WebhookHeaders? headers = null,
+        CancellationToken cancellationToken = default)
+    {
+        var labels = pullRequest.Labels?
+            .Select(l => l.Name)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var ctx = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: teamName,
+            headers: headers,
+            eventType: PullRequestEventType.WorkflowRun,
+            owner: owner,
+            repo: repo,
+            prNumber: pullRequest.Number,
+            headSha: pullRequest.Head?.Sha ?? string.Empty,
+            baseBranch: pullRequest.Base?.Ref,
+            isDraft: pullRequest.Draft,
+            isMerged: pullRequest.Merged,
+            title: pullRequest.Title ?? string.Empty,
+            body: pullRequest.Body,
+            senderLogin: pullRequest.User?.Login,
+            authorLogin: pullRequest.User?.Login,
+            action: "completed",
+            existingLabels: labels,
+            prAction: null,
+            senderType: pullRequest.User?.Type?.ToString(),
+            cancellationToken: cancellationToken);
+
+        ctx.AbiResult = abiResult;
+        if (abiResult != null)
+        {
+            ctx.Items["AbiDiffResult"] = abiResult;
+        }
+
+        return ctx;
     }
 
 

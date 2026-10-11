@@ -270,17 +270,26 @@ public class RpmDependencyService : IRpmDependencyService
                     {
                         if (inProvides)
                         {
-                            if (!capabilityProviders.TryGetValue(entryName, out var provSet))
+                            // Skip file paths and runtime internal capabilities to prevent DAG pollution
+                            if (!entryName.StartsWith('/') &&
+                                !entryName.StartsWith("rpmlib(", StringComparison.OrdinalIgnoreCase) &&
+                                !entryName.StartsWith("rtld(", StringComparison.OrdinalIgnoreCase))
                             {
-                                provSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                                capabilityProviders[entryName] = provSet;
+                                if (!capabilityProviders.TryGetValue(entryName, out var provSet))
+                                {
+                                    provSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                    capabilityProviders[entryName] = provSet;
+                                }
+                                provSet.Add(currentPackage);
                             }
-                            provSet.Add(currentPackage);
                         }
                         else if (inRequires)
                         {
-                            // Skip rpm internal requirements
-                            if (!entryName.StartsWith("rpmlib(", StringComparison.OrdinalIgnoreCase))
+                            // Skip file paths (e.g. /bin/sh) and rpm/rtld internal requirements
+                            // Scriptlet paths are runtime interpreter dependencies, not build/rebuild dependencies
+                            if (!entryName.StartsWith('/') &&
+                                !entryName.StartsWith("rpmlib(", StringComparison.OrdinalIgnoreCase) &&
+                                !entryName.StartsWith("rtld(", StringComparison.OrdinalIgnoreCase))
                             {
                                 if (packageRequirements.TryGetValue(currentPackage, out var reqSet))
                                 {

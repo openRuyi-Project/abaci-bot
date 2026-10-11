@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text.Json;
 using abaci_bot.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -74,6 +75,46 @@ public class ArtifactService : IArtifactService
         }
 
         return extractedRpms;
+    }
+
+    public async Task<IReadOnlyList<string>> DownloadRunRpmArtifactsAsync(
+        string owner, string repo, long runId, string destinationDirectory, CancellationToken ct = default)
+    {
+        var allRpms = new List<string>();
+        try
+        {
+            var client = _httpClientFactory.CreateClient("GitHubArtifactClient");
+            var url = $"https://api.github.com/repos/{owner}/{repo}/actions/runs/{runId}/artifacts";
+
+            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger?.LogDebug("No artifacts found or query failed for run {RunId}. Status: {StatusCode}", runId, response.StatusCode);
+                return allRpms;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+
+            if (doc.RootElement.TryGetProperty("artifacts", out var artifactsProp) &&
+                artifactsProp.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var art in artifactsProp.EnumerateArray())
+                {
+                    if (art.TryGetProperty("id", out var idProp) && idProp.TryGetInt64(out var artifactId))
+                    {
+                        var rpms = await DownloadAndExtractRpmArtifactAsync(owner, repo, artifactId, destinationDirectory, ct);
+                        allRpms.AddRange(rpms);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "Failed to fetch artifacts for workflow run {RunId}", runId);
+        }
+
+        return allRpms;
     }
 
     public async Task<string?> DownloadBaselineRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default)

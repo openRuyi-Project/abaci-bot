@@ -111,14 +111,15 @@ public partial class RebuildImpactModule : IPullRequestModule
             "Rebuild impact for PR #{PrNumber}: {PackageCount} packages modified, {AffectedCount} downstream packages affected. Assigned: {Label}",
             context.PrNumber, changedPackages.Count, totalCount, rebuildLabel);
 
-        // Admission gate evaluation: Block if >= BlockThreshold and target branch is Rolling
+        // Admission gate evaluation: Block if >= BlockThreshold and target branch is configured target
+        var targetBranch = _options.TargetBranchToBlock ?? "Rolling";
         var isRollingTarget = context.LabelsToAdd.Contains(GitHubLabels.TargetRolling) ||
                               context.ExistingLabels.Contains(GitHubLabels.TargetRolling) ||
-                              (!string.IsNullOrWhiteSpace(_options.TargetBranchToBlock) &&
-                               string.Equals(context.BaseBranch, _options.TargetBranchToBlock, StringComparison.OrdinalIgnoreCase)) ||
-                              string.Equals(context.BaseBranch, "main", StringComparison.OrdinalIgnoreCase) ||
-                              string.Equals(context.BaseBranch, "master", StringComparison.OrdinalIgnoreCase) ||
-                              string.Equals(context.BaseBranch, "rolling", StringComparison.OrdinalIgnoreCase);
+                              string.Equals(context.BaseBranch, targetBranch, StringComparison.OrdinalIgnoreCase) ||
+                              (string.Equals(targetBranch, "Rolling", StringComparison.OrdinalIgnoreCase) &&
+                               (string.Equals(context.BaseBranch, "main", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(context.BaseBranch, "master", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(context.BaseBranch, "rolling", StringComparison.OrdinalIgnoreCase)));
 
         if (totalCount >= _options.BlockThreshold && isRollingTarget)
         {

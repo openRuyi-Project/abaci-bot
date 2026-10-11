@@ -100,4 +100,64 @@ public class ArtifactServiceTests
 
         Assert.Null(result);
     }
+
+    [Fact]
+    public async Task DownloadRunRpmArtifactsAsync_ParsesArtifactListAndExtractsRpms()
+    {
+        var artifactListJson = """
+        {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "id": 99901,
+                    "name": "rpms-x86_64"
+                }
+            ]
+        }
+        """;
+
+        using var zipMs = new MemoryStream();
+        using (var archive = new ZipArchive(zipMs, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var entry = archive.CreateEntry("libfoo-1.0.0.rpm");
+            using var writer = new StreamWriter(entry.Open());
+            writer.Write("rpm-binary");
+        }
+        zipMs.Position = 0;
+
+        var handler = new DelegatingHandlerStub(req =>
+        {
+            if (req.RequestUri!.AbsolutePath.EndsWith("/artifacts"))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(artifactListJson) };
+            }
+            if (req.RequestUri.AbsolutePath.EndsWith("/zip"))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(zipMs.ToArray()) };
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+
+        var client = new HttpClient(handler);
+        _httpClientFactory.CreateClient("GitHubArtifactClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var service = new ArtifactService(_httpClientFactory, options);
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var rpms = await service.DownloadRunRpmArtifactsAsync("owner", "repo", 55555, tempDir);
+            Assert.Single(rpms);
+            Assert.EndsWith("libfoo-1.0.0.rpm", rpms[0]);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
 }
+

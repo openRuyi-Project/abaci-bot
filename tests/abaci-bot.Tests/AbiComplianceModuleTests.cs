@@ -134,5 +134,46 @@ public class AbiComplianceModuleTests
         Assert.False(result.IsBreakingChange);
         Assert.Contains($"exit code: {exitCode}", result.ErrorMessage);
     }
+
+    [Fact]
+    public async Task ProcessWorkflowRun_FullPipelineExecution_AppliesAbiLabelsAndIgnoresPrOnlyModules()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var abiModule = new AbiComplianceModule(_abiService, options);
+
+        var pipeline = new PullRequestPipeline(new IPullRequestModule[] { abiModule }, new LabelMutexEngine(), _gitHub);
+
+        var pr = (Octokit.PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequest));
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.Number))?.SetValue(pr, 42);
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.Labels))?.SetValue(pr, Array.Empty<Octokit.Label>());
+
+        _gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
+            .Returns(pr);
+
+        var diffResult = new AbiDiffResult(
+            Succeeded: true,
+            HasAbiChange: true,
+            IsBreakingChange: true,
+            Details: "SONAME changed; function symbol removed");
+
+        var context = PullRequestContext.FromWorkflowRun(_gitHub, "captains", "owner", "repo", pr, diffResult);
+
+        await pipeline.ExecuteAsync(context);
+
+        await _gitHub.Received().AddLabelsAsync(
+            "owner",
+            "repo",
+            42,
+            Arg.Is<string[]>(labels => labels.Contains(GitHubLabels.ImpactAbi) && labels.Contains(GitHubLabels.ImpactBreakingChange)),
+            Arg.Any<CancellationToken>());
+
+        await _gitHub.Received().CreateCommentAsync(
+            "owner",
+            "repo",
+            42,
+            Arg.Is<string>(c => c.Contains("ABI 破坏性兼容性变更预警")),
+            Arg.Any<CancellationToken>());
+    }
 }
+
 

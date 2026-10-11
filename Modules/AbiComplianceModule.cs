@@ -41,14 +41,18 @@ public class AbiComplianceModule : IPullRequestModule
         if (!_options.Enabled || context.IsTerminal)
             return false;
 
-        // Process if an ABI result is already attached in the context Items,
-        // or during PR opened / synchronize events for preliminary evaluation
-        return context.Items.ContainsKey("AbiDiffResult");
+        return context.AbiResult != null || context.Items.ContainsKey("AbiDiffResult");
     }
 
     public Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
-        if (context.Items.TryGetValue("AbiDiffResult", out var obj) && obj is AbiDiffResult result)
+        var result = context.AbiResult;
+        if (result == null && context.Items.TryGetValue("AbiDiffResult", out var obj) && obj is AbiDiffResult diffObj)
+        {
+            result = diffObj;
+        }
+
+        if (result != null)
         {
             ApplyAbiResult(context, result);
         }
