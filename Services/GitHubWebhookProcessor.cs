@@ -237,7 +237,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                     foreach (var prRpm in prRpms)
                     {
                         var fileName = Path.GetFileName(prRpm);
-                        var pkgName = fileName.Split('-')[0];
+                        var pkgName = ArtifactService.ExtractPackageName(fileName);
                         var baselineRpm = await _artifactService.DownloadBaselineRpmAsync(pkgName, tempDir, cancellationToken);
                         if (!string.IsNullOrEmpty(baselineRpm) && File.Exists(baselineRpm))
                         {

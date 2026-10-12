@@ -407,31 +407,16 @@ public class PullRequestContext
         WebhookHeaders? headers = null,
         CancellationToken cancellationToken = default)
     {
-        var labels = pullRequest.Labels?
-            .Select(l => l.Name)
-            .Where(n => !string.IsNullOrWhiteSpace(n))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        return new PullRequestContext(
-            gitHubService: gitHub,
-            teamName: teamName,
-            headers: headers,
-            eventType: PullRequestEventType.PullRequest,
-            owner: owner,
-            repo: repo,
-            prNumber: pullRequest.Number,
-            headSha: pullRequest.Head?.Sha ?? string.Empty,
-            baseBranch: pullRequest.Base?.Ref,
-            isDraft: pullRequest.Draft,
-            isMerged: pullRequest.Merged,
-            title: pullRequest.Title ?? string.Empty,
-            body: pullRequest.Body,
-            senderLogin: pullRequest.User?.Login,
-            authorLogin: pullRequest.User?.Login,
+        return FromPullRequestInternal(
+            gitHub,
+            teamName,
+            owner,
+            repo,
+            pullRequest,
+            PullRequestEventType.PullRequest,
             action: PullRequestAction.Synchronize.ToString(),
-            existingLabels: labels,
             prAction: PullRequestAction.Synchronize,
-            senderType: pullRequest.User?.Type?.ToString(),
+            headers: headers,
             cancellationToken: cancellationToken);
     }
 
@@ -448,16 +433,44 @@ public class PullRequestContext
         WebhookHeaders? headers = null,
         CancellationToken cancellationToken = default)
     {
+        var ctx = FromPullRequestInternal(
+            gitHub,
+            teamName,
+            owner,
+            repo,
+            pullRequest,
+            PullRequestEventType.WorkflowRun,
+            action: "completed",
+            prAction: null,
+            headers: headers,
+            cancellationToken: cancellationToken);
+
+        ctx.AbiResult = abiResult;
+        return ctx;
+    }
+
+    private static PullRequestContext FromPullRequestInternal(
+        IGitHubService gitHub,
+        string teamName,
+        string owner,
+        string repo,
+        PullRequest pullRequest,
+        PullRequestEventType eventType,
+        string action,
+        PullRequestAction? prAction,
+        WebhookHeaders? headers,
+        CancellationToken cancellationToken)
+    {
         var labels = pullRequest.Labels?
             .Select(l => l.Name)
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        var ctx = new PullRequestContext(
+        return new PullRequestContext(
             gitHubService: gitHub,
             teamName: teamName,
             headers: headers,
-            eventType: PullRequestEventType.WorkflowRun,
+            eventType: eventType,
             owner: owner,
             repo: repo,
             prNumber: pullRequest.Number,
@@ -469,19 +482,11 @@ public class PullRequestContext
             body: pullRequest.Body,
             senderLogin: pullRequest.User?.Login,
             authorLogin: pullRequest.User?.Login,
-            action: "completed",
+            action: action,
             existingLabels: labels,
-            prAction: null,
+            prAction: prAction,
             senderType: pullRequest.User?.Type?.ToString(),
             cancellationToken: cancellationToken);
-
-        ctx.AbiResult = abiResult;
-        if (abiResult != null)
-        {
-            ctx.Items["AbiDiffResult"] = abiResult;
-        }
-
-        return ctx;
     }
 
 

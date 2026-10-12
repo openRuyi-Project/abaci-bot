@@ -41,20 +41,14 @@ public class AbiComplianceModule : IPullRequestModule
         if (!_options.Enabled || context.IsTerminal)
             return false;
 
-        return context.AbiResult != null || context.Items.ContainsKey("AbiDiffResult");
+        return context.AbiResult != null;
     }
 
     public Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
-        var result = context.AbiResult;
-        if (result == null && context.Items.TryGetValue("AbiDiffResult", out var obj) && obj is AbiDiffResult diffObj)
+        if (context.AbiResult != null)
         {
-            result = diffObj;
-        }
-
-        if (result != null)
-        {
-            ApplyAbiResult(context, result);
+            ApplyAbiResult(context, context.AbiResult);
         }
 
         return Task.CompletedTask;

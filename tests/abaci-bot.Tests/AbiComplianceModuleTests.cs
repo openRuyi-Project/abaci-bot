@@ -50,7 +50,7 @@ public class AbiComplianceModuleTests
             HasAbiChange: true,
             IsBreakingChange: false,
             Details: "1 function with some changes");
-        context.Items["AbiDiffResult"] = diffResult;
+        context.AbiResult = diffResult;
 
         Assert.True(module.ShouldProcess(context));
         await module.ProcessAsync(context, CancellationToken.None);
@@ -72,7 +72,7 @@ public class AbiComplianceModuleTests
             HasAbiChange: true,
             IsBreakingChange: true,
             Details: "SONAME changed from libfoo.so.1 to libfoo.so.2; 3 removed functions");
-        context.Items["AbiDiffResult"] = diffResult;
+        context.AbiResult = diffResult;
 
         await module.ProcessAsync(context, CancellationToken.None);
 
@@ -96,7 +96,7 @@ public class AbiComplianceModuleTests
             IsBreakingChange: false,
             Details: string.Empty,
             ErrorMessage: "abidiff binary not available");
-        context.Items["AbiDiffResult"] = diffResult;
+        context.AbiResult = diffResult;
 
         await module.ProcessAsync(context, CancellationToken.None);
 

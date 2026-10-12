@@ -159,5 +159,105 @@ public class ArtifactServiceTests
             }
         }
     }
+
+    [Theory]
+    [InlineData("libgpg-error-1.61-999.or.x86_64.rpm", "libgpg-error")]
+    [InlineData("python3-dnf-4.18-999.or.noarch.rpm", "python3-dnf")]
+    [InlineData("dirmngr-2.5.24-999.or.x86_64.rpm", "dirmngr")]
+    [InlineData("gnupg-2.5.24-999.or.x86_64.rpm", "gnupg")]
+    [InlineData("libgcrypt-1.12.4-999.or.x86_64.rpm", "libgcrypt")]
+    [InlineData("zlib-ng-compat-2.1.3-1.oe2403.riscv64.rpm", "zlib-ng-compat")]
+    [InlineData("bash-5.2-1.fc39.x86_64.rpm", "bash")]
+    [InlineData("my-pkg-1.0.rpm", "my-pkg")]
+    [InlineData("simple.rpm", "simple")]
+    public void ExtractPackageName_CorrectlyExtractsPackageName(string fileName, string expectedName)
+    {
+        var actual = ArtifactService.ExtractPackageName(fileName);
+        Assert.Equal(expectedName, actual);
+    }
+
+    [Fact]
+    public async Task DownloadBaselineRpmAsync_WithRpmDependencyServiceLocation_UsesLocationHref()
+    {
+        string? requestedUrl = null;
+        var handler = new DelegatingHandlerStub(req =>
+        {
+            requestedUrl = req.RequestUri!.ToString();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(Encoding.UTF8.GetBytes("rpm-baseline-bytes"))
+            };
+        });
+
+        var client = new HttpClient(handler);
+        _httpClientFactory.CreateClient("StableRpmClient").Returns(client);
+
+        var rpmDepService = Substitute.For<IRpmDependencyService>();
+        rpmDepService.GetPackageLocation("libgpg-error")
+            .Returns("Packages/libgpg-error-1.47-1.oe2403.x86_64.rpm");
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            StableRpmBaseUrl = "https://repo.openeuler.org/openEuler-24.03-LTS/OS/x86_64"
+        });
+
+        var service = new ArtifactService(_httpClientFactory, options, rpmDepService);
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var downloaded = await service.DownloadBaselineRpmAsync("libgpg-error", tempDir);
+            Assert.NotNull(downloaded);
+            Assert.True(File.Exists(downloaded));
+            Assert.Equal("https://repo.openeuler.org/openEuler-24.03-LTS/OS/x86_64/Packages/libgpg-error-1.47-1.oe2403.x86_64.rpm", requestedUrl);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task DownloadBaselineRpmAsync_WithoutLocationHref_FallsBackToDirectRpmUrl()
+    {
+        string? requestedUrl = null;
+        var handler = new DelegatingHandlerStub(req =>
+        {
+            requestedUrl = req.RequestUri!.ToString();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(Encoding.UTF8.GetBytes("rpm-baseline-bytes"))
+            };
+        });
+
+        var client = new HttpClient(handler);
+        _httpClientFactory.CreateClient("StableRpmClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            StableRpmBaseUrl = "https://repo.openeuler.org/baselines"
+        });
+
+        var service = new ArtifactService(_httpClientFactory, options);
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var downloaded = await service.DownloadBaselineRpmAsync("libgpg-error", tempDir);
+            Assert.NotNull(downloaded);
+            Assert.True(File.Exists(downloaded));
+            Assert.Equal("https://repo.openeuler.org/baselines/libgpg-error.rpm", requestedUrl);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
 }
 

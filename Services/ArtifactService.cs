@@ -13,15 +13,18 @@ public class ArtifactService : IArtifactService
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly AbiComplianceOptions _options;
+    private readonly IRpmDependencyService? _rpmDependencyService;
     private readonly ILogger<ArtifactService>? _logger;
 
     public ArtifactService(
         IHttpClientFactory httpClientFactory,
         IOptions<AbiComplianceOptions> options,
+        IRpmDependencyService? rpmDependencyService = null,
         ILogger<ArtifactService>? logger = null)
     {
         _httpClientFactory = httpClientFactory;
         _options = options.Value;
+        _rpmDependencyService = rpmDependencyService;
         _logger = logger;
     }
 
@@ -117,6 +120,39 @@ public class ArtifactService : IArtifactService
         return allRpms;
     }
 
+    /// <summary>
+    /// Extracts the package name from an RPM file name following the standard RPM naming convention
+    /// [NAME]-[VERSION]-[RELEASE].[ARCH].rpm.
+    /// In RPM NEVRA conventions, version and release do not contain hyphens, while package names frequently do.
+    /// </summary>
+    public static string ExtractPackageName(string rpmFileName)
+    {
+        if (string.IsNullOrWhiteSpace(rpmFileName))
+            return string.Empty;
+
+        var fileName = Path.GetFileName(rpmFileName);
+        if (fileName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
+        {
+            fileName = fileName[..^4];
+        }
+
+        var parts = fileName.Split('-');
+        if (parts.Length >= 3 && parts[^1].Length > 0 && char.IsDigit(parts[^1][0]) &&
+            parts[^2].Length > 0 && char.IsDigit(parts[^2][0]))
+        {
+            // Standard NEVRA: the last two segments are version and release.arch (both start with digits)
+            return string.Join('-', parts[..^2]);
+        }
+
+        if (parts.Length >= 2 && parts[^1].Length > 0 && char.IsDigit(parts[^1][0]))
+        {
+            // Package name and version without release (e.g. my-pkg-1.0)
+            return string.Join('-', parts[..^1]);
+        }
+
+        return parts[0];
+    }
+
     public async Task<string?> DownloadBaselineRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(_options.StableRpmBaseUrl))
@@ -134,7 +170,20 @@ public class ArtifactService : IArtifactService
         try
         {
             var client = _httpClientFactory.CreateClient("StableRpmClient");
-            var url = $"{_options.StableRpmBaseUrl.TrimEnd('/')}/{Uri.EscapeDataString(packageName)}.rpm";
+            var locationHref = _rpmDependencyService?.GetPackageLocation(packageName);
+            string url;
+            if (!string.IsNullOrWhiteSpace(locationHref))
+            {
+                url = $"{_options.StableRpmBaseUrl.TrimEnd('/')}/{locationHref.TrimStart('/')}";
+            }
+            else if (packageName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
+            {
+                url = $"{_options.StableRpmBaseUrl.TrimEnd('/')}/{packageName.TrimStart('/')}";
+            }
+            else
+            {
+                url = $"{_options.StableRpmBaseUrl.TrimEnd('/')}/{Uri.EscapeDataString(packageName)}.rpm";
+            }
 
             using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!response.IsSuccessStatusCode)

@@ -16,6 +16,7 @@ public class PullRequestPipelineCommentTests
     private PullRequestContext CreateContext()
     {
         var pr = new PullRequest();
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(pr, Array.Empty<Label>());
         _gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(pr);
 

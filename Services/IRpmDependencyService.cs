@@ -26,6 +26,12 @@ public interface IRpmDependencyService
     Task LoadMetadataAsync(Stream stream, bool isGzipped = true, CancellationToken ct = default);
 
     /// <summary>
+    /// Resolves the relative repository location href for a package (e.g. "Packages/libgpg-error-1.47-1.oe2403.x86_64.rpm")
+    /// extracted from primary.xml metadata.
+    /// </summary>
+    string? GetPackageLocation(string packageName);
+
+    /// <summary>
     /// Initializes or refreshes metadata from configured remote URL or local cache file.
     /// </summary>
     Task<bool> RefreshMetadataAsync(CancellationToken ct = default);

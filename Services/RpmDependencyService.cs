@@ -18,6 +18,7 @@ public class RpmDependencyService : IRpmDependencyService
 
     // Key: provider package name, Value: set of downstream packages directly requiring it
     private Dictionary<string, HashSet<string>> _reverseGraph = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, string> _packageLocations = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _graphLock = new();
 
     public RpmDependencyService(
@@ -28,6 +29,17 @@ public class RpmDependencyService : IRpmDependencyService
         _httpClientFactory = httpClientFactory;
         _options = options.Value;
         _logger = logger;
+    }
+
+    public string? GetPackageLocation(string packageName)
+    {
+        if (string.IsNullOrWhiteSpace(packageName))
+            return null;
+
+        lock (_graphLock)
+        {
+            return _packageLocations.TryGetValue(packageName, out var loc) ? loc : null;
+        }
     }
 
     public IReadOnlySet<string> GetAffectedPackages(string packageName, int? maxDepth = null)
@@ -219,6 +231,7 @@ public class RpmDependencyService : IRpmDependencyService
         var capabilityProviders = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         // Map package name -> set of required capabilities
         var packageRequirements = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var packageLocations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         string? currentPackage = null;
         bool inProvides = false;
@@ -253,6 +266,14 @@ public class RpmDependencyService : IRpmDependencyService
                         {
                             packageRequirements[currentPackage] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         }
+                    }
+                }
+                else if (name == "location" && currentPackage != null)
+                {
+                    var href = reader.GetAttribute("href");
+                    if (!string.IsNullOrWhiteSpace(href))
+                    {
+                        packageLocations[currentPackage] = href;
                     }
                 }
                 else if (name == "provides")
@@ -337,6 +358,7 @@ public class RpmDependencyService : IRpmDependencyService
         lock (_graphLock)
         {
             _reverseGraph = newReverseGraph;
+            _packageLocations = packageLocations;
         }
 
         _logger?.LogInformation(
