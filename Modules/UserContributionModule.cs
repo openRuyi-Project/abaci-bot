@@ -52,18 +52,13 @@ public class UserContributionModule : IPullRequestModule
         }
 
         var domain = GitHubWebhookProcessor.ExtractEmailDomain(userEmail);
-
-        // If author email is absent or unparseable, identity is undetermined: do not modify existing community labels.
-        if (string.IsNullOrWhiteSpace(domain))
-        {
-            return;
-        }
-
         string? desiredLabel = null;
 
-        // Official ISCAS staff members are excluded from community contribution labels.
-        // For non-staff contributors, classify as student intern or general community contribution.
-        if (!domain.Equals("iscas.ac.cn", StringComparison.OrdinalIgnoreCase))
+        // If author email has a valid parseable domain and is not official ISCAS staff,
+        // classify as student intern or general community contribution.
+        // For staff (iscas.ac.cn) or unknown/unparseable author email (desiredLabel == null),
+        // any pre-existing community labels are reconciled and removed.
+        if (!string.IsNullOrWhiteSpace(domain) && !domain.Equals("iscas.ac.cn", StringComparison.OrdinalIgnoreCase))
         {
             desiredLabel = GitHubWebhookProcessor.IsInternEmail(userEmail)
                 ? GitHubLabels.CommunityStudent
@@ -71,7 +66,6 @@ public class UserContributionModule : IPullRequestModule
         }
 
         // Reconcile managed label set: apply current classification and clear stale classifications.
-        // For staff (desiredLabel == null), this removes any pre-existing community labels.
         context.ReconcileLabels(ManagedLabels, desiredLabel);
     }
 }

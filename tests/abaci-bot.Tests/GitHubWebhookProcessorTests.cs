@@ -1237,7 +1237,7 @@ public class GitHubWebhookProcessorTests
                 {
                     typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.MergedAt))?.SetValue(pr, (DateTimeOffset?)DateTimeOffset.UtcNow);
                 }
-                var stateStr = payload.PullRequest.State?.StringValue ?? "open";
+                var stateStr = payload.PullRequest.State?.StringValue ?? (payload is PullRequestClosedEvent ? "closed" : "open");
                 typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.State))?.SetValue(pr, new Octokit.StringEnum<Octokit.ItemState>(string.Equals(stateStr, "closed", StringComparison.OrdinalIgnoreCase) ? Octokit.ItemState.Closed : Octokit.ItemState.Open));
                 PullRequest = pr;
 
@@ -1247,6 +1247,15 @@ public class GitHubWebhookProcessorTests
                     {
                         if (!string.IsNullOrWhiteSpace(l.Name)) RemoteLabels.Add(l.Name);
                     }
+                }
+
+                if (payload is PullRequestLabeledEvent labeledEvt && labeledEvt.Label?.Name != null)
+                {
+                    RemoteLabels.Add(labeledEvt.Label.Name);
+                }
+                if (payload is PullRequestUnlabeledEvent unlabeledEvt && unlabeledEvt.Label?.Name != null)
+                {
+                    RemoteLabels.Remove(unlabeledEvt.Label.Name);
                 }
             }
         }

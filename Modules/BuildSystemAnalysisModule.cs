@@ -17,12 +17,12 @@ public class BuildSystemAnalysisModule : IPullRequestModule
     public int Priority => 30;
 
     /// <summary>
-    /// Complete set of labels managed by this module across CI and build systems.
-    /// Excludes Target:* release branch labels, which are governed by TargetClassificationModule.
+    /// Complete set of labels managed by this module across CI, target release, and build systems.
     /// </summary>
     public static readonly IReadOnlyCollection<string> ManagedLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         GitHubLabels.Ci,
+        GitHubLabels.TargetRolling,
         GitHubLabels.BuildSystemAutotools,
         GitHubLabels.BuildSystemCmake,
         GitHubLabels.BuildSystemGolangModule,
@@ -91,11 +91,10 @@ public class BuildSystemAnalysisModule : IPullRequestModule
                 }
             }
 
-            // Standard package specification directory: legacy compatibility write for Target: Rolling.
-            // Full release target lifecycle governance is owned exclusively by TargetClassificationModule.
+            // Standard package specification directory maps to Target: Rolling
             if (file.FileName.StartsWith("SPECS/", StringComparison.Ordinal))
             {
-                context.LabelsToAdd.Add(GitHubLabels.TargetRolling);
+                desiredLabels.Add(GitHubLabels.TargetRolling);
             }
         }
 

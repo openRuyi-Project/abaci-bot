@@ -485,15 +485,19 @@ public class PullRequestContext
         if (freshPr == null)
             return false;
 
-        if (freshPr.Labels != null)
+        if (freshPr.Labels == null)
         {
-            ExistingLabels.Clear();
-            foreach (var label in freshPr.Labels)
+            LastRefreshException = new InvalidOperationException(
+                $"Refresh for {Owner}/{Repo}#{PrNumber} returned a pull request without a Labels collection.");
+            return false;
+        }
+
+        ExistingLabels.Clear();
+        foreach (var label in freshPr.Labels)
+        {
+            if (!string.IsNullOrWhiteSpace(label.Name))
             {
-                if (!string.IsNullOrWhiteSpace(label.Name))
-                {
-                    ExistingLabels.Add(label.Name);
-                }
+                ExistingLabels.Add(label.Name);
             }
         }
 

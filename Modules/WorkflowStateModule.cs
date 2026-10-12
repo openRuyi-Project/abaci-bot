@@ -65,26 +65,30 @@ public class WorkflowStateModule : IPullRequestModule
         var isBlocked = context.IsBlocked;
 
         // When "Workflow: Blocked" is added, temporarily remove active review and development labels
+        // only if the refreshed remote state confirms the PR is currently blocked.
         if (action == PullRequestAction.Labeled)
         {
             if (context.PullRequestEvent is PullRequestLabeledEvent labeledEvent &&
                 GitHubWebhookProcessor.IsBlockedLabel(labeledEvent.Label?.Name))
             {
-                context.LabelsToRemove.Add(GitHubLabels.WorkflowInReview);
-                context.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
-                context.LabelsToRemove.Add(GitHubLabels.WorkflowInDev);
+                if (context.IsBlocked)
+                {
+                    context.LabelsToRemove.Add(GitHubLabels.WorkflowInReview);
+                    context.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
+                    context.LabelsToRemove.Add(GitHubLabels.WorkflowInDev);
+                }
             }
             return Task.CompletedTask;
         }
 
         // When "Workflow: Blocked" is removed, restore the pull request to development or review
-        // provided the PR is open and not already completed or merged.
+        // provided the PR is open, not already completed or merged, and not currently re-blocked on remote.
         if (action == PullRequestAction.Unlabeled)
         {
             if (context.PullRequestEvent is PullRequestUnlabeledEvent unlabeledEvent &&
                 GitHubWebhookProcessor.IsBlockedLabel(unlabeledEvent.Label?.Name))
             {
-                if (!context.IsTerminal)
+                if (!context.IsBlocked && !context.IsTerminal)
                 {
                     if (context.IsDraft || context.Title.StartsWith("WIP", StringComparison.OrdinalIgnoreCase))
                     {
@@ -99,16 +103,20 @@ public class WorkflowStateModule : IPullRequestModule
             return Task.CompletedTask;
         }
 
-        // Clean up active workflow labels when closed; tag as Complete if merged
+        // Clean up active workflow labels when closed; tag as Complete if merged.
+        // Gated on remote state: if PR was already reopened remotely, ignore stale closed webhook.
         if (action == PullRequestAction.Closed)
         {
-            if (context.IsMerged == true)
+            if (context.IsClosed)
             {
-                context.LabelsToAdd.Add(GitHubLabels.WorkflowComplete);
+                if (context.IsMerged == true)
+                {
+                    context.LabelsToAdd.Add(GitHubLabels.WorkflowComplete);
+                }
+                context.LabelsToRemove.Add(GitHubLabels.WorkflowInDev);
+                context.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
+                context.LabelsToRemove.Add(GitHubLabels.WorkflowInReview);
             }
-            context.LabelsToRemove.Add(GitHubLabels.WorkflowInDev);
-            context.LabelsToRemove.Add(GitHubLabels.WorkflowReadyForReview);
-            context.LabelsToRemove.Add(GitHubLabels.WorkflowInReview);
             return Task.CompletedTask;
         }
 

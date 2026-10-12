@@ -1124,6 +1124,7 @@ public class PipelineAndModulesTests
         var gitHub = Substitute.For<IGitHubService>();
         var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
         typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, true);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, Array.Empty<Octokit.Label>());
 
         gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(freshPr));
@@ -1145,6 +1146,7 @@ public class PipelineAndModulesTests
         var gitHub = Substitute.For<IGitHubService>();
         var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
         typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, true);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, Array.Empty<Octokit.Label>());
 
         gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(freshPr));
@@ -1168,6 +1170,7 @@ public class PipelineAndModulesTests
         var gitHub = Substitute.For<IGitHubService>();
         var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
         typeof(PullRequest).GetProperty(nameof(PullRequest.Body))?.SetValue(freshPr, "PR description body");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, Array.Empty<Octokit.Label>());
 
         gitHub.GetPullRequestAsync("owner", "repo", 42, Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(freshPr));
@@ -1858,6 +1861,7 @@ public class PipelineAndModulesTests
         var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
         typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, false);
         typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(freshPr, new StringEnum<ItemState>(ItemState.Open));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, Array.Empty<Octokit.Label>());
 
         gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(freshPr));
@@ -1884,6 +1888,7 @@ public class PipelineAndModulesTests
         var gitHub = Substitute.For<IGitHubService>();
         var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
         typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(freshPr, new StringEnum<ItemState>(ItemState.Open));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, Array.Empty<Octokit.Label>());
 
         gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(freshPr));
@@ -1988,7 +1993,7 @@ public class PipelineAndModulesTests
             senderLogin: "contributor",
             authorLogin: "contributor",
             action: "labeled",
-            existingLabels: new[] { GitHubLabels.WorkflowInDev },
+            existingLabels: new[] { GitHubLabels.WorkflowInDev, GitHubLabels.WorkflowBlocked },
             prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Labeled,
             prEvent: labeledEvent);
 
@@ -2027,7 +2032,7 @@ public class PipelineAndModulesTests
             senderLogin: "contributor",
             authorLogin: "contributor",
             action: "unlabeled",
-            existingLabels: new[] { GitHubLabels.WorkflowBlocked },
+            existingLabels: Array.Empty<string>(),
             prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Unlabeled,
             prEvent: unlabeledEvent);
 
@@ -2079,13 +2084,13 @@ public class PipelineAndModulesTests
             gitHub,
             prNumber: 1,
             headSha: "sha",
-            existingLabels: new[] { GitHubLabels.Ci, GitHubLabels.TargetRolling },
+            existingLabels: new[] { GitHubLabels.Ci, GitHubLabels.WorkflowReadyForReview },
             prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Synchronize);
 
         await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Contains(GitHubLabels.Ci, context.LabelsToRemove);
-        Assert.DoesNotContain(GitHubLabels.TargetRolling, context.LabelsToRemove);
+        Assert.DoesNotContain(GitHubLabels.WorkflowReadyForReview, context.LabelsToRemove);
     }
 
     [Fact]
@@ -2133,7 +2138,7 @@ public class PipelineAndModulesTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("invalid-email-string")]
-    public async Task UserContributionModule_MissingOrUnparseableEmail_PreservesExistingCommunityLabel(string? email)
+    public async Task UserContributionModule_MissingOrUnparseableEmail_ClearsCommunityLabels(string? email)
     {
         var module = new UserContributionModule();
         var gitHub = Substitute.For<IGitHubService>();
@@ -2148,16 +2153,37 @@ public class PipelineAndModulesTests
         await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Empty(context.LabelsToAdd);
-        Assert.DoesNotContain(GitHubLabels.CommunityContribution, context.LabelsToRemove);
-        Assert.DoesNotContain(GitHubLabels.CommunityStudent, context.LabelsToRemove);
+        Assert.Contains(GitHubLabels.CommunityContribution, context.LabelsToRemove);
     }
 
     [Fact]
-    public void BuildSystemAnalysisModule_ManagedLabels_DoesNotIncludeTargetRolling()
+    public void BuildSystemAnalysisModule_ManagedLabels_IncludesTargetRolling()
     {
         var module = new BuildSystemAnalysisModule();
-        Assert.DoesNotContain(GitHubLabels.TargetRolling, BuildSystemAnalysisModule.ManagedLabels);
+        Assert.Contains(GitHubLabels.TargetRolling, BuildSystemAnalysisModule.ManagedLabels);
         Assert.Equal(BuildSystemAnalysisModule.ManagedLabels, ((IPullRequestModule)module).ManagedLabels);
+    }
+
+    [Fact]
+    public async Task BuildSystemAnalysisModule_SpecsDirectoryRemoved_RemovesTargetRollingLabel()
+    {
+        var module = new BuildSystemAnalysisModule();
+        var gitHub = Substitute.For<IGitHubService>();
+        var file = (Octokit.PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequestFile));
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.FileName))?.SetValue(file, "src/main.c");
+        gitHub.GetPullRequestFilesAsync("owner", "repo", 1, Arg.Any<CancellationToken>())
+            .Returns(new[] { file });
+
+        var context = CreateMockContext(
+            gitHub,
+            prNumber: 1,
+            existingLabels: new[] { GitHubLabels.TargetRolling },
+            prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Synchronize);
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.DoesNotContain(GitHubLabels.TargetRolling, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.TargetRolling, context.LabelsToRemove);
     }
 
     [Fact]
@@ -2472,6 +2498,387 @@ public class PipelineAndModulesTests
         Assert.Contains("label-b", context.LabelsToAdd);
         Assert.Contains("label-a", context.LabelsToRemove);
     }
+
+    #region R17 Regression Tests
+
+    [Fact]
+    public async Task PullRequestContext_RefreshAsync_NullLabels_FailsClosedAndRecordsException()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(freshPr, new StringEnum<ItemState>(ItemState.Open));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, null);
+
+        gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(freshPr));
+
+        var context = CreateMockContext(gitHub, prNumber: 1, existingLabels: new[] { "existing-label" });
+
+        var success = await context.RefreshAsync();
+
+        Assert.False(success);
+        Assert.NotNull(context.LastRefreshException);
+        Assert.IsType<InvalidOperationException>(context.LastRefreshException);
+        // Preserves previous existing labels rather than corrupting state
+        Assert.Contains("existing-label", context.ExistingLabels);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_DelayedClosedEvent_RemoteReopened_PreservesActiveWorkflowLabels()
+    {
+        // Scenario 1: Remote is open and has Workflow: In Review. A delayed closed event arrives.
+        var remoteLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { GitHubLabels.WorkflowInReview };
+        var gitHub = Substitute.For<IGitHubService>();
+
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(freshPr, new StringEnum<ItemState>(ItemState.Open));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, false);
+
+        gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var labelList = remoteLabels.Select(name =>
+                {
+                    var lbl = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+                    typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(lbl, name);
+                    return lbl;
+                }).ToList();
+                typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, labelList);
+                return Task.FromResult(freshPr);
+            });
+
+        gitHub.AddLabelsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                foreach (var l in ci.Arg<string[]>()) remoteLabels.Add(l);
+                return Task.CompletedTask;
+            });
+
+        gitHub.RemoveLabelAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                remoteLabels.Remove(ci.ArgAt<string>(3));
+                return Task.CompletedTask;
+            });
+
+        var workflowModule = new WorkflowStateModule();
+        var mutexEngine = new LabelMutexEngine();
+        var logger = Substitute.For<ILogger<PullRequestPipeline>>();
+        var pipeline = new PullRequestPipeline(new[] { workflowModule }, mutexEngine, gitHub, logger);
+
+        // Stale closed webhook payload
+        var closedEvent = (Octokit.Webhooks.Events.PullRequest.PullRequestClosedEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Events.PullRequest.PullRequestClosedEvent));
+        var pr = (Octokit.Webhooks.Models.PullRequestEvent.PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Models.PullRequestEvent.PullRequest));
+        typeof(Octokit.Webhooks.Events.PullRequestEvent).GetProperty(nameof(Octokit.Webhooks.Events.PullRequestEvent.PullRequest))?.SetValue(closedEvent, pr);
+
+        var context = PullRequestContext.FromPullRequestEvent(
+            gitHub,
+            "captains",
+            null,
+            closedEvent,
+            Octokit.Webhooks.Events.PullRequest.PullRequestAction.Closed);
+
+        await pipeline.ExecuteAsync(context);
+
+        // Assert final remote set: In Review was preserved, not wiped!
+        Assert.Contains(GitHubLabels.WorkflowInReview, remoteLabels);
+        Assert.DoesNotContain(GitHubLabels.WorkflowComplete, remoteLabels);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_DelayedUnlabeledEvent_RemoteReblocked_PreservesWorkflowBlocked()
+    {
+        // Scenario 2: Remote is re-blocked (Workflow: Blocked). A delayed unlabeled event arrives.
+        var remoteLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { GitHubLabels.WorkflowBlocked };
+        var gitHub = Substitute.For<IGitHubService>();
+
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(freshPr, new StringEnum<ItemState>(ItemState.Open));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, false);
+
+        gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var labelList = remoteLabels.Select(name =>
+                {
+                    var lbl = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+                    typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(lbl, name);
+                    return lbl;
+                }).ToList();
+                typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, labelList);
+                return Task.FromResult(freshPr);
+            });
+
+        gitHub.AddLabelsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                foreach (var l in ci.Arg<string[]>()) remoteLabels.Add(l);
+                return Task.CompletedTask;
+            });
+
+        gitHub.RemoveLabelAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                remoteLabels.Remove(ci.ArgAt<string>(3));
+                return Task.CompletedTask;
+            });
+
+        var workflowModule = new WorkflowStateModule();
+        var mutexEngine = new LabelMutexEngine();
+        var logger = Substitute.For<ILogger<PullRequestPipeline>>();
+        var pipeline = new PullRequestPipeline(new[] { workflowModule }, mutexEngine, gitHub, logger);
+
+        // Stale unlabeled webhook payload
+        var unlabeledEvent = (Octokit.Webhooks.Events.PullRequest.PullRequestUnlabeledEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Events.PullRequest.PullRequestUnlabeledEvent));
+        var blockedLabel = (Octokit.Webhooks.Models.Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Models.Label));
+        typeof(Octokit.Webhooks.Models.Label).GetProperty(nameof(Octokit.Webhooks.Models.Label.Name))?.SetValue(blockedLabel, GitHubLabels.WorkflowBlocked);
+        typeof(Octokit.Webhooks.Events.PullRequest.PullRequestUnlabeledEvent).GetProperty(nameof(Octokit.Webhooks.Events.PullRequest.PullRequestUnlabeledEvent.Label))?.SetValue(unlabeledEvent, blockedLabel);
+
+        var context = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 1,
+            headSha: "sha",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: false,
+            title: "PR",
+            body: null,
+            senderLogin: "contributor",
+            authorLogin: "contributor",
+            action: "unlabeled",
+            existingLabels: Array.Empty<string>(),
+            prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Unlabeled,
+            prEvent: unlabeledEvent);
+
+        await pipeline.ExecuteAsync(context);
+
+        // Assert final remote set: Blocked was preserved and In Review was not added!
+        Assert.Contains(GitHubLabels.WorkflowBlocked, remoteLabels);
+        Assert.DoesNotContain(GitHubLabels.WorkflowInReview, remoteLabels);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_DelayedLabeledEvent_RemoteUnblocked_PreservesActiveWorkflowLabels()
+    {
+        // Scenario 3: Remote was unblocked and is In Review. A delayed labeled(Blocked) event arrives.
+        var remoteLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { GitHubLabels.WorkflowInReview };
+        var gitHub = Substitute.For<IGitHubService>();
+
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(freshPr, new StringEnum<ItemState>(ItemState.Open));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, false);
+
+        gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var labelList = remoteLabels.Select(name =>
+                {
+                    var lbl = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+                    typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(lbl, name);
+                    return lbl;
+                }).ToList();
+                typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, labelList);
+                return Task.FromResult(freshPr);
+            });
+
+        gitHub.AddLabelsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                foreach (var l in ci.Arg<string[]>()) remoteLabels.Add(l);
+                return Task.CompletedTask;
+            });
+
+        gitHub.RemoveLabelAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                remoteLabels.Remove(ci.ArgAt<string>(3));
+                return Task.CompletedTask;
+            });
+
+        var workflowModule = new WorkflowStateModule();
+        var mutexEngine = new LabelMutexEngine();
+        var logger = Substitute.For<ILogger<PullRequestPipeline>>();
+        var pipeline = new PullRequestPipeline(new[] { workflowModule }, mutexEngine, gitHub, logger);
+
+        // Stale labeled webhook payload
+        var labeledEvent = (Octokit.Webhooks.Events.PullRequest.PullRequestLabeledEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Events.PullRequest.PullRequestLabeledEvent));
+        var blockedLabel = (Octokit.Webhooks.Models.Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Webhooks.Models.Label));
+        typeof(Octokit.Webhooks.Models.Label).GetProperty(nameof(Octokit.Webhooks.Models.Label.Name))?.SetValue(blockedLabel, GitHubLabels.WorkflowBlocked);
+        typeof(Octokit.Webhooks.Events.PullRequest.PullRequestLabeledEvent).GetProperty(nameof(Octokit.Webhooks.Events.PullRequest.PullRequestLabeledEvent.Label))?.SetValue(labeledEvent, blockedLabel);
+
+        var context = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 1,
+            headSha: "sha",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: false,
+            title: "PR",
+            body: null,
+            senderLogin: "contributor",
+            authorLogin: "contributor",
+            action: "labeled",
+            existingLabels: new[] { GitHubLabels.WorkflowInReview },
+            prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Labeled,
+            prEvent: labeledEvent);
+
+        await pipeline.ExecuteAsync(context);
+
+        // Assert final remote set: In Review was preserved, not stripped!
+        Assert.Contains(GitHubLabels.WorkflowInReview, remoteLabels);
+        Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, remoteLabels);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_MultiEvent_SpecsFileRemoved_ConvergesFinalRemoteLabels()
+    {
+        // Two consecutive pipeline executions:
+        // Event 1: PR has SPECS/package.spec -> adds Target: Rolling.
+        // Event 2: PR files changed, SPECS removed -> removes Target: Rolling.
+        var remoteLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var currentFiles = new List<string> { "SPECS/package.spec" };
+        var gitHub = Substitute.For<IGitHubService>();
+
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(freshPr, new StringEnum<ItemState>(ItemState.Open));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, false);
+
+        gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var labelList = remoteLabels.Select(name =>
+                {
+                    var lbl = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+                    typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(lbl, name);
+                    return lbl;
+                }).ToList();
+                typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, labelList);
+                return Task.FromResult(freshPr);
+            });
+
+        gitHub.GetPullRequestFilesAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                IReadOnlyList<Octokit.PullRequestFile> files = currentFiles.Select(f =>
+                {
+                    var prFile = (Octokit.PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequestFile));
+                    typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.FileName))?.SetValue(prFile, f);
+                    typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Status))?.SetValue(prFile, "modified");
+                    return prFile;
+                }).ToList();
+                return Task.FromResult(files);
+            });
+
+        gitHub.GetFileContentAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns("Name: test\nVersion: 1.0");
+
+        gitHub.AddLabelsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                foreach (var l in ci.Arg<string[]>()) remoteLabels.Add(l);
+                return Task.CompletedTask;
+            });
+
+        gitHub.RemoveLabelAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                remoteLabels.Remove(ci.ArgAt<string>(3));
+                return Task.CompletedTask;
+            });
+
+        var module = new BuildSystemAnalysisModule();
+        var mutexEngine = new LabelMutexEngine();
+        var logger = Substitute.For<ILogger<PullRequestPipeline>>();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub, logger);
+
+        // Run Event 1: Opened
+        var ctx1 = CreateMockContext(gitHub, prNumber: 1, action: "opened", prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Opened);
+        await pipeline.ExecuteAsync(ctx1);
+        Assert.Contains(GitHubLabels.TargetRolling, remoteLabels);
+
+        // Run Event 2: Synchronize with SPECS removed
+        currentFiles.Clear();
+        currentFiles.Add("src/main.c");
+        var ctx2 = CreateMockContext(gitHub, prNumber: 1, action: "synchronize", prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Synchronize);
+        await pipeline.ExecuteAsync(ctx2);
+
+        // Final remote state: Target: Rolling was cleanly removed
+        Assert.DoesNotContain(GitHubLabels.TargetRolling, remoteLabels);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_MultiEvent_CommunityEmailChangedToUnknown_ConvergesFinalRemoteLabels()
+    {
+        // Event 1: Author has community email -> adds Community: Contribution.
+        // Event 2: Author email becomes unparseable/unknown -> removes Community: Contribution.
+        var remoteLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? authorEmail = "alice@gmail.com";
+        var gitHub = Substitute.For<IGitHubService>();
+
+        var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(freshPr, new StringEnum<ItemState>(ItemState.Open));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(freshPr, false);
+
+        gitHub.GetPullRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var labelList = remoteLabels.Select(name =>
+                {
+                    var lbl = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+                    typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(lbl, name);
+                    return lbl;
+                }).ToList();
+                typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(freshPr, labelList);
+                return Task.FromResult(freshPr);
+            });
+
+        gitHub.GetPullRequestAuthorEmailAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ => authorEmail);
+
+        gitHub.AddLabelsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                foreach (var l in ci.Arg<string[]>()) remoteLabels.Add(l);
+                return Task.CompletedTask;
+            });
+
+        gitHub.RemoveLabelAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                remoteLabels.Remove(ci.ArgAt<string>(3));
+                return Task.CompletedTask;
+            });
+
+        var module = new UserContributionModule();
+        var mutexEngine = new LabelMutexEngine();
+        var logger = Substitute.For<ILogger<PullRequestPipeline>>();
+        var pipeline = new PullRequestPipeline(new[] { module }, mutexEngine, gitHub, logger);
+
+        // Run Event 1: Opened with community email
+        var ctx1 = CreateMockContext(gitHub, prNumber: 1, action: "opened", prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Opened);
+        await pipeline.ExecuteAsync(ctx1);
+        Assert.Contains(GitHubLabels.CommunityContribution, remoteLabels);
+
+        // Run Event 2: Synchronize with unknown email
+        authorEmail = "not-an-email";
+        var ctx2 = CreateMockContext(gitHub, prNumber: 1, action: "synchronize", prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Synchronize);
+        await pipeline.ExecuteAsync(ctx2);
+
+        // Final remote state: Community: Contribution was cleanly removed
+        Assert.DoesNotContain(GitHubLabels.CommunityContribution, remoteLabels);
+    }
+
+    #endregion
 
     #endregion
 
