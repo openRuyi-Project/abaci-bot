@@ -29,7 +29,7 @@ public interface IPullRequestModule
     /// Determines whether this module should run for the given context.
     /// Allows modules to skip execution early based on event type or action.
     /// </summary>
-    bool ShouldProcess(PullRequestContext context) => true;
+    bool ShouldProcess(PullRequestContext context);
 
     /// <summary>
     /// Evaluates domain rules against the context and records desired additions or removals in

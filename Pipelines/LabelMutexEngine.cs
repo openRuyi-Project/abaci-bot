@@ -38,7 +38,7 @@ public class LabelMutexEngine
             GitHubLabels.TargetRolling,
             GitHubLabels.TargetLts
         },
-        // 4. Security vulnerability severity mapping (single-choice)
+        // 4. Security vulnerability severity mapping (forward-looking single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
             GitHubLabels.Severity1,
@@ -46,7 +46,7 @@ public class LabelMutexEngine
             GitHubLabels.Severity3,
             GitHubLabels.Severity4
         },
-        // 5. CVE tracking lifecycle state (single-choice)
+        // 5. CVE tracking lifecycle state (forward-looking single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
             GitHubLabels.VulnerabilityDetected,
@@ -55,7 +55,7 @@ public class LabelMutexEngine
             GitHubLabels.VulnerabilityDismissed,
             GitHubLabels.VulnerabilityPendingVerification
         },
-        // 6. Downstream rebuild package count tier (single-choice)
+        // 6. Downstream rebuild package count tier (forward-looking single-choice)
         new(StringComparer.OrdinalIgnoreCase)
         {
             GitHubLabels.Rebuild0,
@@ -85,35 +85,35 @@ public class LabelMutexEngine
         var toAdd = new List<string>(labelsToAdd.Distinct(StringComparer.OrdinalIgnoreCase));
         var toRemove = new List<string>(labelsToRemove.Distinct(StringComparer.OrdinalIgnoreCase));
 
-        // Enforce mutex rules:
-        // 1. If multiple labels in toAdd belong to the same mutex group, the last addition wins.
+        // Enforce mutex rules across declared single-choice groups:
+        // If multiple conflicting labels within the same group appear in toAdd,
+        // the last declared candidate wins (respecting downstream module priority).
+        // Any conflicting members in existingSet or toAdd are evicted.
         foreach (var group in _mutexGroups)
         {
-            var candidates = toAdd.Where(group.Contains).ToList();
-            if (candidates.Count > 1)
+            var candidatesInGroup = toAdd.Where(a => group.Contains(a)).ToList();
+            if (candidatesInGroup.Count > 0)
             {
-                var winner = candidates.Last();
-                foreach (var loser in candidates.Take(candidates.Count - 1))
-                {
-                    toAdd.RemoveAll(l => string.Equals(l, loser, StringComparison.OrdinalIgnoreCase));
-                }
-            }
+                // The last candidate in the list is the winner
+                var winner = candidatesInGroup.Last();
 
-            // 2. For the winning/single addition in this group, evict all other group members from existing labels.
-            var activeAdditions = toAdd.Where(group.Contains).ToList();
-            foreach (var adding in activeAdditions)
-            {
+                // Evict non-winning candidates from toAdd
+                foreach (var loser in candidatesInGroup)
+                {
+                    if (!string.Equals(loser, winner, StringComparison.OrdinalIgnoreCase))
+                    {
+                        toAdd.RemoveAll(a => string.Equals(a, loser, StringComparison.OrdinalIgnoreCase));
+                    }
+                }
+
+                // Schedule eviction of any other group members present in existingSet
                 foreach (var other in group)
                 {
-                    if (!string.Equals(other, adding, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(other, winner, StringComparison.OrdinalIgnoreCase))
                     {
-                        toAdd.RemoveAll(l => string.Equals(l, other, StringComparison.OrdinalIgnoreCase));
-                        if (existingSet.Contains(other))
+                        if (existingSet.Contains(other) && !toRemove.Contains(other, StringComparer.OrdinalIgnoreCase))
                         {
-                            if (!toRemove.Contains(other, StringComparer.OrdinalIgnoreCase))
-                            {
-                                toRemove.Add(other);
-                            }
+                            toRemove.Add(other);
                         }
                     }
                 }
@@ -128,7 +128,6 @@ public class LabelMutexEngine
 
         // Redundant remove filtering: avoid duplicate API removals if not currently present.
         toRemove.RemoveAll(r => !existingSet.Contains(r));
-
         return new LabelDiffResult(toAdd, toRemove);
     }
 }

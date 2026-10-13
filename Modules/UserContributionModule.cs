@@ -29,7 +29,8 @@ public class UserContributionModule : IPullRequestModule
     IReadOnlyCollection<string> IPullRequestModule.ManagedLabels => ManagedLabels;
 
     /// <summary>
-    /// Processes opened, updated, or reopened pull requests to classify contributor identity.
+    /// Determines whether the module should run based on whether the pull request was opened,
+    /// synchronized, reopened, or transitioned to/from draft.
     /// </summary>
     public bool ShouldProcess(PullRequestContext context)
     {
@@ -51,7 +52,7 @@ public class UserContributionModule : IPullRequestModule
             return;
         }
 
-        var domain = GitHubWebhookProcessor.ExtractEmailDomain(userEmail);
+        var domain = EmailDomainHelper.ExtractEmailDomain(userEmail);
         string? desiredLabel = null;
 
         // If author email has a valid parseable domain and is not official ISCAS staff,
@@ -60,7 +61,7 @@ public class UserContributionModule : IPullRequestModule
         // any pre-existing community labels are reconciled and removed.
         if (!string.IsNullOrWhiteSpace(domain) && !domain.Equals("iscas.ac.cn", StringComparison.OrdinalIgnoreCase))
         {
-            desiredLabel = GitHubWebhookProcessor.IsInternEmail(userEmail)
+            desiredLabel = EmailDomainHelper.IsInternEmail(userEmail)
                 ? GitHubLabels.CommunityStudent
                 : GitHubLabels.CommunityContribution;
         }

@@ -26,6 +26,7 @@ dotnet_separate_import_directive_groups = false
 # Analyzer rules
 dotnet_diagnostic.CA1707.severity = none # Allow abaci_bot namespace naming
 dotnet_diagnostic.CA1848.severity = none # LoggerMessage performance recommendation
+dotnet_diagnostic.CA1873.severity = none # Evaluating logging arguments
 dotnet_diagnostic.CA1859.severity = none # Change return type to concrete type
 
 # XML / Project files

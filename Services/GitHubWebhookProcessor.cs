@@ -1,6 +1,9 @@
 using abaci_bot.Contexts;
 using abaci_bot.Modules;
+using abaci_bot.Options;
 using abaci_bot.Pipelines;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Octokit.Webhooks;
 using Octokit.Webhooks.Events;
 using Octokit.Webhooks.Events.IssueComment;
@@ -21,31 +24,42 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     private readonly IConfiguration _config;
     private readonly PullRequestPipeline _pipeline;
     private readonly PullRequestLockManager _lockManager;
+    private readonly LabelMutexEngine _mutexEngine;
+    private readonly ILogger<GitHubWebhookProcessor>? _logger;
+    private readonly BotDetectionOptions _botOptions;
 
     public GitHubWebhookProcessor(
         IGitHubService github,
         IConfiguration config,
         PullRequestPipeline pipeline,
-        PullRequestLockManager lockManager)
+        PullRequestLockManager lockManager,
+        LabelMutexEngine? mutexEngine = null,
+        ILogger<GitHubWebhookProcessor>? logger = null,
+        IOptions<BotDetectionOptions>? botOptions = null)
     {
         _github = github;
         _config = config;
         _pipeline = pipeline;
         _lockManager = lockManager;
+        _mutexEngine = mutexEngine ?? new LabelMutexEngine();
+        _logger = logger;
+        _botOptions = botOptions?.Value
+            ?? config.GetSection("BotDetection").Get<BotDetectionOptions>()
+            ?? new BotDetectionOptions();
     }
 
     /// <summary>
     /// Convenience constructor for standalone testing and default pipeline assembly.
     /// </summary>
     public GitHubWebhookProcessor(IGitHubService github, IConfiguration config)
-        : this(github, config, CreateDefaultPipeline(github), new PullRequestLockManager())
+        : this(github, config, CreateDefaultPipeline(github), new PullRequestLockManager(), new LabelMutexEngine())
     {
     }
 
     /// <summary>
-    /// Instantiates the standard default governance pipeline with built-in modules.
+    /// Instantiates the default governance pipeline with built-in modules for unit tests.
     /// </summary>
-    public static PullRequestPipeline CreateDefaultPipeline(IGitHubService github)
+    internal static PullRequestPipeline CreateDefaultPipeline(IGitHubService github)
     {
         var mutexEngine = new LabelMutexEngine();
         var modules = new IPullRequestModule[]
@@ -89,7 +103,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         if (!TryGetRepositoryContext(pullRequestReviewEvent.Repository, out var owner, out var repo))
             return;
 
-        if (!TryGetSender(pullRequestReviewEvent.Sender, out _))
+        if (!HasSender(pullRequestReviewEvent.Sender))
             return;
 
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
@@ -111,14 +125,41 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         if (action != IssueCommentAction.Created)
             return;
 
-        // Skip regular issue comments; only pull request comments are governed here
-        if (issueCommentEvent.Issue.PullRequest == null)
+        if (!HasSender(issueCommentEvent.Sender))
             return;
+
+        // Handle regular issue comments: instant un-stale for non-PR issues
+        if (issueCommentEvent.Issue.PullRequest == null)
+        {
+            if (!TryGetRepositoryContext(issueCommentEvent.Repository, out var issueOwner, out var issueRepo))
+                return;
+
+            var existingLabels = GetLabelNames(issueCommentEvent.Issue.Labels);
+            if (existingLabels.Contains(GitHubLabels.StatusStale))
+            {
+                var senderLogin = issueCommentEvent.Sender!.Login ?? string.Empty;
+                var senderType = issueCommentEvent.Sender.Type?.ToString();
+
+                if (!BotDetectionHelper.IsBot(senderLogin, senderType, _botOptions.Whitelist))
+                {
+                    using (await _lockManager.AcquireLockAsync(issueOwner, issueRepo, (int)issueCommentEvent.Issue.Number, cancellationToken))
+                    {
+                        try
+                        {
+                            await _github.RemoveLabelAsync(issueOwner, issueRepo, (int)issueCommentEvent.Issue.Number, GitHubLabels.StatusStale, cancellationToken);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger?.LogError(ex, "Failed to remove label '{Label}' from issue {Owner}/{Repo}#{Number}",
+                                GitHubLabels.StatusStale, issueOwner, issueRepo, issueCommentEvent.Issue.Number);
+                        }
+                    }
+                }
+            }
+            return;
+        }
 
         if (!TryGetRepositoryContext(issueCommentEvent.Repository, out var owner, out var repo))
-            return;
-
-        if (!TryGetSender(issueCommentEvent.Sender, out _))
             return;
 
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
@@ -158,87 +199,10 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     }
 
     /// <summary>
-    /// Validates and normalizes the webhook sender's login username.
+    /// Checks whether the webhook event sender is present and non-empty.
     /// </summary>
-    public static bool TryGetSender(Octokit.Webhooks.Models.User? sender, out string login)
-    {
-        login = sender?.Login?.ToLowerInvariant() ?? string.Empty;
-        return !string.IsNullOrWhiteSpace(login);
-    }
-
-    /// <summary>
-    /// Checks whether the label name corresponds to the "Workflow: Blocked" label.
-    /// </summary>
-    public static bool IsBlockedLabel(string? labelName)
-    {
-        return string.Equals(labelName, GitHubLabels.WorkflowBlocked, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Case-insensitively determines whether two GitHub usernames refer to the same user.
-    /// </summary>
-    public static bool IsSameUser(string? left, string? right)
-    {
-        return !string.IsNullOrWhiteSpace(left) &&
-               !string.IsNullOrWhiteSpace(right) &&
-               string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Extracts the domain portion of an email address. Returns null if invalid or missing.
-    /// </summary>
-    public static string? ExtractEmailDomain(string? email)
-    {
-        if (string.IsNullOrWhiteSpace(email))
-            return null;
-
-        var atIndex = email.LastIndexOf('@');
-        if (atIndex < 0 || atIndex == email.Length - 1)
-            return null;
-
-        return email[(atIndex + 1)..].Trim();
-    }
-
-    /// <summary>
-    /// Determines whether the email address belongs to recognized student intern subdomains.
-    /// </summary>
-    public static bool IsInternEmail(string? email)
-    {
-        if (string.IsNullOrWhiteSpace(email))
-            return false;
-
-        var normalizedEmail = email.Trim();
-
-        return normalizedEmail.EndsWith(".oerv@isrc.iscas.ac.cn", StringComparison.OrdinalIgnoreCase) ||
-               normalizedEmail.EndsWith(".or@isrc.iscas.ac.cn", StringComparison.OrdinalIgnoreCase) ||
-               normalizedEmail.EndsWith(".riscv@isrc.iscas.ac.cn", StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Parses the pull request body to check if the AI-assisted contribution checkbox is checked.
-    /// </summary>
-    public static bool IsAiAssistedPullRequest(string? body)
-    {
-        if (string.IsNullOrWhiteSpace(body))
-            return false;
-
-        const string checkboxText =
-            "I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.";
-
-        var lines = body.Split('\n');
-
-        foreach (var rawLine in lines)
-        {
-            var line = rawLine.Trim();
-
-            if (!line.Contains(checkboxText, StringComparison.Ordinal))
-                continue;
-
-            return line.StartsWith("- [x]", StringComparison.OrdinalIgnoreCase);
-        }
-
-        return false;
-    }
+    public static bool HasSender(Octokit.Webhooks.Models.User? sender) =>
+        !string.IsNullOrWhiteSpace(sender?.Login);
 
     #endregion
 }

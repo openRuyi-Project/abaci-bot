@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using abaci_bot.Contexts;
 using abaci_bot.Pipelines;
 using abaci_bot.Services;
@@ -7,22 +8,22 @@ namespace abaci_bot.Modules;
 
 /// <summary>
 /// RPM Spec build system and CI file analysis module (Priority: 30).
-/// Inspects modified file paths to assign CI, build system (autotools, cmake, meson, etc.),
-/// and target release branch labels. Reconciles its complete managed-label set to clear stale classifications.
+/// Inspects modified file paths to assign CI and build system (autotools, cmake, meson, etc.) labels.
+/// Reconciles its complete managed-label set to clear stale classifications.
 /// </summary>
-public class BuildSystemAnalysisModule : IPullRequestModule
+public partial class BuildSystemAnalysisModule : IPullRequestModule
 {
     public string ModuleName => "BuildSystemAnalysisModule";
 
     public int Priority => 30;
 
     /// <summary>
-    /// Complete set of labels managed by this module across CI, target release, and build systems.
+    /// Complete set of labels managed by this module across CI and build systems.
+    /// Excludes Target:* release branch labels, which are governed by TargetClassificationModule.
     /// </summary>
     public static readonly IReadOnlyCollection<string> ManagedLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         GitHubLabels.Ci,
-        GitHubLabels.TargetRolling,
         GitHubLabels.BuildSystemAutotools,
         GitHubLabels.BuildSystemCmake,
         GitHubLabels.BuildSystemGolangModule,
@@ -35,6 +36,9 @@ public class BuildSystemAnalysisModule : IPullRequestModule
     };
 
     IReadOnlyCollection<string> IPullRequestModule.ManagedLabels => ManagedLabels;
+
+    [GeneratedRegex(@"^\s*BuildSystem\s*:\s*([a-zA-Z0-9_\-]+)", RegexOptions.Multiline | RegexOptions.IgnoreCase)]
+    private static partial Regex BuildSystemRegex();
 
     /// <summary>
     /// Evaluates file changes whenever pull request contents are created or updated.
@@ -57,7 +61,7 @@ public class BuildSystemAnalysisModule : IPullRequestModule
         foreach (var file in files)
         {
             // Workflows and CI configuration modifications
-            if (file.FileName.StartsWith(".github/", StringComparison.Ordinal))
+            if (FileClassificationHelper.IsCiFile(file.FileName))
             {
                 desiredLabels.Add(GitHubLabels.Ci);
             }
@@ -65,36 +69,52 @@ public class BuildSystemAnalysisModule : IPullRequestModule
             // Only inspect file contents if the file was not deleted in this PR
             if (!string.Equals(file.Status, "removed", StringComparison.OrdinalIgnoreCase))
             {
-                if (file.FileName.EndsWith(".spec", StringComparison.Ordinal))
+                if (file.FileName.EndsWith(".spec", StringComparison.OrdinalIgnoreCase))
                 {
                     var content = await context.GetFileContentAsync(file.FileName, context.HeadSha, cancellationToken);
 
-                    // Identify declared build systems in RPM spec files
-                    if (content.Contains("BuildSystem:    autotools", StringComparison.OrdinalIgnoreCase))
-                        desiredLabels.Add(GitHubLabels.BuildSystemAutotools);
-                    else if (content.Contains("BuildSystem:    cmake", StringComparison.OrdinalIgnoreCase))
-                        desiredLabels.Add(GitHubLabels.BuildSystemCmake);
-                    else if (content.Contains("BuildSystem:    golangmodule", StringComparison.OrdinalIgnoreCase))
-                        desiredLabels.Add(GitHubLabels.BuildSystemGolangModule);
-                    else if (content.Contains("BuildSystem:    golang", StringComparison.OrdinalIgnoreCase))
-                        desiredLabels.Add(GitHubLabels.BuildSystemGolang);
-                    else if (content.Contains("BuildSystem:    rustcrate", StringComparison.OrdinalIgnoreCase))
-                        desiredLabels.Add(GitHubLabels.BuildSystemRustCrate);
-                    else if (content.Contains("BuildSystem:    rust", StringComparison.OrdinalIgnoreCase))
-                        desiredLabels.Add(GitHubLabels.BuildSystemRust);
-                    else if (content.Contains("BuildSystem:    meson", StringComparison.OrdinalIgnoreCase))
-                        desiredLabels.Add(GitHubLabels.BuildSystemMeson);
-                    else if (content.Contains("BuildSystem:    pyproject", StringComparison.OrdinalIgnoreCase))
-                        desiredLabels.Add(GitHubLabels.BuildSystemPyproject);
-                    else
-                        desiredLabels.Add(GitHubLabels.BuildSystemMisc);
-                }
-            }
+                    // Identify declared build systems in RPM spec files (flexible whitespace handling)
+                    var match = BuildSystemRegex().Match(content);
 
-            // Standard package specification directory maps to Target: Rolling
-            if (file.FileName.StartsWith("SPECS/", StringComparison.Ordinal))
-            {
-                desiredLabels.Add(GitHubLabels.TargetRolling);
+                    if (match.Success)
+                    {
+                        var system = match.Groups[1].Value.ToLowerInvariant();
+                        switch (system)
+                        {
+                            case "autotools":
+                                desiredLabels.Add(GitHubLabels.BuildSystemAutotools);
+                                break;
+                            case "cmake":
+                                desiredLabels.Add(GitHubLabels.BuildSystemCmake);
+                                break;
+                            case "golangmodule":
+                                desiredLabels.Add(GitHubLabels.BuildSystemGolangModule);
+                                break;
+                            case "golang":
+                                desiredLabels.Add(GitHubLabels.BuildSystemGolang);
+                                break;
+                            case "rustcrate":
+                                desiredLabels.Add(GitHubLabels.BuildSystemRustCrate);
+                                break;
+                            case "rust":
+                                desiredLabels.Add(GitHubLabels.BuildSystemRust);
+                                break;
+                            case "meson":
+                                desiredLabels.Add(GitHubLabels.BuildSystemMeson);
+                                break;
+                            case "pyproject":
+                                desiredLabels.Add(GitHubLabels.BuildSystemPyproject);
+                                break;
+                            default:
+                                desiredLabels.Add(GitHubLabels.BuildSystemMisc);
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        desiredLabels.Add(GitHubLabels.BuildSystemMisc);
+                    }
+                }
             }
         }
 

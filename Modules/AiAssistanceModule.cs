@@ -17,7 +17,8 @@ public class AiAssistanceModule : IPullRequestModule
     public int Priority => 40;
 
     /// <summary>
-    /// Processes pull request creation, commit updates, and description edits.
+    /// Determines whether the module should run based on whether the pull request was opened,
+    /// synchronized, reopened, transitioned to/from draft, or had its description edited.
     /// </summary>
     public bool ShouldProcess(PullRequestContext context)
     {
@@ -34,7 +35,7 @@ public class AiAssistanceModule : IPullRequestModule
     {
         // The pull request description is the source of truth for AI assistance.
         // When checked, apply the label; otherwise, ensure it is removed.
-        if (GitHubWebhookProcessor.IsAiAssistedPullRequest(context.Body))
+        if (AiAssistanceHelper.IsAiAssistedPullRequest(context.Body))
         {
             context.LabelsToAdd.Add(GitHubLabels.AiAssistance);
             context.LabelsToRemove.Remove(GitHubLabels.AiAssistance);

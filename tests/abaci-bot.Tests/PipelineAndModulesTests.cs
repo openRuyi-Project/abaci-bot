@@ -85,6 +85,29 @@ public class PipelineAndModulesTests
     }
 
     [Fact]
+    public void LabelMutexEngine_MultipleCandidatesInSameGroup_DeterministicWinnerWithoutAnnihilation()
+    {
+        var engine = new LabelMutexEngine();
+        var existingEmpty = Array.Empty<string>();
+        var toAdd = new[] { "Target: Rolling", "Target: LTS" }; // e.g. two modules declared targets
+        var toRemove = new List<string>();
+
+        var diff = engine.ComputeDiff(existingEmpty, toAdd, toRemove);
+
+        // The last candidate ("Target: LTS") must win, not annihilate both
+        Assert.Single(diff.LabelsToAdd);
+        Assert.Contains("Target: LTS", diff.LabelsToAdd);
+        Assert.Empty(diff.LabelsToRemove);
+
+        // When existing has LTS and candidates declare [LTS, Rolling], Rolling wins and LTS is evicted:
+        var existingLts = new[] { "Target: LTS" };
+        var diffReverse = engine.ComputeDiff(existingLts, new[] { "Target: LTS", "Target: Rolling" }, toRemove);
+        Assert.Single(diffReverse.LabelsToAdd);
+        Assert.Contains("Target: Rolling", diffReverse.LabelsToAdd);
+        Assert.Contains("Target: LTS", diffReverse.LabelsToRemove);
+    }
+
+    [Fact]
     public void LabelMutexEngine_ConflictResolution_AddTakesPrecedenceOverRemove()
     {
         var engine = new LabelMutexEngine();
@@ -235,7 +258,6 @@ public class PipelineAndModulesTests
         Assert.Empty(diff2.LabelsToAdd);
         Assert.Empty(diff2.LabelsToRemove);
     }
-
     #endregion
 
     #region PullRequestLockManager Tests
@@ -307,6 +329,48 @@ public class PipelineAndModulesTests
 
         canFinish1.SetResult();
         await task1;
+    }
+
+    [Fact]
+    public async Task PullRequestLockManager_EvictsSemaphoreWhenUnused_PreventingMemoryLeak()
+    {
+        var manager = new PullRequestLockManager();
+        Assert.Equal(0, manager.ActiveLockCount);
+
+        // Acquire and release
+        using (await manager.AcquireLockAsync("owner", "repo", 100))
+        {
+            Assert.Equal(1, manager.ActiveLockCount);
+        }
+
+        // Must be evicted immediately upon release
+        Assert.Equal(0, manager.ActiveLockCount);
+    }
+
+    [Fact]
+    public async Task PullRequestLockManager_WhenAcquisitionCancelled_CleansUpReferenceCount()
+    {
+        var manager = new PullRequestLockManager();
+
+        // Thread 1 acquires lock
+        var lock1 = await manager.AcquireLockAsync("owner", "repo", 100);
+        Assert.Equal(1, manager.ActiveLockCount);
+
+        // Thread 2 attempts to acquire with cancelled token
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await manager.AcquireLockAsync("owner", "repo", 100, cts.Token);
+        });
+
+        // Refcount decremented on cancellation; 1 active lock remains (held by thread 1)
+        Assert.Equal(1, manager.ActiveLockCount);
+
+        // Disposing thread 1's lock brings count to 0
+        lock1.Dispose();
+        Assert.Equal(0, manager.ActiveLockCount);
     }
 
     #endregion
@@ -1230,6 +1294,121 @@ public class PipelineAndModulesTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => context.RefreshAsync(cts.Token));
     }
 
+    [Fact]
+    public async Task PullRequestContext_AuthorEmail_WhenApiThrows_ReturnsNullGracefully()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        gitHub.GetPullRequestAuthorEmailAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>())
+            .Returns(Task.FromException<string?>(new Exception("API network error")));
+
+        var context = CreateMockContext(gitHub);
+
+        var email = await context.AuthorEmail.Value;
+
+        Assert.Null(email);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_AuthorEmail_WhenOperationCanceled_Throws()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        gitHub.GetPullRequestAuthorEmailAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<string?>(new OperationCanceledException(cts.Token)));
+
+        var context = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 1,
+            headSha: "sha",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: false,
+            title: "PR",
+            body: "",
+            senderLogin: "user",
+            authorLogin: "author",
+            action: "opened",
+            existingLabels: Array.Empty<string>(),
+            cancellationToken: cts.Token);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => context.AuthorEmail.Value);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_IsClosedAndIsOpen_EvaluatesAllFiveSources()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+
+        // 1. IsMerged == true
+        var mergedCtx = new PullRequestContext(gitHub, "captains", null, PullRequestEventType.PullRequest,
+            "o", "r", 1, "s", "main", false, isMerged: true, "t", null, "u", "a", "opened", Array.Empty<string>());
+        Assert.True(mergedCtx.IsClosed);
+        Assert.False(mergedCtx.IsOpen);
+
+        // 2. PullRequestAction == Closed
+        var actionClosedCtx = new PullRequestContext(gitHub, "captains", null, PullRequestEventType.PullRequest,
+            "o", "r", 1, "s", "main", false, isMerged: null, "t", null, "u", "a", "closed", Array.Empty<string>(),
+            prAction: WebhookPullRequestAction.Closed);
+        Assert.True(actionClosedCtx.IsClosed);
+        Assert.False(actionClosedCtx.IsOpen);
+
+        // 3. RemoteState == "closed" (via RefreshAsync)
+        var closedPr = (Octokit.PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequest));
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.State))?.SetValue(closedPr, new Octokit.StringEnum<Octokit.ItemState>(Octokit.ItemState.Closed));
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.Labels))?.SetValue(closedPr, Array.Empty<Octokit.Label>());
+        gitHub.GetPullRequestAsync("o", "r", 1).Returns(closedPr);
+        var remoteClosedCtx = new PullRequestContext(gitHub, "captains", null, PullRequestEventType.PullRequest,
+            "o", "r", 1, "s", "main", false, isMerged: null, "t", null, "u", "a", "opened", Array.Empty<string>());
+        await remoteClosedCtx.RefreshAsync();
+        Assert.True(remoteClosedCtx.IsClosed);
+        Assert.False(remoteClosedCtx.IsOpen);
+
+        // 4. PullRequestEvent.PullRequest.State == "closed"
+        var prEvent = CreatePullRequestEvent();
+        var prStateProp = typeof(WebhookPullRequest).GetProperty(nameof(WebhookPullRequest.State));
+        if (prStateProp != null)
+        {
+            var prStateVal = Activator.CreateInstance(prStateProp.PropertyType, "closed");
+            prStateProp.SetValue(prEvent.PullRequest, prStateVal);
+        }
+        var prEventClosedCtx = PullRequestContext.FromPullRequestEvent(gitHub, "captains", null, prEvent, WebhookPullRequestAction.Opened);
+        Assert.True(prEventClosedCtx.IsClosed);
+        Assert.False(prEventClosedCtx.IsOpen);
+
+        // 5. PullRequestReviewEvent.PullRequest.State == "closed"
+        var reviewEvent = CreateReviewEvent("reviewer");
+        var simpleStateProp = typeof(WebhookSimplePullRequest).GetProperty(nameof(WebhookSimplePullRequest.State));
+        if (simpleStateProp != null)
+        {
+            var simpleStateVal = Activator.CreateInstance(simpleStateProp.PropertyType, "closed");
+            simpleStateProp.SetValue(reviewEvent.PullRequest, simpleStateVal);
+        }
+        var reviewEventClosedCtx = PullRequestContext.FromReviewEvent(gitHub, "captains", null, reviewEvent, WebhookPullRequestReviewAction.Submitted);
+        Assert.True(reviewEventClosedCtx.IsClosed);
+        Assert.False(reviewEventClosedCtx.IsOpen);
+    }
+
+    [Fact]
+    public async Task PullRequestContext_TeamCaptains_LoadsCaseInsensitiveSet()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        gitHub.GetTeamMembersAsync("owner", "captains")
+            .Returns(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CaptainAlice" });
+
+        var context = CreateMockContext(gitHub);
+
+        var captains = await context.TeamCaptains.Value;
+
+        Assert.Contains("captainalice", captains);
+        Assert.Contains("CAPTAINALICE", captains);
+    }
+
     #endregion
 
     #region Action Filtering & Negative Path Tests for Processor
@@ -1537,10 +1716,9 @@ public class PipelineAndModulesTests
             body: null,
             senderLogin: "CaptainAlice",
             authorLogin: "author",
-            action: "submitted",
+            action: nameof(WebhookPullRequestReviewAction.Submitted),
             existingLabels: new[] { GitHubLabels.WorkflowComplete },
-            reviewAction: WebhookPullRequestReviewAction.Submitted,
-            reviewEvent: reviewEvent);
+            reviewAction: WebhookPullRequestReviewAction.Submitted);
 
         await module.ProcessAsync(reviewContext, CancellationToken.None);
         Assert.DoesNotContain(GitHubLabels.WorkflowInReview, reviewContext.LabelsToAdd);
@@ -2157,15 +2335,15 @@ public class PipelineAndModulesTests
     }
 
     [Fact]
-    public void BuildSystemAnalysisModule_ManagedLabels_IncludesTargetRolling()
+    public void BuildSystemAnalysisModule_ManagedLabels_ExcludesTargetRolling()
     {
         var module = new BuildSystemAnalysisModule();
-        Assert.Contains(GitHubLabels.TargetRolling, BuildSystemAnalysisModule.ManagedLabels);
+        Assert.DoesNotContain(GitHubLabels.TargetRolling, BuildSystemAnalysisModule.ManagedLabels);
         Assert.Equal(BuildSystemAnalysisModule.ManagedLabels, ((IPullRequestModule)module).ManagedLabels);
     }
 
     [Fact]
-    public async Task BuildSystemAnalysisModule_SpecsDirectoryRemoved_RemovesTargetRollingLabel()
+    public async Task BuildSystemAnalysisModule_SpecsDirectoryRemoved_PreservesTargetRollingLabel()
     {
         var module = new BuildSystemAnalysisModule();
         var gitHub = Substitute.For<IGitHubService>();
@@ -2183,7 +2361,7 @@ public class PipelineAndModulesTests
         await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.DoesNotContain(GitHubLabels.TargetRolling, context.LabelsToAdd);
-        Assert.Contains(GitHubLabels.TargetRolling, context.LabelsToRemove);
+        Assert.DoesNotContain(GitHubLabels.TargetRolling, context.LabelsToRemove);
     }
 
     [Fact]
@@ -2740,13 +2918,13 @@ public class PipelineAndModulesTests
     }
 
     [Fact]
-    public async Task PullRequestPipeline_MultiEvent_SpecsFileRemoved_ConvergesFinalRemoteLabels()
+    public async Task PullRequestPipeline_MultiEvent_CiFileRemoved_ConvergesFinalRemoteLabels()
     {
         // Two consecutive pipeline executions:
-        // Event 1: PR has SPECS/package.spec -> adds Target: Rolling.
-        // Event 2: PR files changed, SPECS removed -> removes Target: Rolling.
+        // Event 1: PR has .github/workflows/ci.yml -> adds CI.
+        // Event 2: PR files changed, CI file removed -> removes CI.
         var remoteLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var currentFiles = new List<string> { "SPECS/package.spec" };
+        var currentFiles = new List<string> { ".github/workflows/ci.yml" };
         var gitHub = Substitute.For<IGitHubService>();
 
         var freshPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
@@ -2804,16 +2982,16 @@ public class PipelineAndModulesTests
         // Run Event 1: Opened
         var ctx1 = CreateMockContext(gitHub, prNumber: 1, action: "opened", prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Opened);
         await pipeline.ExecuteAsync(ctx1);
-        Assert.Contains(GitHubLabels.TargetRolling, remoteLabels);
+        Assert.Contains(GitHubLabels.Ci, remoteLabels);
 
-        // Run Event 2: Synchronize with SPECS removed
+        // Run Event 2: Synchronize with CI file removed
         currentFiles.Clear();
         currentFiles.Add("src/main.c");
         var ctx2 = CreateMockContext(gitHub, prNumber: 1, action: "synchronize", prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Synchronize);
         await pipeline.ExecuteAsync(ctx2);
 
-        // Final remote state: Target: Rolling was cleanly removed
-        Assert.DoesNotContain(GitHubLabels.TargetRolling, remoteLabels);
+        // Final remote state: CI was cleanly removed
+        Assert.DoesNotContain(GitHubLabels.Ci, remoteLabels);
     }
 
     [Fact]
@@ -2879,6 +3057,142 @@ public class PipelineAndModulesTests
     }
 
     #endregion
+
+    #endregion
+
+    #region Event and Context Tests
+    [Fact]
+    public void PullRequestContext_FromPullRequestEvent_InitializesProperties()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var ev = CreatePullRequestEvent();
+
+        var context = PullRequestContext.FromPullRequestEvent(gitHub, "captains", null, ev, WebhookPullRequestAction.Opened);
+
+        Assert.Equal("owner", context.Owner);
+        Assert.Equal("repo", context.Repo);
+        Assert.Equal(100, context.PrNumber);
+        Assert.Equal(PullRequestEventType.PullRequest, context.EventType);
+        Assert.Equal(WebhookPullRequestAction.Opened, context.PullRequestAction);
+    }
+
+    [Fact]
+    public void PullRequestContext_FromReviewEvent_InitializesProperties()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var ev = CreateReviewEvent("reviewer");
+
+        var context = PullRequestContext.FromReviewEvent(gitHub, "captains", null, ev, WebhookPullRequestReviewAction.Submitted);
+
+        Assert.Equal("owner", context.Owner);
+        Assert.Equal("repo", context.Repo);
+        Assert.Equal(100, context.PrNumber);
+        Assert.Equal(PullRequestEventType.Review, context.EventType);
+        Assert.Equal(WebhookPullRequestReviewAction.Submitted, context.PullRequestReviewAction);
+    }
+
+    [Fact]
+    public void PullRequestContext_FromIssueCommentEvent_InitializesProperties()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var ev = CreateCommentEvent("commenter", isPr: true);
+
+        var context = PullRequestContext.FromIssueCommentEvent(gitHub, "captains", null, ev, WebhookIssueCommentAction.Created);
+
+        Assert.Equal("owner", context.Owner);
+        Assert.Equal("repo", context.Repo);
+        Assert.Equal(100, context.PrNumber);
+        Assert.Equal(PullRequestEventType.IssueComment, context.EventType);
+        Assert.Equal(WebhookIssueCommentAction.Created, context.IssueCommentAction);
+    }
+
+    [Theory]
+    [InlineData("author", "author", "User", true)]
+    [InlineData("bot-user[bot]", "author", "Bot", true)]
+    [InlineData("whitelisted-bot", "author", "User", true)]
+    [InlineData("other-user", "author", "User", false)]
+    [InlineData(null, "author", "User", false)]
+    public void PullRequestContext_IsSenderAuthorOrBot_EvaluatesCorrectly(
+        string? sender, string? author, string? senderType, bool expected)
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var context = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 1,
+            headSha: "sha",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: null,
+            title: "PR",
+            body: "",
+            senderLogin: sender,
+            authorLogin: author,
+            action: string.Empty,
+            existingLabels: Array.Empty<string>(),
+            senderType: senderType);
+
+        var isAuthorOrBot = context.IsSenderAuthorOrBot(new[] { "whitelisted-bot" });
+
+        Assert.Equal(expected, isAuthorOrBot);
+    }
+
+    [Fact]
+    public void BotDetectionHelper_WhenSenderLoginNullOrWhitespace_ReturnsFalse()
+    {
+        Assert.False(BotDetectionHelper.IsBot(null, "User"));
+        Assert.False(BotDetectionHelper.IsBot("", "User"));
+        Assert.False(BotDetectionHelper.IsBot("   ", "User"));
+    }
+
+    [Fact]
+    public void PullRequestContext_FromPullRequestEvent_WithNullRepositoryAndHead_HandlesNullGracefully()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var ev = (WebhookPullRequestEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookPullRequestAssignedEvent));
+        var pr = (WebhookPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookPullRequest));
+        typeof(WebhookPullRequestEvent).GetProperty(nameof(WebhookPullRequestEvent.PullRequest))?.SetValue(ev, pr);
+
+        var context = PullRequestContext.FromPullRequestEvent(gitHub, "captains", null, ev, WebhookPullRequestAction.Opened);
+
+        Assert.Equal(string.Empty, context.Owner);
+        Assert.Equal(string.Empty, context.Repo);
+        Assert.Equal(string.Empty, context.HeadSha);
+    }
+
+    [Fact]
+    public void PullRequestContext_FromReviewEvent_WithNullRepositoryAndHead_HandlesNullGracefully()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var ev = (WebhookPullRequestReviewEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookPullRequestReviewSubmittedEvent));
+        var pr = (WebhookSimplePullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookSimplePullRequest));
+        typeof(WebhookPullRequestReviewEvent).GetProperty(nameof(WebhookPullRequestReviewEvent.PullRequest))?.SetValue(ev, pr);
+
+        var context = PullRequestContext.FromReviewEvent(gitHub, "captains", null, ev, WebhookPullRequestReviewAction.Submitted);
+
+        Assert.Equal(string.Empty, context.Owner);
+        Assert.Equal(string.Empty, context.Repo);
+        Assert.Equal(string.Empty, context.HeadSha);
+    }
+
+    [Fact]
+    public void PullRequestContext_FromIssueCommentEvent_WithNullRepositoryAndUser_HandlesNullGracefully()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var ev = (WebhookIssueCommentEvent)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookIssueCommentCreatedEvent));
+        var issue = (WebhookIssue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookIssue));
+        typeof(WebhookIssueCommentEvent).GetProperty(nameof(WebhookIssueCommentEvent.Issue))?.SetValue(ev, issue);
+
+        var context = PullRequestContext.FromIssueCommentEvent(gitHub, "captains", null, ev, WebhookIssueCommentAction.Created);
+
+        Assert.Equal(string.Empty, context.Owner);
+        Assert.Equal(string.Empty, context.Repo);
+        Assert.Null(context.AuthorLogin);
+    }
 
     #endregion
 

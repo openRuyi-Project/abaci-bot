@@ -127,6 +127,8 @@ public class PullRequestPipeline
 
             try
             {
+                // Fail-fast policy: unhandled exceptions abort the pipeline immediately,
+                // preventing partial or corrupted label state from being pushed to GitHub.
                 await module.ProcessAsync(context, cancellationToken);
             }
             catch (OperationCanceledException)

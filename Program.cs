@@ -1,5 +1,7 @@
 using abaci_bot.Services;
 using abaci_bot.Modules;
+using abaci_bot.Modules.ChangeTypeStrategies;
+using abaci_bot.Options;
 using abaci_bot.Pipelines;
 using Octokit.Webhooks;
 using Octokit.Webhooks.AspNetCore;
@@ -54,21 +56,39 @@ catch (Exception ex)
     return;
 }
 
-builder.Services.AddSingleton<IGitHubService>(new GitHubService(
+builder.Services.AddSingleton<IGitHubService>(sp => new GitHubService(
     builder.Configuration.GetValue<int>("GitHubApp:AppId"),
     builder.Configuration["GitHubApp:PrivateKey"]!,
-    builder.Configuration.GetValue<long>("GitHubApp:InstallationId")
+    builder.Configuration.GetValue<long>("GitHubApp:InstallationId"),
+    sp.GetService<ILogger<GitHubService>>()
 ));
+
+builder.Services.Configure<TargetClassificationOptions>(config.GetSection("TargetClassification"));
+builder.Services.Configure<ChangeTypeClassificationOptions>(config.GetSection("ChangeTypeClassification"));
+builder.Services.Configure<StaleLifecycleOptions>(config.GetSection("StaleLifecycle"));
+builder.Services.Configure<BotDetectionOptions>(config.GetSection("BotDetection"));
 
 // Register pipeline infrastructure and mutual-exclusion engine
 builder.Services.AddSingleton<PullRequestLockManager>();
 builder.Services.AddSingleton<LabelMutexEngine>();
 
-// Register pluggable pull request governance modules
+// Register change type classification strategies
+builder.Services.AddSingleton<IChangeTypeStrategy, OpenRuyiPackageRepoStrategy>();
+builder.Services.AddSingleton<IChangeTypeStrategy, HomepageRepoStrategy>();
+builder.Services.AddSingleton<IChangeTypeStrategy, DefaultChangeTypeStrategy>();
+
+// Register pluggable pull request governance modules (executed in priority order)
 builder.Services.AddSingleton<IPullRequestModule, WorkflowStateModule>();
+builder.Services.AddSingleton<IPullRequestModule, StaleUnstaleModule>();
+builder.Services.AddSingleton<IPullRequestModule, ShinyNewPrModule>();
 builder.Services.AddSingleton<IPullRequestModule, UserContributionModule>();
+builder.Services.AddSingleton<IPullRequestModule, TargetClassificationModule>();
 builder.Services.AddSingleton<IPullRequestModule, BuildSystemAnalysisModule>();
+builder.Services.AddSingleton<IPullRequestModule, ChangeTypeClassificationModule>();
 builder.Services.AddSingleton<IPullRequestModule, AiAssistanceModule>();
+
+// Register background lifecycle service
+builder.Services.AddHostedService<StaleLifecycleService>();
 
 // Register the pipeline orchestrator
 builder.Services.AddSingleton<PullRequestPipeline>();

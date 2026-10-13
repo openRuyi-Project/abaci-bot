@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Octokit;
 using Octokit.Internal;
 using System.Security.Cryptography;
@@ -16,23 +17,25 @@ public class GitHubService : IGitHubService, IDisposable
     private IGitHubClient _client;
     private DateTimeOffset _tokenExpiry;
     private readonly SemaphoreSlim _authLock = new(1, 1);
+    private readonly ILogger<GitHubService>? _logger;
 
-    public GitHubService(int appId, string privateKey, long installationId)
-        : this(appId, privateKey, installationId, CreateDefaultClient())
+    public GitHubService(int appId, string privateKey, long installationId, ILogger<GitHubService>? logger = null)
+        : this(appId, privateKey, installationId, CreateDefaultClient(), logger)
     {
     }
 
-    internal GitHubService(int appId, string privateKey, long installationId, HttpMessageHandler httpMessageHandler)
-        : this(appId, privateKey, installationId, CreateClientWithTransport(new HttpClientAdapter(() => httpMessageHandler)))
+    internal GitHubService(int appId, string privateKey, long installationId, HttpMessageHandler httpMessageHandler, ILogger<GitHubService>? logger = null)
+        : this(appId, privateKey, installationId, CreateClientWithTransport(new HttpClientAdapter(() => httpMessageHandler)), logger)
     {
     }
 
-    internal GitHubService(int appId, string privateKey, long installationId, IGitHubClient client)
+    internal GitHubService(int appId, string privateKey, long installationId, IGitHubClient client, ILogger<GitHubService>? logger = null)
     {
         _appId = appId;
         _privateKey = privateKey;
         _installationId = installationId;
         _client = client;
+        _logger = logger;
     }
 
     private static IGitHubClient CreateDefaultClient()
@@ -127,8 +130,6 @@ public class GitHubService : IGitHubService, IDisposable
             .Replace('+', '-')
             .Replace('/', '_');
 
-    // API Call
-
     public async Task<IReadOnlyList<PullRequestFile>> GetPullRequestFilesAsync(
         string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
     {
@@ -203,7 +204,6 @@ public class GitHubService : IGitHubService, IDisposable
         return members.Select(m => m.Login).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
-    // Add more GitHub API methods as needed.
     public async Task<PullRequest> GetPullRequestAsync(string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
     {
         using var _ = SetAmbientToken(cancellationToken);
@@ -211,6 +211,95 @@ public class GitHubService : IGitHubService, IDisposable
         await EnsureAuthenticatedAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         return await _client.PullRequest.Get(owner, repo, prNumber);
+    }
+
+    public async Task<IReadOnlyList<Issue>> SearchStaleCandidatesAsync(
+        string owner, string repo, DateTimeOffset updatedBefore, bool isPr, string? labelFilter = null, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+        var dateStr = updatedBefore.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture);
+        var baseQuery = isPr
+            ? $"repo:{owner}/{repo} is:open is:pr -is:draft updated:<{dateStr}"
+            : $"repo:{owner}/{repo} is:open is:issue updated:<{dateStr}";
+        var query = !string.IsNullOrWhiteSpace(labelFilter) ? $"{baseQuery} {labelFilter}" : baseQuery;
+
+        var allItems = new List<Issue>();
+        var page = 1;
+        const int perPage = 100;
+        const int maxPages = 5; // Safety bound to prevent runaway loops
+
+        while (page <= maxPages)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var searchRequest = new SearchIssuesRequest(query)
+            {
+                Type = isPr ? IssueTypeQualifier.PullRequest : IssueTypeQualifier.Issue,
+                Page = page,
+                PerPage = perPage
+            };
+
+            var searchResult = await _client.Search.SearchIssues(searchRequest);
+            if (searchResult.Items.Count == 0)
+                break;
+
+            allItems.AddRange(searchResult.Items);
+            if (searchResult.Items.Count < perPage || allItems.Count >= searchResult.TotalCount)
+                break;
+
+            if (page == maxPages && allItems.Count < searchResult.TotalCount)
+            {
+                _logger?.LogWarning("SearchStaleCandidatesAsync truncated for {Owner}/{Repo}: retrieved {Retrieved} of {Total} items (max {MaxPages} pages).",
+                    owner, repo, allItems.Count, searchResult.TotalCount, maxPages);
+            }
+
+            page++;
+        }
+
+        return allItems;
+    }
+
+    public async Task CloseIssueAsync(string owner, string repo, int number, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        await EnsureAuthenticatedAsync(ct);
+        var update = new IssueUpdate { State = ItemState.Closed };
+        await _client.Issue.Update(owner, repo, number, update);
+    }
+
+    public async Task CreateCommentAsync(string owner, string repo, int number, string comment, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        await EnsureAuthenticatedAsync(ct);
+        await _client.Issue.Comment.Create(owner, repo, number, comment);
+    }
+
+    public async Task<int?> GetRemainingRateLimitAsync(CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        try
+        {
+            await EnsureAuthenticatedAsync(ct);
+            var rateLimits = await _client.RateLimit.GetRateLimits();
+            return rateLimits?.Rate?.Remaining;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (AuthorizationException authEx)
+        {
+            _logger?.LogError(authEx, "Authentication failure while requesting GitHub rate limit quota.");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to query GitHub rate limits due to network or API error.");
+            return _client.GetLastApiInfo()?.RateLimit?.Remaining;
+        }
     }
 
     public void Dispose()

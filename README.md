@@ -21,6 +21,33 @@ Then edit `appsettings.json` and fill in your actual values:
 | `GitHubApp.TeamName` | Team slug used for review workflow (for example: `captains`). Review labels are updated only when review is submitted by a member of this team. |
 | `Kestrel.Endpoints.Http.Url` | The address and port the server listens on (default: `http://0.0.0.0:3456`) |
 
+### Daily Governance (Part 2.1) Modules & Options
+
+`abaci-bot` includes an extensible, prioritized governance pipeline enforcing daily lifecycle rules:
+
+- **Instant Indicator (`new`)**: Automatically tags newly opened pull requests with `new`. Removes it as soon as a non-author human leaves a review or comment.
+- **Target Release Classification**: Tags PRs targeting rolling branches (e.g. `main`, `master`) with `Target: Rolling`, and LTS branches (e.g. `lts-24.03`) with `Target: LTS`.
+- **Build System & CI Analysis**: Inspects PR files to assign build system tags (`BuildSystem: autotools`, `cmake`, `meson`, etc.) and `CI`.
+- **Multi-Repo Change Type Classification**: Analyzes modified file paths to assign change categories (`Type: Packaging`, `Type: Documentation`, `Type: Frontend`, `Type: Submodule Update`, `Type: Infrastructure`).
+- **Automated Stale Lifecycle & Auto-Close**: Periodically monitors inactive issues/PRs, marks them with `Status: Stale` after 30 days of inactivity, and auto-closes after a 7-day grace period. Human activity (push, comment, review) immediately removes `Status: Stale`.
+- **Bot Detection & Protection**: Filters bot actions (`[bot]`, whitelist, account type) so automated activity does not disrupt governance states.
+
+#### Stale Lifecycle Configuration (`StaleLifecycle`)
+
+The stale lifecycle background service is configured in `appsettings.json` under the `StaleLifecycle` section:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `Enabled` | `bool` | `false` | Master toggle for the stale lifecycle background service. Must be set to `true` to run sweeps. |
+| `DryRun` | `bool` | `true` | When `true`, scans and logs intended label additions and closures without mutating GitHub. Must be set to `false` for live execution. |
+| `MonitoredRepositories` | `string[]` | `[]` | Explicit list of repositories to scan in `"owner/repo"` format (e.g. `["openRuyi-Project/openRuyi"]`). Required; empty list skips sweeps to prevent accidental mutations. |
+| `ExcludedRepositories` | `string[]` | `[]` | Repositories explicitly excluded from sweeps. |
+| `StaleDays` | `int` | `30` | Inactive days before an item is marked with `Status: Stale` and notified via comment. |
+| `CloseDays` | `int` | `7` | Grace period days after the stale notification comment before an item is automatically closed. |
+| `ExemptLabels` | `string[]` | `["Status: Pinned", ...]` | Labels that protect an issue or PR from being marked or closed as stale. |
+| `StaleCommentTemplate` | `string` | *(friendly notice)* | Notification comment posted when marked stale (anchors the grace period). |
+| `CloseCommentTemplate` | `string` | *(closing notice)* | Comment posted when automatically closing an expired stale item. |
+
 ### 2. Configure GitHub App permissions and webhook events
 
 Your GitHub App must be configured with the following permissions:

@@ -6,13 +6,14 @@ using Octokit.Webhooks.Events;
 using Octokit.Webhooks.Events.IssueComment;
 using Octokit.Webhooks.Events.PullRequest;
 using Octokit.Webhooks.Events.PullRequestReview;
+using PullRequest = Octokit.PullRequest;
+using PullRequestAction = Octokit.Webhooks.Events.PullRequest.PullRequestAction;
+using PullRequestFile = Octokit.PullRequestFile;
+using PullRequestReviewAction = Octokit.Webhooks.Events.PullRequestReview.PullRequestReviewAction;
 using WebhookPullRequestReviewEvent = Octokit.Webhooks.Events.PullRequestReviewEvent;
 
 namespace abaci_bot.Contexts;
 
-/// <summary>
-/// Identifies which GitHub webhook event kind originated this context.
-/// </summary>
 public enum PullRequestEventType
 {
     PullRequest,
@@ -21,9 +22,8 @@ public enum PullRequestEventType
 }
 
 /// <summary>
-/// Shared domain context for a single pull request webhook execution.
-/// Holds event metadata, provides cached lazy-loaders to avoid duplicate GitHub API calls,
-/// and collects label/comment modification intents for batch execution at the end of the pipeline.
+/// Encapsulates the runtime context and lazy-loaded dependencies for evaluating pull request governance rules.
+/// Pulls complexity downward by sharing file content caches, author emails, and team rosters across all modules.
 /// </summary>
 public class PullRequestContext
 {
@@ -32,52 +32,52 @@ public class PullRequestContext
     private bool _isRefreshed;
 
     /// <summary>
-    /// Raw webhook headers, containing delivery IDs and signature details.
-    /// </summary>
-    public WebhookHeaders? Headers { get; }
-
-    /// <summary>
     /// Cancellation token associated with the current pipeline execution.
     /// </summary>
     public CancellationToken CancellationToken { get; }
 
     /// <summary>
-    /// Type of the incoming webhook event (PullRequest, Review, or IssueComment).
+    /// Raw HTTP webhook delivery headers, if provided by the webhook endpoint.
+    /// </summary>
+    public WebhookHeaders? Headers { get; }
+
+    /// <summary>
+    /// The category of GitHub webhook event that initiated this governance context.
     /// </summary>
     public PullRequestEventType EventType { get; }
 
     /// <summary>
-    /// Repository owner username or organization name.
+    /// The repository owner or organization login.
     /// </summary>
     public string Owner { get; }
 
     /// <summary>
-    /// Repository name.
+    /// The repository name.
     /// </summary>
     public string Repo { get; }
 
     /// <summary>
-    /// Pull request number.
+    /// The pull request number.
     /// </summary>
     public int PrNumber { get; }
 
     /// <summary>
-    /// Git commit SHA of the pull request HEAD.
+    /// The SHA of the pull request HEAD commit.
     /// </summary>
     public string HeadSha { get; private set; }
 
     /// <summary>
-    /// Target (base) branch of the pull request, if available.
+    /// The target branch name of the pull request.
     /// </summary>
     public string? BaseBranch { get; private set; }
 
     /// <summary>
-    /// Indicates whether the pull request is currently marked as draft.
+    /// Indicates whether the pull request is marked as a draft.
     /// </summary>
     public bool IsDraft { get; private set; }
 
     /// <summary>
-    /// Indicates whether the pull request has been merged. Null if not closed or not applicable.
+    /// Indicates whether the pull request has been merged, or null if undetermined at event ingestion time.
     /// </summary>
     public bool? IsMerged { get; private set; }
 
@@ -87,42 +87,47 @@ public class PullRequestContext
     public string? RemoteState { get; private set; }
 
     /// <summary>
-    /// Title of the pull request or associated issue.
+    /// The title of the pull request or associated issue.
     /// </summary>
     public string Title { get; private set; }
 
     /// <summary>
-    /// Description body of the pull request or comment content.
+    /// The markdown description body of the pull request or comment.
     /// </summary>
     public string? Body { get; private set; }
 
     /// <summary>
-    /// Username of the sender who triggered this webhook action.
+    /// The GitHub login username of the user who triggered the webhook event.
     /// </summary>
     public string? SenderLogin { get; }
 
     /// <summary>
-    /// Username of the author who originally opened the pull request.
+    /// The account type of the sender (e.g., "User", "Bot").
+    /// </summary>
+    public string? SenderType { get; }
+
+    /// <summary>
+    /// The GitHub login username of the pull request author.
     /// </summary>
     public string? AuthorLogin { get; }
 
     /// <summary>
-    /// Action string as reported by GitHub (e.g. "opened", "submitted", "created").
+    /// Action verb from the GitHub webhook payload (e.g. "opened", "synchronize", "submitted", "created").
     /// </summary>
     public string Action { get; }
 
     /// <summary>
-    /// Strongly-typed pull request action when EventType is PullRequest.
+    /// The action sub-type if this context originated from a pull request event.
     /// </summary>
     public PullRequestAction? PullRequestAction { get; }
 
     /// <summary>
-    /// Strongly-typed review action when EventType is Review.
+    /// The action sub-type if this context originated from a pull request review event.
     /// </summary>
     public PullRequestReviewAction? PullRequestReviewAction { get; }
 
     /// <summary>
-    /// Strongly-typed issue comment action when EventType is IssueComment.
+    /// The action sub-type if this context originated from an issue comment event.
     /// </summary>
     public IssueCommentAction? IssueCommentAction { get; }
 
@@ -171,12 +176,14 @@ public class PullRequestContext
     public Lazy<Task<HashSet<string>>> TeamCaptains { get; }
 
     /// <summary>
-    /// Lazily fetches the full pull request entity when needed (e.g. from comment webhooks).
+    /// Lazily fetches the fresh, authoritative remote pull request object from the GitHub API.
+    /// Evaluated at most once per webhook delivery and shared across all modules.
     /// </summary>
     public Lazy<Task<PullRequest>> PullRequest { get; private set; }
 
     /// <summary>
-    /// Labels present on the pull request at the moment this webhook event occurred.
+    /// Case-insensitive set of label names currently applied to the pull request.
+    /// Initialized from the webhook payload or populated lazily.
     /// </summary>
     public HashSet<string> ExistingLabels { get; }
 
@@ -184,6 +191,11 @@ public class PullRequestContext
     /// Indicates whether the pull request currently carries the "Workflow: Blocked" label.
     /// </summary>
     public bool IsBlocked => ExistingLabels.Contains(GitHubLabels.WorkflowBlocked);
+
+    /// <summary>
+    /// Indicates whether the pull request is currently in the open state.
+    /// </summary>
+    public bool IsOpen => !IsClosed;
 
     /// <summary>
     /// Indicates whether the pull request is closed or merged.
@@ -247,6 +259,7 @@ public class PullRequestContext
         PullRequestReviewAction? reviewAction = null,
         IssueCommentAction? commentAction = null,
         PullRequestEvent? prEvent = null,
+        string? senderType = null,
         WebhookPullRequestReviewEvent? reviewEvent = null,
         IssueCommentEvent? commentEvent = null,
         CancellationToken cancellationToken = default)
@@ -265,6 +278,7 @@ public class PullRequestContext
         Title = title;
         Body = body;
         SenderLogin = senderLogin;
+        SenderType = senderType;
         AuthorLogin = authorLogin;
         Action = action;
         PullRequestAction = prAction;
@@ -288,6 +302,10 @@ public class PullRequestContext
                 AuthorEmailLookupFailed = false;
                 return email;
             }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 AuthorEmailLookupFailed = true;
@@ -306,6 +324,7 @@ public class PullRequestContext
         PullRequest = new Lazy<Task<PullRequest>>(() =>
             _gitHubService.GetPullRequestAsync(Owner, Repo, PrNumber, CancellationToken));
     }
+
 
     /// <summary>
     /// Creates a PullRequestContext from a native GitHub pull request event.
@@ -343,8 +362,10 @@ public class PullRequestContext
             existingLabels: labels,
             prAction: action,
             prEvent: prEvent,
+            senderType: prEvent.Sender?.Type?.ToString(),
             cancellationToken: cancellationToken);
     }
+
 
     /// <summary>
     /// Creates a PullRequestContext from a native GitHub pull request review event.
@@ -381,9 +402,11 @@ public class PullRequestContext
             action: action.ToString(),
             existingLabels: labels,
             reviewAction: action,
+            senderType: reviewEvent.Sender?.Type?.ToString(),
             reviewEvent: reviewEvent,
             cancellationToken: cancellationToken);
     }
+
 
     /// <summary>
     /// Creates a PullRequestContext from an issue comment event on a pull request.
@@ -422,9 +445,11 @@ public class PullRequestContext
             action: action.ToString(),
             existingLabels: labels,
             commentAction: action,
+            senderType: commentEvent.Sender?.Type?.ToString(),
             commentEvent: commentEvent,
             cancellationToken: cancellationToken);
     }
+
 
     /// <summary>
     /// Asynchronous overload for backward compatibility with existing callers.
@@ -549,5 +574,24 @@ public class PullRequestContext
     public void ReconcileLabels(IReadOnlyCollection<string> managedLabels, string? desiredLabel)
     {
         ReconcileLabels(managedLabels, label => string.Equals(label, desiredLabel, StringComparison.OrdinalIgnoreCase));
+    }
+    /// Evaluates whether the sender who triggered this webhook event is either the pull request author,
+    /// a declared bot account, or matches known bot patterns/whitelists.
+    /// Pulls complexity downward by preventing individual modules from duplicating bot detection logic.
+    /// </summary>
+    public bool IsSenderAuthorOrBot(IEnumerable<string>? botWhitelist = null)
+    {
+        if (string.IsNullOrWhiteSpace(SenderLogin))
+            return false;
+
+        // 1. Check if sender is the PR author
+        if (!string.IsNullOrWhiteSpace(AuthorLogin) &&
+            string.Equals(SenderLogin, AuthorLogin, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // 2. Delegate to centralized bot detector
+        return BotDetectionHelper.IsBot(SenderLogin, SenderType, botWhitelist);
     }
 }

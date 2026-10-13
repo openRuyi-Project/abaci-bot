@@ -1,3 +1,4 @@
+using abaci_bot.Modules;
 using abaci_bot.Services;
 using Microsoft.Extensions.Configuration;
 using Octokit.Webhooks;
@@ -742,7 +743,7 @@ public class GitHubWebhookProcessorTests
     }
 
     [Fact]
-    public async Task FileAnalysisSpecsDirectoryAddsTargetRollingLabel()
+    public async Task FileAnalysisSpecsDirectoryDoesNotAddTargetRollingLabel()
     {
         var github = new FakeGitHubService
         {
@@ -753,7 +754,8 @@ public class GitHubWebhookProcessorTests
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
 
-        Assert.Contains("add:Target: Rolling", github.LabelOperations);
+        // BuildSystemAnalysisModule has been decoupled and refactored; it no longer wrongly assigns Target: Rolling
+        Assert.DoesNotContain("add:Target: Rolling", github.LabelOperations);
     }
 
     [Fact]
@@ -768,8 +770,7 @@ public class GitHubWebhookProcessorTests
 
         await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
 
-        // Does not fetch content for removed file, but adds Target: Rolling because it starts with SPECS/
-        Assert.Contains("add:Target: Rolling", github.LabelOperations);
+        // Does not fetch content for removed file
         Assert.DoesNotContain(github.LabelOperations, op => op.Contains("BuildSystem:"));
     }
 
@@ -936,7 +937,7 @@ public class GitHubWebhookProcessorTests
     [InlineData("student.riscv@isrc.iscas.ac.cn", true)]
     public void TestIsInternEmail(string? email, bool expected)
     {
-        Assert.Equal(expected, GitHubWebhookProcessor.IsInternEmail(email));
+        Assert.Equal(expected, EmailDomainHelper.IsInternEmail(email));
     }
 
     [Theory]
@@ -949,7 +950,7 @@ public class GitHubWebhookProcessorTests
     [InlineData("bob@iscas.ac.cn", "iscas.ac.cn")]
     public void TestExtractEmailDomain(string? email, string? expected)
     {
-        Assert.Equal(expected, GitHubWebhookProcessor.ExtractEmailDomain(email));
+        Assert.Equal(expected, EmailDomainHelper.ExtractEmailDomain(email));
     }
 
     [Theory]
@@ -961,7 +962,7 @@ public class GitHubWebhookProcessorTests
     [InlineData("Alice", "alice", true)]
     public void TestIsSameUser(string? left, string? right, bool expected)
     {
-        Assert.Equal(expected, GitHubWebhookProcessor.IsSameUser(left, right));
+        Assert.Equal(expected, WorkflowHelper.IsSameUser(left, right));
     }
 
     [Theory]
@@ -972,22 +973,19 @@ public class GitHubWebhookProcessorTests
     [InlineData("workflow: blocked", true)]
     public void TestIsBlockedLabel(string? label, bool expected)
     {
-        Assert.Equal(expected, GitHubWebhookProcessor.IsBlockedLabel(label));
+        Assert.Equal(expected, WorkflowHelper.IsBlockedLabel(label));
     }
 
     [Fact]
-    public void TestTryGetSender()
+    public void TestHasSender()
     {
-        Assert.False(GitHubWebhookProcessor.TryGetSender(null, out var login1));
-        Assert.Empty(login1);
+        Assert.False(GitHubWebhookProcessor.HasSender(null));
 
         var emptyUser = (WebhookUser)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WebhookUser));
-        Assert.False(GitHubWebhookProcessor.TryGetSender(emptyUser, out var login2));
-        Assert.Empty(login2);
+        Assert.False(GitHubWebhookProcessor.HasSender(emptyUser));
 
         var validUser = User("CaptainUser");
-        Assert.True(GitHubWebhookProcessor.TryGetSender(validUser, out var login3));
-        Assert.Equal("captainuser", login3);
+        Assert.True(GitHubWebhookProcessor.HasSender(validUser));
     }
 
     [Theory]
@@ -999,7 +997,7 @@ public class GitHubWebhookProcessorTests
     [InlineData("- [X] I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.", true)]
     public void TestIsAiAssistedPullRequest(string? body, bool expected)
     {
-        Assert.Equal(expected, GitHubWebhookProcessor.IsAiAssistedPullRequest(body));
+        Assert.Equal(expected, AiAssistanceHelper.IsAiAssistedPullRequest(body));
     }
 
     #endregion
@@ -1015,6 +1013,199 @@ public class GitHubWebhookProcessorTests
 
         return new TestGitHubWebhookProcessor(github, config);
     }
+
+    private static abaci_bot.Pipelines.PullRequestPipeline CreateFullPipeline(
+        IGitHubService github,
+        abaci_bot.Options.TargetClassificationOptions? targetOptions = null,
+        abaci_bot.Options.ChangeTypeClassificationOptions? changeTypeOptions = null,
+        abaci_bot.Options.BotDetectionOptions? botOptions = null)
+    {
+        var mutexEngine = new abaci_bot.Pipelines.LabelMutexEngine();
+        var modules = new abaci_bot.Pipelines.IPullRequestModule[]
+        {
+            new WorkflowStateModule(),
+            new StaleUnstaleModule(Microsoft.Extensions.Options.Options.Create(botOptions ?? new abaci_bot.Options.BotDetectionOptions())),
+            new ShinyNewPrModule(Microsoft.Extensions.Options.Options.Create(botOptions ?? new abaci_bot.Options.BotDetectionOptions())),
+            new UserContributionModule(),
+            new TargetClassificationModule(Microsoft.Extensions.Options.Options.Create(targetOptions ?? new abaci_bot.Options.TargetClassificationOptions())),
+            new BuildSystemAnalysisModule(),
+            new ChangeTypeClassificationModule(options: Microsoft.Extensions.Options.Options.Create(changeTypeOptions ?? new abaci_bot.Options.ChangeTypeClassificationOptions())),
+            new AiAssistanceModule()
+        };
+        return new abaci_bot.Pipelines.PullRequestPipeline(modules, mutexEngine, github);
+    }
+
+    private static TestGitHubWebhookProcessor CreateFullProcessor(
+        FakeGitHubService github,
+        abaci_bot.Options.TargetClassificationOptions? targetOptions = null,
+        abaci_bot.Options.ChangeTypeClassificationOptions? changeTypeOptions = null,
+        abaci_bot.Options.BotDetectionOptions? botOptions = null)
+    {
+        var config = new ConfigurationManager
+        {
+            ["GitHubApp:TeamName"] = "captains",
+            ["BotDetection:Whitelist:0"] = "ci-bot",
+            ["BotDetection:Whitelist:1"] = "dependabot[bot]"
+        };
+
+        var mutexEngine = new abaci_bot.Pipelines.LabelMutexEngine();
+        var pipeline = CreateFullPipeline(github, targetOptions, changeTypeOptions, botOptions);
+        var lockManager = new abaci_bot.Pipelines.PullRequestLockManager();
+
+        return new TestGitHubWebhookProcessor(github, config, pipeline, lockManager, mutexEngine);
+    }
+
+    #region Part 2.1 Full Pipeline End-to-End & Mixed-Case Captains Verification
+
+    [Fact]
+    public async Task FullPipeline_MixedCaseCaptainComment_AdvancesPRAndRemovesCommitsUpdated()
+    {
+        var github = new FakeGitHubService();
+        // Captain registered with mixed-case in team
+        github.TeamMembers.Clear();
+        github.TeamMembers.Add("CaptainAlice");
+
+        var processor = CreateFullProcessor(github);
+
+        // Mixed-case sender comment on a ready PR
+        var commentEvent = IssueCommentEvent(
+            author: "contributor",
+            sender: "CaptainAlice",
+            labels: new[] { GitHubLabels.CommitsUpdated, GitHubLabels.WorkflowReadyForReview });
+
+        await processor.ProcessIssueCommentAsync(commentEvent, IssueCommentAction.Created);
+
+        Assert.Contains($"remove:{GitHubLabels.CommitsUpdated}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task FullPipeline_MixedCaseCaptainReview_AdvancesPRAndRemovesCommitsUpdated()
+    {
+        var github = new FakeGitHubService();
+        github.TeamMembers.Clear();
+        github.TeamMembers.Add("CaptainAlice");
+
+        var processor = CreateFullProcessor(github);
+
+        var reviewEvent = PullRequestReviewEvent(
+            author: "contributor",
+            sender: "captainalice", // Sender lowercase, team has CaptainAlice
+            labels: new[] { GitHubLabels.CommitsUpdated, GitHubLabels.WorkflowReadyForReview });
+
+        await processor.ProcessPullRequestReviewAsync(reviewEvent, PullRequestReviewAction.Submitted);
+
+        Assert.Contains($"remove:{GitHubLabels.CommitsUpdated}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        Assert.Contains($"add:{GitHubLabels.WorkflowInReview}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task FullPipeline_NewPrOpenedOnMasterWithSpecFile_AppliesAllRelevantPart21Labels()
+    {
+        var github = new FakeGitHubService();
+        github.PullRequestFiles = new[]
+        {
+            CreateOctokitFile("SPECS/gcc.spec"),
+            CreateOctokitFile("README.md")
+        };
+
+        var processor = CreateFullProcessor(github);
+        var repo = Create<WebhookRepository>(
+            (nameof(WebhookRepository.Name), "openRuyi"),
+            (nameof(WebhookRepository.Owner), User("openRuyi-Project")));
+
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            draft: false,
+            title: "Package update: GCC 14",
+            repository: repo);
+
+        await processor.ProcessPullRequestAsync(payload, PullRequestAction.Opened);
+
+        // 1. WorkflowStateModule -> Workflow: Ready For Review
+        Assert.Contains($"add:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
+        // 2. ShinyNewPrModule -> new
+        Assert.Contains($"add:{GitHubLabels.New}", github.LabelOperations);
+        // 3. TargetClassificationModule -> Target: Rolling (default main/master)
+        Assert.Contains($"add:{GitHubLabels.TargetRolling}", github.LabelOperations);
+        // 4. ChangeTypeClassificationModule -> Type: Packaging
+        Assert.Contains($"add:{GitHubLabels.TypePackaging}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task NonPrIssue_WhenHumanCommentsOnStaleIssue_RemovesStatusStaleViaMutexEngine()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateFullProcessor(github);
+
+        // Issue with no PullRequest property
+        var issue = Create<WebhookIssue>(
+            (nameof(WebhookIssue.Number), 101L),
+            (nameof(WebhookIssue.Title), "Stale Issue"),
+            (nameof(WebhookIssue.User), User("issue-creator")),
+            (nameof(WebhookIssue.PullRequest), null),
+            (nameof(WebhookIssue.Labels), Labels(new[] { GitHubLabels.StatusStale })));
+
+        var commentEvent = Create<WebhookIssueCommentCreatedEvent>(
+            (nameof(WebhookIssueCommentCreatedEvent.Issue), issue),
+            (nameof(WebhookIssueCommentCreatedEvent.Repository), Repository()),
+            (nameof(WebhookIssueCommentCreatedEvent.Sender), User("active-contributor")));
+
+        await processor.ProcessIssueCommentAsync(commentEvent, IssueCommentAction.Created);
+
+        Assert.Contains($"remove:{GitHubLabels.StatusStale}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task NonPrIssue_WhenBotCommentsOnStaleIssue_DoesNotRemoveStatusStale()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateFullProcessor(github);
+
+        var issue = Create<WebhookIssue>(
+            (nameof(WebhookIssue.Number), 102L),
+            (nameof(WebhookIssue.Title), "Stale Issue"),
+            (nameof(WebhookIssue.User), User("issue-creator")),
+            (nameof(WebhookIssue.PullRequest), null),
+            (nameof(WebhookIssue.Labels), Labels(new[] { GitHubLabels.StatusStale })));
+
+        // User name ends with [bot] or matches whitelist
+        var botUser = User("ci-bot");
+
+        var commentEvent = Create<WebhookIssueCommentCreatedEvent>(
+            (nameof(WebhookIssueCommentCreatedEvent.Issue), issue),
+            (nameof(WebhookIssueCommentCreatedEvent.Repository), Repository()),
+            (nameof(WebhookIssueCommentCreatedEvent.Sender), botUser));
+
+        await processor.ProcessIssueCommentAsync(commentEvent, IssueCommentAction.Created);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task NonPrIssue_WhenSenderMissing_ReturnsEarlyWithoutRemovingLabel()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateFullProcessor(github);
+
+        var issue = Create<WebhookIssue>(
+            (nameof(WebhookIssue.Number), 103L),
+            (nameof(WebhookIssue.Title), "Stale Issue"),
+            (nameof(WebhookIssue.User), User("issue-creator")),
+            (nameof(WebhookIssue.PullRequest), null),
+            (nameof(WebhookIssue.Labels), Labels(new[] { GitHubLabels.StatusStale })));
+
+        var commentEvent = Create<WebhookIssueCommentCreatedEvent>(
+            (nameof(WebhookIssueCommentCreatedEvent.Issue), issue),
+            (nameof(WebhookIssueCommentCreatedEvent.Repository), Repository()));
+
+        await processor.ProcessIssueCommentAsync(commentEvent, IssueCommentAction.Created);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    #endregion
 
     private static PullRequestLabeledEvent LabeledEvent(string labelName, IReadOnlyList<string>? labels = null)
     {
@@ -1173,6 +1364,17 @@ public class GitHubWebhookProcessorTests
 
         public TestGitHubWebhookProcessor(IGitHubService github, IConfiguration config)
             : base(github, config)
+        {
+            _testGithub = github;
+        }
+
+        public TestGitHubWebhookProcessor(
+            IGitHubService github,
+            IConfiguration config,
+            abaci_bot.Pipelines.PullRequestPipeline pipeline,
+            abaci_bot.Pipelines.PullRequestLockManager lockManager,
+            abaci_bot.Pipelines.LabelMutexEngine mutexEngine)
+            : base(github, config, pipeline, lockManager, mutexEngine)
         {
             _testGithub = github;
         }
@@ -1359,6 +1561,34 @@ public class GitHubWebhookProcessorTests
             typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.State))?.SetValue(pr, PullRequest.State);
             typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Title))?.SetValue(pr, PullRequest.Title);
             return Task.FromResult(pr);
+        }
+
+        public List<int> ClosedIssues { get; } = new();
+        public List<(int IssueNumber, string Comment)> CreatedComments { get; } = new();
+        public List<Octokit.Issue> StaleCandidates { get; set; } = new();
+        public int? RemainingRateLimit { get; set; } = 5000;
+
+        public Task<IReadOnlyList<Octokit.Issue>> SearchStaleCandidatesAsync(
+            string owner, string repo, DateTimeOffset updatedBefore, bool isPr, string? labelFilter = null, CancellationToken ct = default)
+        {
+            return Task.FromResult<IReadOnlyList<Octokit.Issue>>(StaleCandidates);
+        }
+
+        public Task CloseIssueAsync(string owner, string repo, int number, CancellationToken ct = default)
+        {
+            ClosedIssues.Add(number);
+            return Task.CompletedTask;
+        }
+
+        public Task CreateCommentAsync(string owner, string repo, int number, string comment, CancellationToken ct = default)
+        {
+            CreatedComments.Add((number, comment));
+            return Task.CompletedTask;
+        }
+
+        public Task<int?> GetRemainingRateLimitAsync(CancellationToken ct = default)
+        {
+            return Task.FromResult(RemainingRateLimit);
         }
     }
 

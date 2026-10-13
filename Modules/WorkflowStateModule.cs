@@ -69,7 +69,7 @@ public class WorkflowStateModule : IPullRequestModule
         if (action == PullRequestAction.Labeled)
         {
             if (context.PullRequestEvent is PullRequestLabeledEvent labeledEvent &&
-                GitHubWebhookProcessor.IsBlockedLabel(labeledEvent.Label?.Name))
+                WorkflowHelper.IsBlockedLabel(labeledEvent.Label?.Name))
             {
                 if (context.IsBlocked)
                 {
@@ -86,7 +86,7 @@ public class WorkflowStateModule : IPullRequestModule
         if (action == PullRequestAction.Unlabeled)
         {
             if (context.PullRequestEvent is PullRequestUnlabeledEvent unlabeledEvent &&
-                GitHubWebhookProcessor.IsBlockedLabel(unlabeledEvent.Label?.Name))
+                WorkflowHelper.IsBlockedLabel(unlabeledEvent.Label?.Name))
             {
                 if (!context.IsBlocked && !context.IsTerminal)
                 {
@@ -170,7 +170,7 @@ public class WorkflowStateModule : IPullRequestModule
         }
 
         // A response from a non-author captain acknowledges the author's previous updates
-        if (captains.Contains(sender) && !GitHubWebhookProcessor.IsSameUser(sender, author))
+        if (captains.Contains(sender) && !WorkflowHelper.IsSameUser(sender, author))
         {
             context.LabelsToRemove.Add(GitHubLabels.CommitsUpdated);
         }
@@ -206,7 +206,7 @@ public class WorkflowStateModule : IPullRequestModule
         }
 
         // A response from a non-author captain acknowledges the author's previous updates
-        if (captains.Contains(sender) && !GitHubWebhookProcessor.IsSameUser(sender, effectiveAuthor))
+        if (captains.Contains(sender) && !WorkflowHelper.IsSameUser(sender, effectiveAuthor))
         {
             context.LabelsToRemove.Add(GitHubLabels.CommitsUpdated);
         }
