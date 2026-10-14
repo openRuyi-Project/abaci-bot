@@ -93,6 +93,7 @@ builder.Services.AddSingleton<IRpmDependencyService, RpmDependencyService>();
 builder.Services.AddSingleton<IAbiDiffRunner, ProcessAbiDiffRunner>();
 builder.Services.AddSingleton<IAbiDiffService, AbiDiffService>();
 builder.Services.AddSingleton<IArtifactService, ArtifactService>();
+builder.Services.AddSingleton<IGovernanceCommentFormatter, GovernanceCommentFormatter>();
 
 // Register pluggable pull request governance modules (executed in priority order)
 builder.Services.AddSingleton<IPullRequestModule, WorkflowStateModule>();
@@ -108,8 +109,9 @@ builder.Services.AddSingleton<IPullRequestModule, VulnerabilityModule>();
 builder.Services.AddSingleton<IPullRequestModule, RebuildImpactModule>();
 builder.Services.AddSingleton<IPullRequestModule, AbiComplianceModule>();
 
-// Register background lifecycle service
+// Register background lifecycle services
 builder.Services.AddHostedService<StaleLifecycleService>();
+builder.Services.AddHostedService<RebuildMetadataRefreshService>();
 
 // Register the pipeline orchestrator
 builder.Services.AddSingleton<PullRequestPipeline>();

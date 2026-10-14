@@ -366,6 +366,136 @@ public class RpmDependencyService : IRpmDependencyService
             packageRequirements.Count, newReverseGraph.Values.Sum(v => v.Count));
     }
 
+    public static string? ExtractPrimaryLocationFromRepomd(Stream stream)
+    {
+        var settings = new XmlReaderSettings
+        {
+            IgnoreWhitespace = true,
+            DtdProcessing = DtdProcessing.Prohibit,
+            Async = false
+        };
+
+        using var reader = XmlReader.Create(stream, settings);
+        bool inPrimaryData = false;
+
+        while (reader.Read())
+        {
+            if (reader.NodeType == XmlNodeType.Element)
+            {
+                if (reader.LocalName == "data" && reader.GetAttribute("type") == "primary")
+                {
+                    inPrimaryData = true;
+                }
+                else if (inPrimaryData && reader.LocalName == "location")
+                {
+                    var href = reader.GetAttribute("href");
+                    if (!string.IsNullOrWhiteSpace(href))
+                    {
+                        return href;
+                    }
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "data")
+            {
+                inPrimaryData = false;
+            }
+        }
+
+        return null;
+    }
+
+    internal async Task<string?> ResolveEffectivePrimaryUrlAsync(HttpClient client, string configuredUrl, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(configuredUrl))
+            return null;
+
+        // If explicitly pointing to repomd.xml
+        if (configuredUrl.EndsWith("repomd.xml", StringComparison.OrdinalIgnoreCase))
+        {
+            return await FetchPrimaryHrefFromRepomdAsync(client, configuredUrl, ct);
+        }
+
+        // If configured directly with a primary file or other URL, probe it first
+        try
+        {
+            using var headReq = new HttpRequestMessage(HttpMethod.Head, configuredUrl);
+            var headResp = await client.SendAsync(headReq, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (headResp.IsSuccessStatusCode)
+            {
+                return configuredUrl;
+            }
+
+            // If 404 or not found, try to locate repomd.xml in the repodata directory to resolve dynamic content hash
+            if (headResp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                var derivedRepomdUrl = TryDeriveRepomdUrl(configuredUrl);
+                if (derivedRepomdUrl != null)
+                {
+                    _logger?.LogInformation("Configured PrimaryXmlUrl {Url} returned 404; falling back to repomd.xml at {RepomdUrl}",
+                        configuredUrl, derivedRepomdUrl);
+                    var primaryFromRepomd = await FetchPrimaryHrefFromRepomdAsync(client, derivedRepomdUrl, ct);
+                    if (primaryFromRepomd != null)
+                        return primaryFromRepomd;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogDebug(ex, "Probing configured PrimaryXmlUrl {Url} failed, falling back to direct URL attempt", configuredUrl);
+        }
+
+        return configuredUrl;
+    }
+
+    private async Task<string?> FetchPrimaryHrefFromRepomdAsync(HttpClient client, string repomdUrl, CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await client.GetAsync(repomdUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!resp.IsSuccessStatusCode)
+                return null;
+
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            var locationHref = ExtractPrimaryLocationFromRepomd(stream);
+            if (string.IsNullOrWhiteSpace(locationHref))
+                return null;
+
+            if (Uri.TryCreate(locationHref, UriKind.Absolute, out var absUri))
+                return absUri.AbsoluteUri;
+
+            var repomdUri = new Uri(repomdUrl);
+            var repomdStr = repomdUri.AbsoluteUri;
+            if (repomdStr.EndsWith("/repodata/repomd.xml", StringComparison.OrdinalIgnoreCase))
+            {
+                var baseUri = new Uri(repomdStr[..^"repodata/repomd.xml".Length]);
+                return new Uri(baseUri, locationHref).AbsoluteUri;
+            }
+            if (repomdStr.EndsWith("repomd.xml", StringComparison.OrdinalIgnoreCase))
+            {
+                var baseUri = new Uri(repomdStr[..^"repomd.xml".Length]);
+                return new Uri(baseUri, locationHref).AbsoluteUri;
+            }
+
+            return new Uri(repomdUri, locationHref).AbsoluteUri;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "Failed to resolve repomd.xml from {Url}", repomdUrl);
+            return null;
+        }
+    }
+
+    private static string? TryDeriveRepomdUrl(string url)
+    {
+        var repodataIdx = url.IndexOf("/repodata/", StringComparison.OrdinalIgnoreCase);
+        if (repodataIdx >= 0)
+        {
+            var prefix = url[..(repodataIdx + "/repodata/".Length)];
+            return prefix + "repomd.xml";
+        }
+        return null;
+    }
+
     public async Task<bool> RefreshMetadataAsync(CancellationToken ct = default)
     {
         // 1. Try local cache file if configured and exists
@@ -391,15 +521,24 @@ public class RpmDependencyService : IRpmDependencyService
             try
             {
                 var client = _httpClientFactory.CreateClient("RpmMetadataClient");
-                var response = await client.GetAsync(_options.PrimaryXmlUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+                var effectiveUrl = await ResolveEffectivePrimaryUrlAsync(client, _options.PrimaryXmlUrl, ct);
+                if (string.IsNullOrWhiteSpace(effectiveUrl))
+                {
+                    _logger?.LogWarning("Unable to resolve primary XML URL from configured PrimaryXmlUrl: {Url}", _options.PrimaryXmlUrl);
+                    return false;
+                }
+
+                var response = await client.GetAsync(effectiveUrl, HttpCompletionOption.ResponseHeadersRead, ct);
                 if (response.IsSuccessStatusCode)
                 {
                     await using var stream = await response.Content.ReadAsStreamAsync(ct);
-                    var isGzip = _options.PrimaryXmlUrl.EndsWith(".gz", StringComparison.OrdinalIgnoreCase);
+                    var isGzip = effectiveUrl.EndsWith(".gz", StringComparison.OrdinalIgnoreCase);
                     await LoadMetadataAsync(stream, isGzip, ct);
-                    _logger?.LogInformation("Loaded RPM metadata from remote URL: {Url}", _options.PrimaryXmlUrl);
+                    _logger?.LogInformation("Loaded RPM metadata from remote URL: {Url}", effectiveUrl);
                     return true;
                 }
+
+                _logger?.LogWarning("Failed to download RPM metadata from {Url}: HTTP {StatusCode}", effectiveUrl, response.StatusCode);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

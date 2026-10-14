@@ -17,6 +17,7 @@ public partial class SpdxComplianceModule : IPullRequestModule
 {
     private readonly ISpdxLicenseService _spdxService;
     private readonly SpdxComplianceOptions _options;
+    private readonly IGovernanceCommentFormatter _formatter;
     private readonly ILogger<SpdxComplianceModule>? _logger;
 
     public string ModuleName => nameof(SpdxComplianceModule);
@@ -30,10 +31,12 @@ public partial class SpdxComplianceModule : IPullRequestModule
     public SpdxComplianceModule(
         ISpdxLicenseService spdxService,
         IOptions<SpdxComplianceOptions> options,
+        IGovernanceCommentFormatter? formatter = null,
         ILogger<SpdxComplianceModule>? logger = null)
     {
         _spdxService = spdxService;
         _options = options.Value;
+        _formatter = formatter ?? new GovernanceCommentFormatter();
         _logger = logger;
     }
 
@@ -60,7 +63,7 @@ public partial class SpdxComplianceModule : IPullRequestModule
         if (specFiles.Count == 0)
             return;
 
-        var licenseIssues = new List<string>();
+        var licenseIssues = new List<(string File, string Expression, string Details)>();
 
         foreach (var file in specFiles)
         {
@@ -84,7 +87,7 @@ public partial class SpdxComplianceModule : IPullRequestModule
             var matches = LicenseTagRegex().Matches(content);
             if (matches.Count == 0)
             {
-                licenseIssues.Add($"- `{file.FileName}`: 缺失必需的 `License:` 字段声明。");
+                licenseIssues.Add((file.FileName, "None", "Missing required `License:` field declaration"));
                 continue;
             }
 
@@ -99,10 +102,10 @@ public partial class SpdxComplianceModule : IPullRequestModule
                 if (!result.IsValid)
                 {
                     var details = result.InvalidIdentifiers.Count > 0
-                        ? $"非标准或未知标识符: `{string.Join("`, `", result.InvalidIdentifiers)}`"
-                        : result.ErrorMessage ?? "表达式语法无效";
+                        ? $"Non-standard or unknown identifier(s): `{string.Join("`, `", result.InvalidIdentifiers)}`"
+                        : result.ErrorMessage ?? "Invalid expression syntax";
 
-                    licenseIssues.Add($"- `{file.FileName}`: 许可证表达式 `{licenseExpr}` 不合规（{details}）。");
+                    licenseIssues.Add((file.FileName, licenseExpr, details));
                 }
             }
         }
@@ -110,10 +113,7 @@ public partial class SpdxComplianceModule : IPullRequestModule
         if (licenseIssues.Count > 0)
         {
             context.LabelsToAdd.Add(GitHubLabels.ComplianceLicenseIssue);
-            var report = "#### ⚠️ SPDX 许可证合规检查未通过\n" +
-                         "openRuyi 要求所有软件包 Spec 必须采用符合标准 SPDX 规范的许可证标识符：\n" +
-                         string.Join("\n", licenseIssues) +
-                         "\n\n请参考 [SPDX License List](https://spdx.org/licenses/) 修正后再推入更新。";
+            var report = _formatter.FormatSpdxLicenseIssue(licenseIssues);
 
             context.PendingComments.Add(report);
             _logger?.LogInformation("PR #{PrNumber} flagged with License Issue ({Count} issues found).",

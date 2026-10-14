@@ -17,6 +17,7 @@ public partial class RebuildImpactModule : IPullRequestModule
 {
     private readonly IRpmDependencyService _dependencyService;
     private readonly RebuildImpactOptions _options;
+    private readonly IGovernanceCommentFormatter _formatter;
     private readonly ILogger<RebuildImpactModule>? _logger;
 
     public string ModuleName => nameof(RebuildImpactModule);
@@ -43,10 +44,12 @@ public partial class RebuildImpactModule : IPullRequestModule
     public RebuildImpactModule(
         IRpmDependencyService dependencyService,
         IOptions<RebuildImpactOptions> options,
+        IGovernanceCommentFormatter? formatter = null,
         ILogger<RebuildImpactModule>? logger = null)
     {
         _dependencyService = dependencyService;
         _options = options.Value;
+        _formatter = formatter ?? new GovernanceCommentFormatter();
         _logger = logger;
     }
 
@@ -125,11 +128,11 @@ public partial class RebuildImpactModule : IPullRequestModule
         {
             context.LabelsToAdd.Add(GitHubLabels.WorkflowBlocked);
 
-            var report = $"#### ⛔ Rebuild 规模准入拦截 (Rebuild Impact Gate)\n" +
-                         $"本 PR 涉及基础包变更（`{string.Join("`, `", changedPackages)}`），" +
-                         $"在下游反向依赖 DAG 中触发 **{totalCount}** 个软件包重构（阈值: {_options.BlockThreshold}）。\n\n" +
-                         $"为防止大规模级联构建影响 Rolling 主干分支稳定性，已自动添加 `{GitHubLabels.WorkflowBlocked}` 拦截合并。\n" +
-                         $"**建议处置**：请将 PR 目标分支改选为 `Staging` 分支进行隔离验证。";
+            var report = _formatter.FormatRebuildGateBlocked(
+                changedPackages.ToList(),
+                totalCount,
+                _options.BlockThreshold,
+                targetBranch);
 
             context.PendingComments.Add(report);
             _logger?.LogWarning("PR #{PrNumber} blocked due to excessive rebuild impact ({Count} >= {Threshold}).",

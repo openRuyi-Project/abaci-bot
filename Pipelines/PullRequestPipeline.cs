@@ -15,6 +15,7 @@ public class PullRequestPipeline
     private readonly IReadOnlyList<IPullRequestModule> _modules;
     private readonly LabelMutexEngine _mutexEngine;
     private readonly IGitHubService _gitHubService;
+    private readonly IGovernanceCommentFormatter _formatter;
     private readonly ILogger<PullRequestPipeline>? _logger;
     private readonly TimeSpan _recoveryTimeout;
 
@@ -30,13 +31,15 @@ public class PullRequestPipeline
         LabelMutexEngine mutexEngine,
         IGitHubService gitHubService,
         ILogger<PullRequestPipeline>? logger = null,
-        TimeSpan? recoveryTimeout = null)
+        TimeSpan? recoveryTimeout = null,
+        IGovernanceCommentFormatter? formatter = null)
     {
         _modules = modules.OrderBy(m => m.Priority).ToList();
         _mutexEngine = mutexEngine;
         _gitHubService = gitHubService;
         _logger = logger;
         _recoveryTimeout = recoveryTimeout ?? DefaultRecoveryTimeout;
+        _formatter = formatter ?? new GovernanceCommentFormatter();
     }
 
     /// <summary>
@@ -300,7 +303,7 @@ public class PullRequestPipeline
             return;
 
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine("### 🛡️ abaci-bot 门禁与治理检查报告");
+        sb.AppendLine(_formatter.FormatConsolidatedHeader());
         sb.AppendLine();
         foreach (var comment in context.PendingComments)
         {

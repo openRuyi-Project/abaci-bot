@@ -61,6 +61,7 @@ Your GitHub App must be configured with the following permissions:
 - Pull requests: **Read and write**
 - Issues: **Read and write**
 - Contents: **Read-only**
+- Actions: **Read-only** *(Required for ABI compliance analysis to receive CI build completion events and download workflow run artifacts)*
 
 Your GitHub App must also subscribe to these webhook events:
 
@@ -70,8 +71,21 @@ Your GitHub App must also subscribe to these webhook events:
 - Pull request review threads
 - Pull request reviews
 - Pull requests
+- Workflow runs *(Required for ABI compliance: triggers `ProcessWorkflowRunWebhookAsync` on CI job completion)*
 
-### 3. Repository Labels Prerequisite
+> [!IMPORTANT]
+> When adding the **Actions: Read-only** permission to an existing GitHub App, GitHub requires repository administrators to approve the updated permission grant. The app's `InstallationId` may also change during re-installation; verify that `GitHubApp:InstallationId` in `appsettings.json` matches the active installation ID.
+
+### 3. Distribution Quality & Compliance (Part 2.2) Modules
+
+`abaci-bot` includes distribution-grade automated compliance, security, and gating checks:
+
+- **SPDX License Compliance (`SpdxCompliance`)**: Inspects RPM spec files modified in pull requests, parses compound license expressions (`OR`, `AND`, `WITH`), normalizes legacy RPM aliases, and flags non-compliant or unknown licenses with `Compliance: License Issue` and GFM warning notices.
+- **Vulnerability Tracking (`CveSecurity`)**: Detects CVE identifiers (`CVE-YYYY-NNNNN`) in pull request titles, descriptions, and commit messages. Queries OSV.dev with NIST NVD CVE 2.0 fallback to assign CVSS severity levels (`Severity: 1` through `Severity: 4`) and track vulnerability resolution lifecycle.
+- **Cascading Rebuild Impact Gate (`RebuildImpact`)**: Downloads and parses repository metadata (`primary.xml.gz` or `repomd.xml`) to build a full reverse dependency DAG. Computes affected downstream packages (`Rebuild: 0` to `Rebuild: 5001+`) and automatically enforces admission gating (`Workflow: Blocked`) when rebuild impact on the `Rolling` branch exceeds the configured threshold.
+- **Binary ABI Compliance (`AbiCompliance`)**: Listens for GitHub `workflow_run.completed` events, downloads CI-built RPM artifacts, fetches baseline stable packages, and executes `libabigail` (`abidiff`) to detect binary shared library incompatibilities (`Impact: ABI`, `Impact: Breaking Change`).
+
+### 4. Repository Labels Prerequisite
 
 Before deploying the bot, ensure that target repositories have created the required workflow and status labels (GitHub API does not automatically create missing labels when applying them):
 
@@ -79,6 +93,10 @@ Before deploying the bot, ensure that target repositories have created the requi
 - **Contributor & Status**: `Community: Contribution`, `Community: Student contribution`, `Commits: Updated`, `AI Assistance`
 - **Build & CI**: `CI`, `Target: Rolling`, `Target: LTS`
 - **Build Systems**: `BuildSystem: autotools`, `BuildSystem: cmake`, `BuildSystem: golang`, `BuildSystem: golangmodule`, `BuildSystem: meson`, `BuildSystem: misc`, `BuildSystem: pyproject`, `BuildSystem: rust`, `BuildSystem: rustcrate`
+- **SPDX License Compliance**: `Compliance: License Issue`
+- **Vulnerability Severity & Lifecycle**: `Severity: 1`, `Severity: 2`, `Severity: 3`, `Severity: 4`, `Vulnerability: Detected`, `Vulnerability: Fixed-Pending`, `Vulnerability: Resolved`, `Vulnerability: Dismissed`, `Vulnerability: Pending-Verification`
+- **Rebuild Impact**: `Rebuild: 0`, `Rebuild: 1..10`, `Rebuild: 11..100`, `Rebuild: 101..500`, `Rebuild: 501..1000`, `Rebuild: 1001..2500`, `Rebuild: 2501..5000`, `Rebuild: 5001+`
+- **ABI & Breaking Changes**: `Impact: ABI`, `Impact: Breaking Change`
 
 > **Note**: For the complete, authoritative list of runtime label constants managed by the governance engine, refer to [`Services/GitHubLabels.cs`](Services/GitHubLabels.cs).
 

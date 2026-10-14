@@ -184,7 +184,7 @@ public class SpdxComplianceModuleTests
 
         Assert.Contains(GitHubLabels.ComplianceLicenseIssue, context.LabelsToAdd);
         Assert.NotEmpty(context.PendingComments);
-        Assert.Contains("SPDX 许可证合规检查未通过", context.PendingComments[0]);
+        Assert.Contains("SPDX License Compliance Check Failed", context.PendingComments[0]);
         Assert.Contains("ProprietaryNonStandard", context.PendingComments[0]);
     }
 
@@ -205,7 +205,7 @@ public class SpdxComplianceModuleTests
 
         Assert.Contains(GitHubLabels.ComplianceLicenseIssue, context.LabelsToAdd);
         Assert.NotEmpty(context.PendingComments);
-        Assert.Contains("缺失必需的 `License:` 字段声明", context.PendingComments[0]);
+        Assert.Contains("Missing required `License:` field declaration", context.PendingComments[0]);
     }
 
     [Fact]

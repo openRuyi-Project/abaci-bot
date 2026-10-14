@@ -1294,7 +1294,7 @@ public class GitHubWebhookProcessorTests
 
             Assert.Contains($"add:{GitHubLabels.ImpactAbi}", github.LabelOperations);
             Assert.Contains($"add:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
-            Assert.Contains(github.CreatedComments, c => c.IssueNumber == 42 && c.Comment.Contains("ABI 破坏性兼容性变更预警"));
+            Assert.Contains(github.CreatedComments, c => c.IssueNumber == 42 && c.Comment.Contains("ABI Breaking Change Detected"));
         }
         finally
         {

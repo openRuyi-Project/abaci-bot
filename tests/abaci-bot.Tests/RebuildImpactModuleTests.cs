@@ -190,7 +190,7 @@ public class RebuildImpactModuleTests
         Assert.Contains(GitHubLabels.Rebuild1001To2500, context.LabelsToAdd);
         Assert.Contains(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
         Assert.NotEmpty(context.PendingComments);
-        Assert.Contains("Rebuild 规模准入拦截", context.PendingComments[0]);
+        Assert.Contains("Rebuild Impact Gate: Merge Blocked", context.PendingComments[0]);
         Assert.Contains("1200", context.PendingComments[0]);
         Assert.Contains("Staging", context.PendingComments[0]);
     }
@@ -309,6 +309,122 @@ public class RebuildImpactModuleTests
         // myapp requires /bin/sh which is a scriptlet interpreter path, not a rebuild dependency
         var affectedByBash = service.GetAffectedPackages("bash");
         Assert.Empty(affectedByBash);
+    }
+
+    [Fact]
+    public void ExtractPrimaryLocationFromRepomd_ValidRepomdXml_ExtractsPrimaryLocationHref()
+    {
+        var repomdXml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <repomd xmlns="http://linux.duke.edu/metadata/repo">
+          <data type="other">
+            <location href="repodata/other.xml.gz"/>
+          </data>
+          <data type="primary">
+            <location href="repodata/cc770dc7d453b304ee20d67373e4b033323267ed7ba33069583d97ac2cf1a5d5-primary.xml.gz"/>
+            <timestamp>1728900000</timestamp>
+          </data>
+          <data type="filelists">
+            <location href="repodata/filelists.xml.gz"/>
+          </data>
+        </repomd>
+        """;
+
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(repomdXml));
+        var href = RpmDependencyService.ExtractPrimaryLocationFromRepomd(stream);
+
+        Assert.Equal("repodata/cc770dc7d453b304ee20d67373e4b033323267ed7ba33069583d97ac2cf1a5d5-primary.xml.gz", href);
+    }
+
+    [Fact]
+    public async Task ResolveEffectivePrimaryUrlAsync_ConfiguredWithRepomd_ResolvesFullPrimaryUrl()
+    {
+        var repomdXml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <repomd xmlns="http://linux.duke.edu/metadata/repo">
+          <data type="primary">
+            <location href="repodata/1234abcd-primary.xml.gz"/>
+          </data>
+        </repomd>
+        """;
+
+        var handler = new HttpHandlerStub(req =>
+        {
+            if (req.RequestUri!.ToString().EndsWith("repomd.xml"))
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(repomdXml, Encoding.UTF8, "application/xml")
+                };
+            }
+            return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+        });
+
+        var client = new HttpClient(handler);
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions());
+        var service = new RpmDependencyService(_httpClientFactory, options);
+
+        var resolved = await service.ResolveEffectivePrimaryUrlAsync(
+            client,
+            "https://repo.openeuler.org/openEuler-24.03-LTS/OS/x86_64/repodata/repomd.xml",
+            CancellationToken.None);
+
+        Assert.Equal("https://repo.openeuler.org/openEuler-24.03-LTS/OS/x86_64/repodata/1234abcd-primary.xml.gz", resolved);
+    }
+
+    [Fact]
+    public async Task ResolveEffectivePrimaryUrlAsync_HashedPrimaryReturns404_FallsBackToRepomd()
+    {
+        var repomdXml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <repomd xmlns="http://linux.duke.edu/metadata/repo">
+          <data type="primary">
+            <location href="repodata/new-primary.xml.gz"/>
+          </data>
+        </repomd>
+        """;
+
+        var handler = new HttpHandlerStub(req =>
+        {
+            if (req.RequestUri!.ToString().Contains("old-primary.xml.gz"))
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+            }
+            if (req.RequestUri!.ToString().EndsWith("repomd.xml"))
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(repomdXml, Encoding.UTF8, "application/xml")
+                };
+            }
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+        });
+
+        var client = new HttpClient(handler);
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions());
+        var service = new RpmDependencyService(_httpClientFactory, options);
+
+        var resolved = await service.ResolveEffectivePrimaryUrlAsync(
+            client,
+            "https://repo.openeuler.org/openEuler-24.03-LTS/OS/x86_64/repodata/old-primary.xml.gz",
+            CancellationToken.None);
+
+        Assert.Equal("https://repo.openeuler.org/openEuler-24.03-LTS/OS/x86_64/repodata/new-primary.xml.gz", resolved);
+    }
+
+    private sealed class HttpHandlerStub : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+
+        public HttpHandlerStub(Func<HttpRequestMessage, HttpResponseMessage> handler)
+        {
+            _handler = handler;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(_handler(request));
+        }
     }
 }
 

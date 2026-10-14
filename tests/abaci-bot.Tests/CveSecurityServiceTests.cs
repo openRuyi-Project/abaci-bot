@@ -45,6 +45,18 @@ public class CveSecurityServiceTests
     }
 
     [Fact]
+    public void DefaultOptions_ContainsCorrectNvdHostnameAndProductionTimeout()
+    {
+        var options = new CveSecurityOptions();
+        Assert.Equal("https://services.nvd.nist.gov/rest/json/cves/2.0", options.NvdApiBaseUrl);
+        Assert.Equal("https://api.osv.dev/v1/vulns/", options.OsvApiBaseUrl);
+        Assert.True(options.RequestTimeoutSeconds >= 15, "RequestTimeoutSeconds must be at least 15s for NIST NVD latency.");
+
+        var uri = new Uri(options.NvdApiBaseUrl);
+        Assert.Equal("services.nvd.nist.gov", uri.Host);
+    }
+
+    [Fact]
     public async Task QueryCveAsync_OsvReturnsDirectScore_ParsesAccurately()
     {
         var json = """

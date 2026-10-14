@@ -15,6 +15,7 @@ public class AbiComplianceModule : IPullRequestModule
 {
     private readonly IAbiDiffService _abiDiffService;
     private readonly AbiComplianceOptions _options;
+    private readonly IGovernanceCommentFormatter _formatter;
     private readonly ILogger<AbiComplianceModule>? _logger;
 
     public string ModuleName => nameof(AbiComplianceModule);
@@ -29,10 +30,12 @@ public class AbiComplianceModule : IPullRequestModule
     public AbiComplianceModule(
         IAbiDiffService abiDiffService,
         IOptions<AbiComplianceOptions> options,
+        IGovernanceCommentFormatter? formatter = null,
         ILogger<AbiComplianceModule>? logger = null)
     {
         _abiDiffService = abiDiffService;
         _options = options.Value;
+        _formatter = formatter ?? new GovernanceCommentFormatter();
         _logger = logger;
     }
 
@@ -75,17 +78,7 @@ public class AbiComplianceModule : IPullRequestModule
         {
             context.LabelsToAdd.Add(GitHubLabels.ImpactBreakingChange);
 
-            var snippet = result.Details;
-            if (snippet.Length > 1500)
-            {
-                snippet = snippet[..1500] + "\n... (输出过长已截断)";
-            }
-
-            var report = "#### ⚠️ ABI 破坏性兼容性变更预警 (ABI Breaking Change)\n" +
-                         "门禁比对检测到二进制共享库存在破坏性 ABI 改变（缺少导出的公共符号或 SONAME 发生变更）：\n\n" +
-                         "```\n" + snippet + "\n```\n\n" +
-                         "下游依赖此动态库的应用可能发生运行时符号解析崩溃，请评估是否属于有意变更。";
-
+            var report = _formatter.FormatAbiBreakingChange(result.Details);
             context.PendingComments.Add(report);
             _logger?.LogWarning("PR #{PrNumber} flagged with ABI breaking changes.", context.PrNumber);
         }

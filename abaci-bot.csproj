@@ -7,7 +7,12 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <AnalysisMode>Recommended</AnalysisMode>
+        <ServerGarbageCollection>false</ServerGarbageCollection>
     </PropertyGroup>
+
+    <ItemGroup>
+      <Content Update="appsettings.json" CopyToPublishDirectory="Never" />
+    </ItemGroup>
 
     <ItemGroup>
       <PackageReference Include="Octokit" Version="14.0.0" />

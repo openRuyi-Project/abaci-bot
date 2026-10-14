@@ -18,7 +18,7 @@ public class CveSecurityOptions
     /// <summary>
     /// Base URL for the NIST NVD CVE 2.0 API.
     /// </summary>
-    public string NvdApiBaseUrl { get; set; } = "https://services.nvdnist.gov/rest/json/cves/2.0";
+    public string NvdApiBaseUrl { get; set; } = "https://services.nvd.nist.gov/rest/json/cves/2.0";
 
     /// <summary>
     /// Optional NVD API key to increase rate limits.
@@ -33,5 +33,5 @@ public class CveSecurityOptions
     /// <summary>
     /// HTTP request timeout in seconds for vulnerability data queries.
     /// </summary>
-    public double RequestTimeoutSeconds { get; set; } = 5;
+    public double RequestTimeoutSeconds { get; set; } = 15;
 }

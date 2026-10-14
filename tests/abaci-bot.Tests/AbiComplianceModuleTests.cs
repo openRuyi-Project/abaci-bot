@@ -79,7 +79,7 @@ public class AbiComplianceModuleTests
         Assert.Contains(GitHubLabels.ImpactAbi, context.LabelsToAdd);
         Assert.Contains(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
         Assert.NotEmpty(context.PendingComments);
-        Assert.Contains("ABI 破坏性兼容性变更预警", context.PendingComments[0]);
+        Assert.Contains("ABI Breaking Change Detected", context.PendingComments[0]);
         Assert.Contains("SONAME changed", context.PendingComments[0]);
     }
 
@@ -171,7 +171,7 @@ public class AbiComplianceModuleTests
             "owner",
             "repo",
             42,
-            Arg.Is<string>(c => c.Contains("ABI 破坏性兼容性变更预警")),
+            Arg.Is<string>(c => c.Contains("ABI Breaking Change Detected")),
             Arg.Any<CancellationToken>());
     }
 }

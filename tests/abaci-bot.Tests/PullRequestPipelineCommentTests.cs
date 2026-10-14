@@ -79,7 +79,7 @@ public class PullRequestPipelineCommentTests
             "openRuyi",
             77,
             Arg.Is<string>(c =>
-                c.Contains("abaci-bot 门禁与治理检查报告") &&
+                c.Contains("abaci-bot Governance Review") &&
                 c.Contains("Module 1 Warning") &&
                 c.Contains("Module 2 Notice")),
             Arg.Any<CancellationToken>());
