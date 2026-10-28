@@ -272,6 +272,12 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                 try
                 {
                     var fullPr = await _github.GetPullRequestAsync(owner, repo, prNumber, cancellationToken);
+                    if (fullPr == null)
+                    {
+                        _logger?.LogWarning("PR #{PrNumber} not found in {Owner}/{Repo} during workflow_run processing; skipping", prNumber, owner, repo);
+                        continue;
+                    }
+
                     var context = PullRequestContext.FromWorkflowRun(_github, teamName, owner, repo, fullPr, abiResult, headers, cancellationToken);
                     await _pipeline.ExecuteAsync(context, cancellationToken);
                 }

@@ -1371,6 +1371,21 @@ public class GitHubWebhookProcessorTests
         }
     }
 
+    [Fact]
+    public async Task ProcessWorkflowRun_WhenPullRequestNotFound_LogsWarningAndSkips()
+    {
+        var github = new FakeGitHubService { ReturnNullPullRequest = true };
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+        var payload = CreateWorkflowRunEvent(888L, "success", 42);
+
+        await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
     private static WorkflowRunCompletedEvent CreateWorkflowRunEvent(
         long runId,
         string conclusion,
@@ -1658,6 +1673,8 @@ public class GitHubWebhookProcessorTests
 
         public bool ThrowOnGetAuthorEmail { get; set; }
 
+        public bool ReturnNullPullRequest { get; set; }
+
         public Dictionary<string, string> FileContents { get; } = new(StringComparer.Ordinal);
 
         public void SyncFromPayload(PullRequestEvent payload)
@@ -1796,6 +1813,11 @@ public class GitHubWebhookProcessorTests
         public Task<OctokitPullRequest?> GetPullRequestAsync(
             string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
         {
+            if (ReturnNullPullRequest)
+            {
+                return Task.FromResult<OctokitPullRequest?>(null);
+            }
+
             var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
             var labelObjs = RemoteLabels.Select(name =>
             {
