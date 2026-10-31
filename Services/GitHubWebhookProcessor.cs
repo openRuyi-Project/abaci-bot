@@ -10,6 +10,7 @@ using Octokit.Webhooks.Events.IssueComment;
 using Octokit.Webhooks.Events.PullRequest;
 using Octokit.Webhooks.Events.PullRequestReview;
 using Octokit.Webhooks.Events.PullRequestReviewComment;
+using Octokit.Webhooks.Events.WorkflowRun;
 
 namespace abaci_bot.Services;
 
@@ -28,6 +29,8 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     private readonly LabelMutexEngine _mutexEngine;
     private readonly ILogger<GitHubWebhookProcessor>? _logger;
     private readonly BotDetectionOptions _botOptions;
+    private readonly IArtifactService? _artifactService;
+    private readonly IAbiDiffService? _abiDiffService;
 
     public GitHubWebhookProcessor(
         IGitHubService github,
@@ -36,7 +39,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         PullRequestLockManager lockManager,
         LabelMutexEngine? mutexEngine = null,
         ILogger<GitHubWebhookProcessor>? logger = null,
-        IOptions<BotDetectionOptions>? botOptions = null)
+        IOptions<BotDetectionOptions>? botOptions = null,
+        IArtifactService? artifactService = null,
+        IAbiDiffService? abiDiffService = null)
     {
         _github = github;
         _config = config;
@@ -47,6 +52,8 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         _botOptions = botOptions?.Value
             ?? config.GetSection("BotDetection").Get<BotDetectionOptions>()
             ?? new BotDetectionOptions();
+        _artifactService = artifactService;
+        _abiDiffService = abiDiffService;
     }
 
     /// <summary>
@@ -194,6 +201,96 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
         {
             await _pipeline.ExecuteAsync(context, cancellationToken);
+        }
+    }
+
+    protected override async ValueTask ProcessWorkflowRunWebhookAsync(
+        WebhookHeaders headers,
+        WorkflowRunEvent workflowRunEvent,
+        WorkflowRunAction action,
+        CancellationToken cancellationToken = default)
+    {
+        if (action != WorkflowRunAction.Completed)
+            return;
+
+        if (!TryGetRepositoryContext(workflowRunEvent.Repository, out var owner, out var repo))
+            return;
+
+        var pullRequests = workflowRunEvent.WorkflowRun?.PullRequests;
+        if (pullRequests == null || pullRequests.Count == 0)
+            return;
+
+        var runId = workflowRunEvent.WorkflowRun?.Id ?? 0;
+        var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
+
+        // Perform ABI diff analysis if artifact & abiDiff services are available and run succeeded
+        AbiDiffResult? abiResult = null;
+        if (_artifactService != null && _abiDiffService != null && runId > 0 &&
+            string.Equals(workflowRunEvent.WorkflowRun?.Conclusion?.StringValue, "success", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var tempExtractionDir = _config.GetSection("AbiCompliance").GetValue<string>("TempExtractionDirectory");
+                var baseTemp = !string.IsNullOrWhiteSpace(tempExtractionDir)
+                    ? tempExtractionDir
+                    : Path.GetTempPath();
+                var tempDir = Path.Combine(baseTemp, "abaci_abi_" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    var prRpms = await _artifactService.DownloadRunRpmArtifactsAsync(owner, repo, runId, tempDir, cancellationToken);
+                    foreach (var prRpm in prRpms)
+                    {
+                        var fileName = Path.GetFileName(prRpm);
+                        var pkgName = ArtifactService.ExtractPackageName(fileName);
+                        var baselineRpm = await _artifactService.DownloadBaselineRpmAsync(pkgName, tempDir, cancellationToken);
+                        if (!string.IsNullOrEmpty(baselineRpm) && File.Exists(baselineRpm))
+                        {
+                            var diff = await _abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, cancellationToken);
+                            abiResult = diff;
+                            if (diff.Succeeded && (diff.HasAbiChange || diff.IsBreakingChange))
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    if (Directory.Exists(tempDir))
+                    {
+                        try { Directory.Delete(tempDir, recursive: true); } catch { /* ignore cleanup error */ }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to perform ABI diff analysis for run {RunId} in {Owner}/{Repo}", runId, owner, repo);
+            }
+        }
+
+        foreach (var pr in pullRequests)
+        {
+            var prNumber = (int)pr.Number;
+            using (await _lockManager.AcquireLockAsync(owner, repo, prNumber, cancellationToken))
+            {
+                try
+                {
+                    var fullPr = await _github.GetPullRequestAsync(owner, repo, prNumber, cancellationToken);
+                    if (fullPr == null)
+                    {
+                        _logger?.LogWarning("PR #{PrNumber} not found in {Owner}/{Repo} during workflow_run processing; skipping", prNumber, owner, repo);
+                        continue;
+                    }
+
+                    var context = PullRequestContext.FromWorkflowRun(_github, teamName, owner, repo, fullPr, abiResult, headers, cancellationToken);
+                    await _pipeline.ExecuteAsync(context, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(ex, "Failed to process workflow run for PR #{PrNumber} in {Owner}/{Repo}",
+                        prNumber, owner, repo);
+                }
+            }
         }
     }
 

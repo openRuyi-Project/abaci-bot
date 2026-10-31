@@ -63,6 +63,8 @@ builder.Services.AddSingleton<IGitHubService>(sp => new GitHubService(
     sp.GetService<ILogger<GitHubService>>()
 ));
 
+builder.Services.AddHttpClient();
+
 builder.Services.Configure<TargetClassificationOptions>(config.GetSection("TargetClassification"));
 builder.Services.Configure<ChangeTypeClassificationOptions>(config.GetSection("ChangeTypeClassification"));
 builder.Services.AddOptions<StaleLifecycleOptions>()
@@ -70,6 +72,10 @@ builder.Services.AddOptions<StaleLifecycleOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<StaleLifecycleOptions>, StaleLifecycleOptionsValidator>();
 builder.Services.Configure<BotDetectionOptions>(config.GetSection("BotDetection"));
+builder.Services.Configure<SpdxComplianceOptions>(config.GetSection("SpdxCompliance"));
+builder.Services.Configure<CveSecurityOptions>(config.GetSection("CveSecurity"));
+builder.Services.Configure<RebuildImpactOptions>(config.GetSection("RebuildImpact"));
+builder.Services.Configure<AbiComplianceOptions>(config.GetSection("AbiCompliance"));
 
 // Register pipeline infrastructure and mutual-exclusion engine
 builder.Services.AddSingleton<PullRequestLockManager>();
@@ -80,6 +86,15 @@ builder.Services.AddSingleton<IChangeTypeStrategy, OpenRuyiPackageRepoStrategy>(
 builder.Services.AddSingleton<IChangeTypeStrategy, HomepageRepoStrategy>();
 builder.Services.AddSingleton<IChangeTypeStrategy, DefaultChangeTypeStrategy>();
 
+// Register Part 2.2 domain services
+builder.Services.AddSingleton<ISpdxLicenseService, SpdxLicenseService>();
+builder.Services.AddSingleton<ICveSecurityService, CveSecurityService>();
+builder.Services.AddSingleton<IRpmDependencyService, RpmDependencyService>();
+builder.Services.AddSingleton<IAbiDiffRunner, ProcessAbiDiffRunner>();
+builder.Services.AddSingleton<IAbiDiffService, AbiDiffService>();
+builder.Services.AddSingleton<IArtifactService, ArtifactService>();
+builder.Services.AddSingleton<IGovernanceCommentFormatter, GovernanceCommentFormatter>();
+
 // Register pluggable pull request governance modules (executed in priority order)
 builder.Services.AddSingleton<IPullRequestModule, WorkflowStateModule>();
 builder.Services.AddSingleton<IPullRequestModule, StaleUnstaleModule>();
@@ -89,9 +104,15 @@ builder.Services.AddSingleton<IPullRequestModule, TargetClassificationModule>();
 builder.Services.AddSingleton<IPullRequestModule, BuildSystemAnalysisModule>();
 builder.Services.AddSingleton<IPullRequestModule, ChangeTypeClassificationModule>();
 builder.Services.AddSingleton<IPullRequestModule, AiAssistanceModule>();
+builder.Services.AddSingleton<IPullRequestModule, SpdxComplianceModule>();
+builder.Services.AddSingleton<IPullRequestModule, VulnerabilityModule>();
+builder.Services.AddSingleton<IPullRequestModule, RebuildImpactModule>();
+builder.Services.AddSingleton<IPullRequestModule, AbiComplianceModule>();
 
-// Register background lifecycle service
+// Register background lifecycle services
 builder.Services.AddHostedService<StaleLifecycleService>();
+builder.Services.AddHostedService<RebuildMetadataRefreshService>();
+builder.Services.AddHostedService<SpdxMetadataRefreshService>();
 
 // Register the pipeline orchestrator
 builder.Services.AddSingleton<PullRequestPipeline>();

@@ -59,6 +59,8 @@ public class TargetClassificationModuleTests
     }
 
     [Theory]
+    [InlineData("lts/24.03")]
+    [InlineData("lts/2026")]
     [InlineData("lts-24.03")]
     [InlineData("lts-22.09")]
     [InlineData("lts-next")]
@@ -72,6 +74,28 @@ public class TargetClassificationModuleTests
 
         Assert.Contains(GitHubLabels.TargetLts, context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.TargetRolling, context.LabelsToAdd);
+    }
+
+    [Theory]
+    [InlineData("lts/24.03", GitHubLabels.TargetLts)]
+    [InlineData("lts/2026", GitHubLabels.TargetLts)]
+    [InlineData("lts-24.03", GitHubLabels.TargetLts)]
+    [InlineData("ltsfoo", GitHubLabels.TargetRolling)]
+    [InlineData("main", GitHubLabels.TargetRolling)]
+    public async Task ProcessAsync_StandardConfig_RequiresPrefixDelimiter(string branchName, string expectedLabel)
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new TargetClassificationOptions
+        {
+            LtsBranchPrefixes = new List<string> { "lts/", "lts-" },
+            RollingBranches = new List<string> { "main", "master", "rolling" },
+            DefaultTarget = "Rolling"
+        });
+        var module = new TargetClassificationModule(options);
+        var context = CreateContext("openRuyi", branchName);
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(expectedLabel, context.LabelsToAdd);
     }
 
     [Fact]
@@ -230,5 +254,23 @@ public class TargetClassificationModuleTests
         await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Contains(GitHubLabels.TargetLts, context.LabelsToAdd);
+    }
+
+    [Fact]
+    public void DemoConfiguration_ContainsExpectedTargetClassificationSettings()
+    {
+        // Assert that appsettings.demo.json contract defines expected default LTS prefixes and branches
+        var demoConfigPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "appsettings.demo.json");
+        Assert.True(File.Exists(demoConfigPath), $"appsettings.demo.json should exist at {demoConfigPath}");
+
+        var json = File.ReadAllText(demoConfigPath);
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        Assert.True(root.TryGetProperty("TargetClassification", out var targetSection));
+        Assert.True(targetSection.TryGetProperty("LtsBranchPrefixes", out var ltsPrefixes));
+        var prefixes = ltsPrefixes.EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Contains("lts/", prefixes);
+        Assert.Contains("lts-", prefixes);
     }
 }

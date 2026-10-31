@@ -21,7 +21,8 @@ public enum PullRequestEventType
     PullRequest,
     Review,
     IssueComment,
-    ReviewComment
+    ReviewComment,
+    WorkflowRun
 }
 
 /// <summary>
@@ -251,6 +252,11 @@ public class PullRequestContext
     /// </summary>
     public ConcurrentDictionary<string, object?> Items { get; } = new();
 
+    /// <summary>
+    /// Binary ABI difference analysis result, if evaluated during workflow run or CI completion.
+    /// </summary>
+    public AbiDiffResult? AbiResult { get; set; }
+
     public PullRequestContext(
         IGitHubService gitHubService,
         string teamName,
@@ -386,6 +392,100 @@ public class PullRequestContext
             prAction: action,
             prEvent: prEvent,
             senderType: prEvent.Sender?.Type?.ToString(),
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Creates a PullRequestContext from an authoritative Octokit PullRequest model.
+    /// </summary>
+    public static PullRequestContext FromPullRequest(
+        IGitHubService gitHub,
+        string teamName,
+        string owner,
+        string repo,
+        PullRequest pullRequest,
+        WebhookHeaders? headers = null,
+        CancellationToken cancellationToken = default)
+    {
+        return FromPullRequestInternal(
+            gitHub,
+            teamName,
+            owner,
+            repo,
+            pullRequest,
+            PullRequestEventType.PullRequest,
+            action: PullRequestAction.Synchronize.ToString(),
+            prAction: PullRequestAction.Synchronize,
+            headers: headers,
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Creates a PullRequestContext from a GitHub workflow_run event associated with a pull request.
+    /// </summary>
+    public static PullRequestContext FromWorkflowRun(
+        IGitHubService gitHub,
+        string teamName,
+        string owner,
+        string repo,
+        PullRequest pullRequest,
+        AbiDiffResult? abiResult = null,
+        WebhookHeaders? headers = null,
+        CancellationToken cancellationToken = default)
+    {
+        var ctx = FromPullRequestInternal(
+            gitHub,
+            teamName,
+            owner,
+            repo,
+            pullRequest,
+            PullRequestEventType.WorkflowRun,
+            action: "completed",
+            prAction: null,
+            headers: headers,
+            cancellationToken: cancellationToken);
+
+        ctx.AbiResult = abiResult;
+        return ctx;
+    }
+
+    private static PullRequestContext FromPullRequestInternal(
+        IGitHubService gitHub,
+        string teamName,
+        string owner,
+        string repo,
+        PullRequest pullRequest,
+        PullRequestEventType eventType,
+        string action,
+        PullRequestAction? prAction,
+        WebhookHeaders? headers,
+        CancellationToken cancellationToken)
+    {
+        var labels = pullRequest.Labels?
+            .Select(l => l.Name)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        return new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: teamName,
+            headers: headers,
+            eventType: eventType,
+            owner: owner,
+            repo: repo,
+            prNumber: pullRequest.Number,
+            headSha: pullRequest.Head?.Sha ?? string.Empty,
+            baseBranch: pullRequest.Base?.Ref,
+            isDraft: pullRequest.Draft,
+            isMerged: pullRequest.Merged,
+            title: pullRequest.Title ?? string.Empty,
+            body: pullRequest.Body,
+            senderLogin: pullRequest.User?.Login,
+            authorLogin: pullRequest.User?.Login,
+            action: action,
+            existingLabels: labels,
+            prAction: prAction,
+            senderType: pullRequest.User?.Type?.ToString(),
             cancellationToken: cancellationToken);
     }
 

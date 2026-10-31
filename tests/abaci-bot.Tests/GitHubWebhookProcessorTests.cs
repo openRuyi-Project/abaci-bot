@@ -1,11 +1,14 @@
 using abaci_bot.Modules;
 using abaci_bot.Services;
 using Microsoft.Extensions.Configuration;
+using NSubstitute;
 using Octokit.Webhooks;
 using Octokit.Webhooks.Events;
 using Octokit.Webhooks.Events.IssueComment;
 using Octokit.Webhooks.Events.PullRequest;
 using Octokit.Webhooks.Events.PullRequestReview;
+using Octokit.Webhooks.Events.WorkflowRun;
+using Octokit.Webhooks.Models;
 using OctokitPullRequest = Octokit.PullRequest;
 using OctokitPullRequestFile = Octokit.PullRequestFile;
 using WebhookIssue = Octokit.Webhooks.Models.Issue;
@@ -1247,6 +1250,245 @@ public class GitHubWebhookProcessorTests
 
     #endregion
 
+    #region WorkflowRun ABI Diff Pipeline End-to-End Tests
+
+    [Fact]
+    public async Task ProcessWorkflowRun_SuccessWithBreakingAbiChange_ExecutesPipelineAndAppliesImpactLabels()
+    {
+        var github = new FakeGitHubService();
+        github.RemoteLabels.Add(GitHubLabels.WorkflowReadyForReview);
+
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_abi_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpm = Path.Combine(tempDir, "libgpg-error-1.61-999.or.x86_64.rpm");
+        var baselineRpm = Path.Combine(tempDir, "libgpg-error-baseline.rpm");
+        await File.WriteAllTextAsync(prRpm, "dummy-rpm-data");
+        await File.WriteAllTextAsync(baselineRpm, "dummy-baseline-data");
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
+
+            artifactService.DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baselineRpm));
+
+            abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(
+                    Succeeded: true,
+                    HasAbiChange: true,
+                    IsBreakingChange: true,
+                    Details: "SONAME changed; 2 removed functions")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(888L, "success", 42);
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            await artifactService.Received(1).DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>());
+            await artifactService.Received(1).DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<CancellationToken>());
+            await abiDiffService.Received(1).CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>());
+
+            Assert.Contains($"add:{GitHubLabels.ImpactAbi}", github.LabelOperations);
+            Assert.Contains($"add:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
+            Assert.Contains(github.CreatedComments, c => c.IssueNumber == 42 && c.Comment.Contains("ABI Breaking Change Detected"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRun_FailedConclusion_SkipsAbiAnalysis()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+        var payload = CreateWorkflowRunEvent(888L, "failure", 42);
+
+        await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+        await artifactService.DidNotReceive().DownloadRunRpmArtifactsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<long>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await abiDiffService.DidNotReceive().CompareRpmsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.Empty(github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRun_NoAbiChange_DoesNotAddImpactLabels()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_abi_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpm = Path.Combine(tempDir, "libgpg-error-1.61-999.or.x86_64.rpm");
+        var baselineRpm = Path.Combine(tempDir, "libgpg-error-baseline.rpm");
+        await File.WriteAllTextAsync(prRpm, "dummy-rpm-data");
+        await File.WriteAllTextAsync(baselineRpm, "dummy-baseline-data");
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
+
+            artifactService.DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baselineRpm));
+
+            abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(
+                    Succeeded: true,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: "No ABI changes detected")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(888L, "success", 42);
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            await artifactService.Received(1).DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>());
+            await abiDiffService.Received(1).CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>());
+
+            Assert.DoesNotContain($"add:{GitHubLabels.ImpactAbi}", github.LabelOperations);
+            Assert.DoesNotContain($"add:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRun_SuccessWithNoAbiChange_ClearsExistingImpactLabels()
+    {
+        var github = new FakeGitHubService();
+        github.RemoteLabels.Add(GitHubLabels.ImpactAbi);
+        github.RemoteLabels.Add(GitHubLabels.ImpactBreakingChange);
+
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_abi_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpm = Path.Combine(tempDir, "libgpg-error-1.61-999.or.x86_64.rpm");
+        var baselineRpm = Path.Combine(tempDir, "libgpg-error-baseline.rpm");
+        await File.WriteAllTextAsync(prRpm, "dummy-rpm-data");
+        await File.WriteAllTextAsync(baselineRpm, "dummy-baseline-data");
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
+
+            artifactService.DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baselineRpm));
+
+            abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(
+                    Succeeded: true,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: "No ABI changes detected")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(888L, "success", 42);
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            Assert.Contains($"remove:{GitHubLabels.ImpactAbi}", github.LabelOperations);
+            Assert.Contains($"remove:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
+            Assert.DoesNotContain($"add:{GitHubLabels.ImpactAbi}", github.LabelOperations);
+            Assert.DoesNotContain($"add:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRun_WhenPullRequestNotFound_LogsWarningAndSkips()
+    {
+        var github = new FakeGitHubService { ReturnNullPullRequest = true };
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+        var payload = CreateWorkflowRunEvent(888L, "success", 42);
+
+        await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+        Assert.Empty(github.LabelOperations);
+    }
+
+    private static WorkflowRunCompletedEvent CreateWorkflowRunEvent(
+        long runId,
+        string conclusion,
+        int prNumber,
+        string owner = "owner",
+        string repoName = "repo")
+    {
+        var repo = Create<WebhookRepository>(
+            (nameof(WebhookRepository.Name), repoName),
+            (nameof(WebhookRepository.Owner), User(owner)));
+
+        var pr = Create<Octokit.Webhooks.Models.WorkflowPullRequest>(
+            (nameof(Octokit.Webhooks.Models.WorkflowPullRequest.Number), (object)(long)prNumber));
+
+        var conc = string.Equals(conclusion, "success", StringComparison.OrdinalIgnoreCase)
+            ? WorkflowRunConclusion.Success
+            : WorkflowRunConclusion.Failure;
+
+        var workflowRun = Create<Octokit.Webhooks.Models.WorkflowRun>(
+            (nameof(Octokit.Webhooks.Models.WorkflowRun.Id), (object)runId),
+            (nameof(Octokit.Webhooks.Models.WorkflowRun.Conclusion), (object)new Octokit.Webhooks.Extensions.StringEnum<WorkflowRunConclusion>(conc)),
+            (nameof(Octokit.Webhooks.Models.WorkflowRun.PullRequests), (object)new[] { pr }));
+
+        return Create<WorkflowRunCompletedEvent>(
+            (nameof(WorkflowRunCompletedEvent.WorkflowRun), workflowRun),
+            (nameof(WorkflowRunCompletedEvent.Repository), repo),
+            (nameof(WorkflowRunCompletedEvent.Sender), User("github-actions[bot]")));
+    }
+
+    private static TestGitHubWebhookProcessor CreateAbiProcessor(
+        FakeGitHubService github,
+        IArtifactService? artifactService = null,
+        IAbiDiffService? abiDiffService = null)
+    {
+        var config = new ConfigurationManager
+        {
+            ["GitHubApp:TeamName"] = "captains"
+        };
+
+        var mutexEngine = new abaci_bot.Pipelines.LabelMutexEngine();
+        var abiModule = new AbiComplianceModule(
+            abiDiffService ?? Substitute.For<IAbiDiffService>(),
+            Microsoft.Extensions.Options.Options.Create(new abaci_bot.Options.AbiComplianceOptions()));
+
+        var pipeline = new abaci_bot.Pipelines.PullRequestPipeline(new abaci_bot.Pipelines.IPullRequestModule[] { abiModule }, mutexEngine, github);
+        var lockManager = new abaci_bot.Pipelines.PullRequestLockManager();
+
+        return new TestGitHubWebhookProcessor(github, config, pipeline, lockManager, mutexEngine, artifactService, abiDiffService);
+    }
+
+    #endregion
+
     private static PullRequestLabeledEvent LabeledEvent(string labelName, IReadOnlyList<string>? labels = null)
     {
         var pullRequest = PullRequest(labels: labels);
@@ -1413,10 +1655,17 @@ public class GitHubWebhookProcessorTests
             IConfiguration config,
             abaci_bot.Pipelines.PullRequestPipeline pipeline,
             abaci_bot.Pipelines.PullRequestLockManager lockManager,
-            abaci_bot.Pipelines.LabelMutexEngine mutexEngine)
-            : base(github, config, pipeline, lockManager, mutexEngine)
+            abaci_bot.Pipelines.LabelMutexEngine mutexEngine,
+            IArtifactService? artifactService = null,
+            IAbiDiffService? abiDiffService = null)
+            : base(github, config, pipeline, lockManager, mutexEngine, artifactService: artifactService, abiDiffService: abiDiffService)
         {
             _testGithub = github;
+        }
+
+        public ValueTask ProcessWorkflowRunAsync(WorkflowRunEvent payload, WorkflowRunAction action)
+        {
+            return ProcessWorkflowRunWebhookAsync(null!, payload, action);
         }
 
         public ValueTask ProcessPullRequestAsync(PullRequestEvent payload, PullRequestAction action)
@@ -1474,6 +1723,8 @@ public class GitHubWebhookProcessorTests
         public string? AuthorEmail { get; set; }
 
         public bool ThrowOnGetAuthorEmail { get; set; }
+
+        public bool ReturnNullPullRequest { get; set; }
 
         public Dictionary<string, string> FileContents { get; } = new(StringComparer.Ordinal);
 
@@ -1613,6 +1864,11 @@ public class GitHubWebhookProcessorTests
         public Task<OctokitPullRequest?> GetPullRequestAsync(
             string owner, string repo, int prNumber, CancellationToken cancellationToken = default)
         {
+            if (ReturnNullPullRequest)
+            {
+                return Task.FromResult<OctokitPullRequest?>(null);
+            }
+
             var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
             var labelObjs = RemoteLabels.Select(name =>
             {
@@ -1620,6 +1876,7 @@ public class GitHubWebhookProcessorTests
                 typeof(Octokit.Label).GetProperty(nameof(Octokit.Label.Name))?.SetValue(l, name);
                 return l;
             }).ToArray();
+            typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Number))?.SetValue(pr, prNumber);
             typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Labels))?.SetValue(pr, labelObjs);
             typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Draft))?.SetValue(pr, PullRequest.Draft);
             if (PullRequest.Merged)
@@ -1670,6 +1927,18 @@ public class GitHubWebhookProcessorTests
         public Task<GitHubRateLimitSnapshot> GetRateLimitSnapshotAsync(CancellationToken ct = default)
         {
             return Task.FromResult(new GitHubRateLimitSnapshot(RemainingRateLimit, null, RemainingSearchRateLimit, null));
+        }
+
+        public Task<IReadOnlyList<(long Id, string Name, long SizeInBytes)>> ListWorkflowRunArtifactsAsync(
+            string owner, string repo, long runId, CancellationToken ct = default)
+        {
+            return Task.FromResult<IReadOnlyList<(long Id, string Name, long SizeInBytes)>>(Array.Empty<(long Id, string Name, long SizeInBytes)>());
+        }
+
+        public Task<Stream> DownloadArtifactZipStreamAsync(
+            string owner, string repo, long artifactId, CancellationToken ct = default)
+        {
+            return Task.FromResult<Stream>(new MemoryStream());
         }
     }
 

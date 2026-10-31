@@ -19,6 +19,7 @@ public static class GitHubLabels
     public const string New = "new";
     public const string StatusStale = "Status: Stale";
     public const string StatusPinned = "Status: Pinned";
+    public const string ComplianceLicenseIssue = "Compliance: License Issue";
 
     // 3. Build & CI
     public const string Ci = "CI";
@@ -72,4 +73,9 @@ public static class GitHubLabels
     public const string Rebuild1001To2500 = "Rebuild: 1001-2500";
     public const string Rebuild2501To5000 = "Rebuild: 2501-5000";
     public const string Rebuild5001Plus = "Rebuild: 5001+";
+
+    // 11. Forward-looking: ABI and Breaking Change impact
+    public const string ImpactAbi = "Impact: ABI";
+    public const string ImpactBreakingChange = "Impact: Breaking Change";
+    public const string ImpactAbiCheckFailed = "Impact: ABI Check Failed";
 }

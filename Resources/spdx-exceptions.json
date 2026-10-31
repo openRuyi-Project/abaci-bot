@@ -1,0 +1,313 @@
+{
+  "licenseListVersion": "3.26.0",
+  "exceptions": [
+    {
+      "licenseExceptionId": "389-exception",
+      "name": "389 Directory Server Exception"
+    },
+    {
+      "licenseExceptionId": "Asterisk-exception",
+      "name": "Asterisk exception"
+    },
+    {
+      "licenseExceptionId": "Asterisk-linking-protocols-exception",
+      "name": "Asterisk linking protocols exception"
+    },
+    {
+      "licenseExceptionId": "Autoconf-exception-2.0",
+      "name": "Autoconf exception 2.0"
+    },
+    {
+      "licenseExceptionId": "Autoconf-exception-3.0",
+      "name": "Autoconf exception 3.0"
+    },
+    {
+      "licenseExceptionId": "Autoconf-exception-generic",
+      "name": "Autoconf generic exception"
+    },
+    {
+      "licenseExceptionId": "Autoconf-exception-generic-3.0",
+      "name": "Autoconf generic exception for GPL-3.0"
+    },
+    {
+      "licenseExceptionId": "Autoconf-exception-macro",
+      "name": "Autoconf macro exception"
+    },
+    {
+      "licenseExceptionId": "Bison-exception-1.24",
+      "name": "Bison exception 1.24"
+    },
+    {
+      "licenseExceptionId": "Bison-exception-2.2",
+      "name": "Bison exception 2.2"
+    },
+    {
+      "licenseExceptionId": "Bootloader-exception",
+      "name": "Bootloader Distribution Exception"
+    },
+    {
+      "licenseExceptionId": "CGAL-linking-exception",
+      "name": "CGAL Linking Exception"
+    },
+    {
+      "licenseExceptionId": "Classpath-exception-2.0",
+      "name": "Classpath exception 2.0"
+    },
+    {
+      "licenseExceptionId": "CLISP-exception-2.0",
+      "name": "CLISP exception 2.0"
+    },
+    {
+      "licenseExceptionId": "cryptsetup-OpenSSL-exception",
+      "name": "cryptsetup OpenSSL exception"
+    },
+    {
+      "licenseExceptionId": "DigiRule-FOSS-exception",
+      "name": "DigiRule FOSS License Exception"
+    },
+    {
+      "licenseExceptionId": "eCos-exception-2.0",
+      "name": "eCos exception 2.0"
+    },
+    {
+      "licenseExceptionId": "erlang-otp-linking-exception",
+      "name": "Erlang/OTP Linking Exception"
+    },
+    {
+      "licenseExceptionId": "Fawkes-Runtime-exception",
+      "name": "Fawkes Runtime Exception"
+    },
+    {
+      "licenseExceptionId": "FLTK-exception",
+      "name": "FLTK exception"
+    },
+    {
+      "licenseExceptionId": "fmt-exception",
+      "name": "fmt exception"
+    },
+    {
+      "licenseExceptionId": "Font-exception-2.0",
+      "name": "Font exception 2.0"
+    },
+    {
+      "licenseExceptionId": "freertos-exception-2.0",
+      "name": "FreeRTOS Exception 2.0"
+    },
+    {
+      "licenseExceptionId": "GCC-exception-2.0",
+      "name": "GCC Runtime Library exception 2.0"
+    },
+    {
+      "licenseExceptionId": "GCC-exception-2.0-note",
+      "name": "GCC    Runtime Library exception 2.0 - note variant"
+    },
+    {
+      "licenseExceptionId": "GCC-exception-3.1",
+      "name": "GCC Runtime Library exception 3.1"
+    },
+    {
+      "licenseExceptionId": "Gmsh-exception",
+      "name": "Gmsh exception"
+    },
+    {
+      "licenseExceptionId": "GNAT-exception",
+      "name": "GNAT exception"
+    },
+    {
+      "licenseExceptionId": "GNOME-examples-exception",
+      "name": "GNOME examples exception"
+    },
+    {
+      "licenseExceptionId": "GNU-compiler-exception",
+      "name": "GNU Compiler Exception"
+    },
+    {
+      "licenseExceptionId": "gnu-javamail-exception",
+      "name": "GNU JavaMail exception"
+    },
+    {
+      "licenseExceptionId": "GPL-3.0-389-ds-base-exception",
+      "name": "GPL-3.0 389 DS Base Exception"
+    },
+    {
+      "licenseExceptionId": "GPL-3.0-interface-exception",
+      "name": "GPL-3.0 Interface Exception"
+    },
+    {
+      "licenseExceptionId": "GPL-3.0-linking-exception",
+      "name": "GPL-3.0 Linking Exception"
+    },
+    {
+      "licenseExceptionId": "GPL-3.0-linking-source-exception",
+      "name": "GPL-3.0 Linking Exception (with Corresponding Source)"
+    },
+    {
+      "licenseExceptionId": "GPL-CC-1.0",
+      "name": "GPL Cooperation Commitment 1.0"
+    },
+    {
+      "licenseExceptionId": "GStreamer-exception-2005",
+      "name": "GStreamer Exception (2005)"
+    },
+    {
+      "licenseExceptionId": "GStreamer-exception-2008",
+      "name": "GStreamer Exception (2008)"
+    },
+    {
+      "licenseExceptionId": "harbour-exception",
+      "name": "harbour exception"
+    },
+    {
+      "licenseExceptionId": "i2p-gpl-java-exception",
+      "name": "i2p GPL+Java Exception"
+    },
+    {
+      "licenseExceptionId": "Independent-modules-exception",
+      "name": "Independent Module Linking exception"
+    },
+    {
+      "licenseExceptionId": "KiCad-libraries-exception",
+      "name": "KiCad Libraries Exception"
+    },
+    {
+      "licenseExceptionId": "LGPL-3.0-linking-exception",
+      "name": "LGPL-3.0 Linking Exception"
+    },
+    {
+      "licenseExceptionId": "libpri-OpenH323-exception",
+      "name": "libpri OpenH323 exception"
+    },
+    {
+      "licenseExceptionId": "Libtool-exception",
+      "name": "Libtool Exception"
+    },
+    {
+      "licenseExceptionId": "Linux-syscall-note",
+      "name": "Linux Syscall Note"
+    },
+    {
+      "licenseExceptionId": "LLGPL",
+      "name": "LLGPL Preamble"
+    },
+    {
+      "licenseExceptionId": "LLVM-exception",
+      "name": "LLVM Exception"
+    },
+    {
+      "licenseExceptionId": "LZMA-exception",
+      "name": "LZMA exception"
+    },
+    {
+      "licenseExceptionId": "mif-exception",
+      "name": "Macros and Inline Functions Exception"
+    },
+    {
+      "licenseExceptionId": "mxml-exception",
+      "name": "mxml Exception"
+    },
+    {
+      "licenseExceptionId": "Nokia-Qt-exception-1.1",
+      "name": "Nokia Qt LGPL exception 1.1"
+    },
+    {
+      "licenseExceptionId": "OCaml-LGPL-linking-exception",
+      "name": "OCaml LGPL Linking Exception"
+    },
+    {
+      "licenseExceptionId": "OCCT-exception-1.0",
+      "name": "Open CASCADE Exception 1.0"
+    },
+    {
+      "licenseExceptionId": "OpenJDK-assembly-exception-1.0",
+      "name": "OpenJDK Assembly exception 1.0"
+    },
+    {
+      "licenseExceptionId": "openvpn-openssl-exception",
+      "name": "OpenVPN OpenSSL Exception"
+    },
+    {
+      "licenseExceptionId": "PCRE2-exception",
+      "name": "PCRE2 exception"
+    },
+    {
+      "licenseExceptionId": "PS-or-PDF-font-exception-20170817",
+      "name": "PS/PDF font exception (2017-08-17)"
+    },
+    {
+      "licenseExceptionId": "QPL-1.0-INRIA-2004-exception",
+      "name": "INRIA QPL 1.0 2004 variant exception"
+    },
+    {
+      "licenseExceptionId": "Qt-GPL-exception-1.0",
+      "name": "Qt GPL exception 1.0"
+    },
+    {
+      "licenseExceptionId": "Qt-LGPL-exception-1.1",
+      "name": "Qt LGPL exception 1.1"
+    },
+    {
+      "licenseExceptionId": "Qwt-exception-1.0",
+      "name": "Qwt exception 1.0"
+    },
+    {
+      "licenseExceptionId": "romic-exception",
+      "name": "Romic Exception"
+    },
+    {
+      "licenseExceptionId": "RRDtool-FLOSS-exception-2.0",
+      "name": "RRDtool FLOSS exception 2.0"
+    },
+    {
+      "licenseExceptionId": "SANE-exception",
+      "name": "SANE Exception"
+    },
+    {
+      "licenseExceptionId": "SHL-2.0",
+      "name": "Solderpad Hardware License v2.0"
+    },
+    {
+      "licenseExceptionId": "SHL-2.1",
+      "name": "Solderpad Hardware License v2.1"
+    },
+    {
+      "licenseExceptionId": "stunnel-exception",
+      "name": "stunnel Exception"
+    },
+    {
+      "licenseExceptionId": "SWI-exception",
+      "name": "SWI exception"
+    },
+    {
+      "licenseExceptionId": "Swift-exception",
+      "name": "Swift Exception"
+    },
+    {
+      "licenseExceptionId": "Texinfo-exception",
+      "name": "Texinfo exception"
+    },
+    {
+      "licenseExceptionId": "u-boot-exception-2.0",
+      "name": "U-Boot exception 2.0"
+    },
+    {
+      "licenseExceptionId": "UBDL-exception",
+      "name": "Unmodified Binary Distribution exception"
+    },
+    {
+      "licenseExceptionId": "Universal-FOSS-exception-1.0",
+      "name": "Universal FOSS Exception, Version 1.0"
+    },
+    {
+      "licenseExceptionId": "vsftpd-openssl-exception",
+      "name": "vsftpd OpenSSL exception"
+    },
+    {
+      "licenseExceptionId": "WxWindows-exception-3.1",
+      "name": "WxWindows Library Exception 3.1"
+    },
+    {
+      "licenseExceptionId": "x11vnc-openssl-exception",
+      "name": "x11vnc OpenSSL Exception"
+    }
+  ]
+}

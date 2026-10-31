@@ -136,4 +136,16 @@ public interface IGitHubService
     /// <returns>A <see cref="GitHubRateLimitSnapshot"/> containing Core and Search limits and reset timestamps.</returns>
     Task<GitHubRateLimitSnapshot> GetRateLimitSnapshotAsync(
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists all workflow run artifacts associated with a GitHub Actions workflow run.
+    /// </summary>
+    Task<IReadOnlyList<(long Id, string Name, long SizeInBytes)>> ListWorkflowRunArtifactsAsync(
+        string owner, string repo, long runId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Downloads a workflow run artifact as a ZIP stream using authenticated GitHub App credentials.
+    /// </summary>
+    Task<Stream> DownloadArtifactZipStreamAsync(
+        string owner, string repo, long artifactId, CancellationToken ct = default);
 }
