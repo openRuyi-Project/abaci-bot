@@ -37,7 +37,8 @@ public class CveSecurityServiceTests
         {
             OsvApiBaseUrl = "https://api.osv.dev/v1/vulns",
             NvdApiBaseUrl = "https://services.nvd.nist.gov/rest/json/cves/2.0",
-            CacheExpirationHours = 1,
+            CacheExpirationHours = 12,
+            UnknownCacheExpirationHours = 1,
             RequestTimeoutSeconds = 5
         });
 
@@ -256,5 +257,32 @@ public class CveSecurityServiceTests
 
         // 3 distinct CVEs queried
         Assert.Equal(3, reports.Count);
+    }
+
+    [Fact]
+    public async Task QueryCveAsync_UnknownCve_CachesForOneHour()
+    {
+        var callCount = 0;
+        var service = CreateService(req =>
+        {
+            callCount++;
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+
+        var rep1 = await service.QueryCveAsync("CVE-2024-99999");
+        // Initial query calls OSV, then falls back to NVD (2 calls total)
+        Assert.Equal(2, callCount);
+
+        var rep2 = await service.QueryCveAsync("CVE-2024-99999");
+        // Second query hits cache, no new HTTP requests
+        Assert.Equal(2, callCount);
+        Assert.Equal(CveReport.SourceUnknown, rep1.Source);
+        Assert.Equal(rep1, rep2);
+
+        // Verify that Unknown CVEs are cached for the configured short TTL (~1 hour), not the full 12 hours
+        Assert.True(service.Cache.TryGetValue("CVE-2024-99999", out var cachedEntry), "Expected cache entry to exist");
+        var ttl = cachedEntry.Expiry - DateTime.UtcNow;
+        Assert.True(ttl > TimeSpan.FromMinutes(50) && ttl <= TimeSpan.FromMinutes(65),
+            $"Expected TTL close to 1 hour, but was {ttl.TotalMinutes} minutes.");
     }
 }

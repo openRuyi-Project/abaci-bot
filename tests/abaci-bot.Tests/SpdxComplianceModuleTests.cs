@@ -103,6 +103,9 @@ public class SpdxComplianceModuleTests
     public void SpdxLicenseService_ComplexExpressions_ValidatesSuccessfully(string expression)
     {
         var service = CreateService();
+        // Warm up JIT/data loading before timing to prevent intermittent CI/cold-start jitter
+        service.ValidateExpression("MIT");
+
         var sw = Stopwatch.StartNew();
         var result = service.ValidateExpression(expression);
         sw.Stop();

@@ -90,6 +90,7 @@ public class GovernanceCommentFormatterTests
         Assert.Contains("CVE-2024-3094", output);
         Assert.Contains("10.0", output);
         Assert.Contains("No public CVSS score found", output);
+        Assert.Contains("expected if embargoed or unreleased", output);
         AssertNoEmojis(output);
         AssertNoInternalTaskCodes(output);
     }

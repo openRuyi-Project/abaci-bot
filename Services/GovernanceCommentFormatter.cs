@@ -89,7 +89,7 @@ public class GovernanceCommentFormatter : IGovernanceCommentFormatter
                 }
                 else
                 {
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"> - `{cveId}`: No public CVSS score found (manual security review required)");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"> - `{cveId}`: No public CVSS score found (manual security review required; expected if embargoed or unreleased)");
                 }
             }
         }

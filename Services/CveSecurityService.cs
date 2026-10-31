@@ -20,6 +20,8 @@ public class CveSecurityService : ICveSecurityService
     private readonly ConcurrentDictionary<string, (CveReport Report, DateTime Expiry)> _cache =
         new(StringComparer.OrdinalIgnoreCase);
 
+    internal IReadOnlyDictionary<string, (CveReport Report, DateTime Expiry)> Cache => _cache;
+
     private static readonly string[] ParagraphSeparators = ["\r\n\r\n", "\n\n"];
 
     public CveSecurityService(
@@ -35,7 +37,7 @@ public class CveSecurityService : ICveSecurityService
     public async Task<CveReport> QueryCveAsync(string cveId, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(cveId))
-            return new CveReport(cveId, null, null, "Unknown");
+            return new CveReport(cveId, null, null, CveReport.SourceUnknown);
 
         var normalizedCve = cveId.Trim().ToUpperInvariant();
 
@@ -90,7 +92,13 @@ public class CveSecurityService : ICveSecurityService
 
         report ??= new CveReport(normalizedCve, null, null, CveReport.SourceUnknown, "Vulnerability details unavailable.");
 
-        _cache[normalizedCve] = (report, DateTime.UtcNow.AddHours(_options.CacheExpirationHours));
+        // SourceUnknown (embargoed or unindexed) uses a shorter TTL so disclosure is detected promptly;
+        // confirmed CVE details are cached for full CacheExpirationHours.
+        var cacheDuration = string.Equals(report.Source, CveReport.SourceUnknown, StringComparison.OrdinalIgnoreCase)
+            ? TimeSpan.FromHours(_options.UnknownCacheExpirationHours)
+            : TimeSpan.FromHours(_options.CacheExpirationHours);
+
+        _cache[normalizedCve] = (report, DateTime.UtcNow.Add(cacheDuration));
         return report;
     }
 

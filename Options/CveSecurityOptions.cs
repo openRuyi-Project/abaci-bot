@@ -26,9 +26,15 @@ public class CveSecurityOptions
     public string? NvdApiKey { get; set; }
 
     /// <summary>
-    /// Duration in hours to cache queried CVE details in memory.
+    /// Duration in hours to cache queried known/confirmed CVE details in memory.
     /// </summary>
     public double CacheExpirationHours { get; set; } = 12;
+
+    /// <summary>
+    /// Duration in hours to cache unknown/unindexed (e.g. embargoed) CVE records in memory before re-querying.
+    /// Defaults to 1 hour to promptly detect public disclosure.
+    /// </summary>
+    public double UnknownCacheExpirationHours { get; set; } = 1;
 
     /// <summary>
     /// HTTP request timeout in seconds for vulnerability data queries.
