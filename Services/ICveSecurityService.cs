@@ -8,7 +8,11 @@ public record CveReport(
     double? CvssScore,
     string? SeverityLabel,
     string Source,
-    string? Summary = null);
+    string? Summary = null)
+{
+    public const string SourceQueryFailed = "QueryFailed";
+    public const string SourceUnknown = "Unknown";
+}
 
 /// <summary>
 /// Service abstraction for retrieving vulnerability metadata and CVSS scores from external security databases.

@@ -31,7 +31,7 @@ public interface ISpdxLicenseService
     SpdxValidationResult ValidateExpression(string? licenseExpression);
 
     /// <summary>
-    /// Updates the in-memory license list with latest definitions from the remote index.
+    /// Updates in-memory license and exception definitions with latest data from configured remote indices.
     /// </summary>
-    Task<bool> RefreshRemoteLicensesAsync(CancellationToken cancellationToken = default);
+    Task<bool> RefreshRemoteMetadataAsync(CancellationToken cancellationToken = default);
 }

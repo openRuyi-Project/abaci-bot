@@ -112,6 +112,7 @@ builder.Services.AddSingleton<IPullRequestModule, AbiComplianceModule>();
 // Register background lifecycle services
 builder.Services.AddHostedService<StaleLifecycleService>();
 builder.Services.AddHostedService<RebuildMetadataRefreshService>();
+builder.Services.AddHostedService<SpdxMetadataRefreshService>();
 
 // Register the pipeline orchestrator
 builder.Services.AddSingleton<PullRequestPipeline>();

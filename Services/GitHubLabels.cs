@@ -77,4 +77,5 @@ public static class GitHubLabels
     // 11. Forward-looking: ABI and Breaking Change impact
     public const string ImpactAbi = "Impact: ABI";
     public const string ImpactBreakingChange = "Impact: Breaking Change";
+    public const string ImpactAbiCheckFailed = "Impact: ABI Check Failed";
 }

@@ -38,19 +38,23 @@ public class RebuildMetadataRefreshServiceTests
             RefreshIntervalHours = 0.001 // very fast for testing
         });
 
+        var tcs = new TaskCompletionSource<bool>();
         _rpmDependencyService.RefreshMetadataAsync(Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(true));
+            .Returns(callInfo =>
+            {
+                tcs.TrySetResult(true);
+                return Task.FromResult(true);
+            });
 
         var service = new RebuildMetadataRefreshService(_rpmDependencyService, options, _logger)
         {
-            StartupDelay = TimeSpan.FromMilliseconds(5)
+            StartupDelay = TimeSpan.Zero
         };
 
         using var cts = new CancellationTokenSource();
         await service.StartAsync(cts.Token);
 
-        // Allow startup delay and first execution to occur
-        await Task.Delay(50);
+        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
         cts.Cancel();
 
         await service.StopAsync(CancellationToken.None);
@@ -67,18 +71,23 @@ public class RebuildMetadataRefreshServiceTests
             RefreshIntervalHours = 0.001
         });
 
+        var tcs = new TaskCompletionSource<bool>();
         _rpmDependencyService.RefreshMetadataAsync(Arg.Any<CancellationToken>())
-            .Returns<Task<bool>>(_ => throw new HttpRequestException("Network failure"));
+            .Returns<Task<bool>>(callInfo =>
+            {
+                tcs.TrySetResult(true);
+                throw new HttpRequestException("Network failure");
+            });
 
         var service = new RebuildMetadataRefreshService(_rpmDependencyService, options, _logger)
         {
-            StartupDelay = TimeSpan.FromMilliseconds(5)
+            StartupDelay = TimeSpan.Zero
         };
 
         using var cts = new CancellationTokenSource();
         await service.StartAsync(cts.Token);
 
-        await Task.Delay(50);
+        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
         cts.Cancel();
 
         // Must not throw or crash

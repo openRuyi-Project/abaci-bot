@@ -5,12 +5,14 @@ using abaci_bot.Options;
 using abaci_bot.Services;
 using Microsoft.Extensions.Options;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using Xunit;
 
 namespace abaci_bot.Tests;
 
 public class ArtifactServiceTests
 {
+    private readonly IGitHubService _gitHub = Substitute.For<IGitHubService>();
     private readonly IHttpClientFactory _httpClientFactory = Substitute.For<IHttpClientFactory>();
 
     private sealed class DelegatingHandlerStub : HttpMessageHandler
@@ -49,19 +51,12 @@ public class ArtifactServiceTests
         }
         ms.Position = 0;
 
-        var handler = new DelegatingHandlerStub(_ =>
-        {
-            var response = new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new ByteArrayContent(ms.ToArray())
-            };
-            return response;
-        });
-        var client = new HttpClient(handler);
-        _httpClientFactory.CreateClient("GitHubArtifactClient").Returns(client);
+        var gitHubService = Substitute.For<IGitHubService>();
+        gitHubService.DownloadArtifactZipStreamAsync("owner", "repo", 12345, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromResult<Stream>(new MemoryStream(ms.ToArray())));
 
         var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
-        var service = new ArtifactService(_httpClientFactory, options);
+        var service = new ArtifactService(gitHubService, _httpClientFactory, options);
 
         var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
         try
@@ -93,7 +88,7 @@ public class ArtifactServiceTests
         {
             StableRpmBaseUrl = null
         });
-        var service = new ArtifactService(_httpClientFactory, options);
+        var service = new ArtifactService(_gitHub, _httpClientFactory, options);
 
         var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
         var result = await service.DownloadBaselineRpmAsync("glibc", tempDir);
@@ -138,11 +133,15 @@ public class ArtifactServiceTests
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         });
 
-        var client = new HttpClient(handler);
-        _httpClientFactory.CreateClient("GitHubArtifactClient").Returns(client);
+        var gitHubService = Substitute.For<IGitHubService>();
+        gitHubService.ListWorkflowRunArtifactsAsync("owner", "repo", 55555, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<(long Id, string Name, long SizeInBytes)>>(
+                new (long, string, long)[] { (12345, "build-rpms", 1000) }));
+        gitHubService.DownloadArtifactZipStreamAsync("owner", "repo", 12345, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromResult<Stream>(new MemoryStream(zipMs.ToArray())));
 
         var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
-        var service = new ArtifactService(_httpClientFactory, options);
+        var service = new ArtifactService(gitHubService, _httpClientFactory, options);
 
         var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
         try
@@ -201,7 +200,7 @@ public class ArtifactServiceTests
             StableRpmBaseUrl = "https://repo.openeuler.org/openEuler-24.03-LTS/OS/x86_64"
         });
 
-        var service = new ArtifactService(_httpClientFactory, options, rpmDepService);
+        var service = new ArtifactService(_gitHub, _httpClientFactory, options, rpmDepService);
 
         var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
         try
@@ -241,7 +240,7 @@ public class ArtifactServiceTests
             StableRpmBaseUrl = "https://repo.openeuler.org/baselines"
         });
 
-        var service = new ArtifactService(_httpClientFactory, options);
+        var service = new ArtifactService(_gitHub, _httpClientFactory, options);
 
         var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
         try
@@ -250,6 +249,80 @@ public class ArtifactServiceTests
             Assert.NotNull(downloaded);
             Assert.True(File.Exists(downloaded));
             Assert.Equal("https://repo.openeuler.org/baselines/libgpg-error.rpm", requestedUrl);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task DownloadRunRpmArtifactsAsync_WithGitHubService_UsesAuthenticatedGitHubService()
+    {
+        var gitHubService = Substitute.For<IGitHubService>();
+        gitHubService.ListWorkflowRunArtifactsAsync("owner", "repo", 777, Arg.Any<CancellationToken>())
+            .Returns(new List<(long Id, string Name, long SizeInBytes)> { (101, "rpms", 1024) });
+
+        using var zipMs = new MemoryStream();
+        using (var archive = new ZipArchive(zipMs, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var entry = archive.CreateEntry("libtest-1.0.0.rpm");
+            using var writer = new StreamWriter(entry.Open());
+            writer.Write("rpm-content");
+        }
+        zipMs.Position = 0;
+
+        gitHubService.DownloadArtifactZipStreamAsync("owner", "repo", 101, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<Stream>(new MemoryStream(zipMs.ToArray())));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var service = new ArtifactService(gitHubService, _httpClientFactory, options);
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var rpms = await service.DownloadRunRpmArtifactsAsync("owner", "repo", 777, tempDir);
+            Assert.Single(rpms);
+            Assert.EndsWith("libtest-1.0.0.rpm", rpms[0]);
+            await gitHubService.Received(1).ListWorkflowRunArtifactsAsync("owner", "repo", 777, Arg.Any<CancellationToken>());
+            await gitHubService.Received(1).DownloadArtifactZipStreamAsync("owner", "repo", 101, Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task DownloadRunRpmArtifactsAsync_Http403_LogsWarningNotDebug()
+    {
+        var logger = Substitute.For<Microsoft.Extensions.Logging.ILogger<ArtifactService>>();
+        var gitHubService = Substitute.For<IGitHubService>();
+        gitHubService.ListWorkflowRunArtifactsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<long>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new HttpRequestException("Forbidden", null, HttpStatusCode.Forbidden));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var service = new ArtifactService(gitHubService, _httpClientFactory, options, logger: logger);
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var rpms = await service.DownloadRunRpmArtifactsAsync("owner", "repo", 888, tempDir);
+            Assert.Empty(rpms);
+
+            // Verify LogWarning was invoked (LogLevel.Warning)
+            logger.Received().Log(
+                Microsoft.Extensions.Logging.LogLevel.Warning,
+                Arg.Any<Microsoft.Extensions.Logging.EventId>(),
+                Arg.Any<object>(),
+                Arg.Any<Exception?>(),
+                Arg.Any<Func<object, Exception?, string>>());
         }
         finally
         {

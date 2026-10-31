@@ -62,18 +62,23 @@ public partial class RebuildImpactModule : IPullRequestModule
                (context.PullRequestAction == PullRequestAction.Opened ||
                 context.PullRequestAction == PullRequestAction.Synchronize ||
                 context.PullRequestAction == PullRequestAction.Reopened ||
-                context.PullRequestAction == PullRequestAction.ReadyForReview);
+                context.PullRequestAction == PullRequestAction.ReadyForReview ||
+                context.PullRequestAction == PullRequestAction.Edited);
     }
 
     public async Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
         var files = await context.ChangedFiles.Value;
         var specFiles = files
-            .Where(f => f.FileName.EndsWith(".spec", StringComparison.OrdinalIgnoreCase))
+            .Where(f => f.FileName.EndsWith(".spec", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(f.Status, "removed", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         if (specFiles.Count == 0)
+        {
+            context.ReconcileLabels(ManagedLabels, _ => false);
             return;
+        }
 
         var changedPackages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in specFiles)
@@ -94,7 +99,10 @@ public partial class RebuildImpactModule : IPullRequestModule
         }
 
         if (changedPackages.Count == 0)
+        {
+            context.ReconcileLabels(ManagedLabels, _ => false);
             return;
+        }
 
         var totalAffected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pkg in changedPackages)
@@ -108,7 +116,7 @@ public partial class RebuildImpactModule : IPullRequestModule
 
         var totalCount = totalAffected.Count;
         var rebuildLabel = _dependencyService.MapAffectedCountToRebuildLabel(totalCount);
-        context.LabelsToAdd.Add(rebuildLabel);
+        context.ReconcileLabels(ManagedLabels, rebuildLabel);
 
         _logger?.LogInformation(
             "Rebuild impact for PR #{PrNumber}: {PackageCount} packages modified, {AffectedCount} downstream packages affected. Assigned: {Label}",
@@ -128,20 +136,27 @@ public partial class RebuildImpactModule : IPullRequestModule
         {
             context.LabelsToAdd.Add(GitHubLabels.WorkflowBlocked);
 
-            var report = _formatter.FormatRebuildGateBlocked(
-                changedPackages.ToList(),
-                totalCount,
-                _options.BlockThreshold,
-                targetBranch);
+            if (!context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked))
+            {
+                var report = _formatter.FormatRebuildGateBlocked(
+                    changedPackages.ToList(),
+                    totalCount,
+                    _options.BlockThreshold,
+                    targetBranch);
 
-            context.PendingComments.Add(report);
+                context.PendingComments.Add(report);
+            }
             _logger?.LogWarning("PR #{PrNumber} blocked due to excessive rebuild impact ({Count} >= {Threshold}).",
                 context.PrNumber, totalCount, _options.BlockThreshold);
         }
         else
         {
-            // If previously blocked by rebuild impact and condition no longer holds, remove block label
-            if (context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked))
+            // Only unblock if this PR was previously blocked by this module (i.e. carried a blocking rebuild tier)
+            var hadRebuildBlock = context.ExistingLabels.Contains(GitHubLabels.Rebuild1001To2500) ||
+                                  context.ExistingLabels.Contains(GitHubLabels.Rebuild2501To5000) ||
+                                  context.ExistingLabels.Contains(GitHubLabels.Rebuild5001Plus);
+
+            if (hadRebuildBlock && context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked))
             {
                 context.LabelsToRemove.Add(GitHubLabels.WorkflowBlocked);
             }

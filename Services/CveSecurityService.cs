@@ -45,19 +45,50 @@ public class CveSecurityService : ICveSecurityService
         }
 
         // 1. Try OSV.dev first
-        var report = await TryQueryOsvAsync(normalizedCve, ct);
+        bool osvFailed = false;
+        CveReport? report = null;
+        try
+        {
+            report = await TryQueryOsvAsync(normalizedCve, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            osvFailed = true;
+        }
 
         // 2. If OSV didn't provide a score, try NVD
+        bool nvdFailed = false;
         if (report == null || report.CvssScore == null)
         {
-            var nvdReport = await TryQueryNvdAsync(normalizedCve, ct);
-            if (nvdReport != null && nvdReport.CvssScore != null)
+            try
             {
-                report = nvdReport;
+                var nvdReport = await TryQueryNvdAsync(normalizedCve, ct);
+                if (nvdReport != null && nvdReport.CvssScore != null)
+                {
+                    report = nvdReport;
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                nvdFailed = true;
             }
         }
 
-        report ??= new CveReport(normalizedCve, null, null, "Unknown", "Vulnerability details unavailable.");
+        // If upstream failed with network/timeout/rate-limiting errors, report transient failure and do not cache long-term
+        if ((report == null || report.CvssScore == null) && (osvFailed || nvdFailed))
+        {
+            return new CveReport(normalizedCve, null, null, CveReport.SourceQueryFailed, "Query timed out or failed to reach vulnerability databases.");
+        }
+
+        report ??= new CveReport(normalizedCve, null, null, CveReport.SourceUnknown, "Vulnerability details unavailable.");
 
         _cache[normalizedCve] = (report, DateTime.UtcNow.AddHours(_options.CacheExpirationHours));
         return report;
@@ -102,8 +133,11 @@ public class CveSecurityService : ICveSecurityService
             var url = $"{_options.OsvApiBaseUrl.TrimEnd('/')}/{Uri.EscapeDataString(cveId)}";
             var response = await client.GetAsync(url, timeoutCts.Token);
 
-            if (!response.IsSuccessStatusCode)
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 return null;
+
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"OSV returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
 
             await using var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token);
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: timeoutCts.Token);
@@ -176,7 +210,7 @@ public class CveSecurityService : ICveSecurityService
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             _logger?.LogDebug(ex, "Failed to query OSV for {CveId}. Falling back.", cveId);
-            return null;
+            throw;
         }
     }
 
@@ -199,8 +233,12 @@ public class CveSecurityService : ICveSecurityService
             }
 
             var response = await client.SendAsync(request, timeoutCts.Token);
-            if (!response.IsSuccessStatusCode)
+
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 return null;
+
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"NVD returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
 
             await using var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token);
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: timeoutCts.Token);
@@ -245,7 +283,7 @@ public class CveSecurityService : ICveSecurityService
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             _logger?.LogDebug(ex, "Failed to query NVD for {CveId}.", cveId);
-            return null;
+            throw;
         }
     }
 

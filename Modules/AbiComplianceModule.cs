@@ -24,7 +24,8 @@ public class AbiComplianceModule : IPullRequestModule
     public IReadOnlyCollection<string> ManagedLabels => new[]
     {
         GitHubLabels.ImpactAbi,
-        GitHubLabels.ImpactBreakingChange
+        GitHubLabels.ImpactBreakingChange,
+        GitHubLabels.ImpactAbiCheckFailed
     };
 
     public AbiComplianceModule(
@@ -64,22 +65,30 @@ public class AbiComplianceModule : IPullRequestModule
     {
         if (!result.Succeeded)
         {
-            _logger?.LogDebug("ABI analysis was not completed for PR #{PrNumber}: {Error}",
+            _logger?.LogWarning("ABI analysis was not completed for PR #{PrNumber}: {Error}",
                 context.PrNumber, result.ErrorMessage);
+
+            if (result.ToolMissing)
+            {
+                // Host environment is missing abidiff tool; do not blame PR with user-facing failure label
+                return;
+            }
+
+            context.ReconcileLabels(ManagedLabels, GitHubLabels.ImpactAbiCheckFailed);
             return;
         }
 
-        if (result.HasAbiChange)
-        {
-            context.LabelsToAdd.Add(GitHubLabels.ImpactAbi);
-        }
+        context.ReconcileLabels(ManagedLabels, label =>
+            (result.HasAbiChange && string.Equals(label, GitHubLabels.ImpactAbi, StringComparison.OrdinalIgnoreCase)) ||
+            (result.IsBreakingChange && string.Equals(label, GitHubLabels.ImpactBreakingChange, StringComparison.OrdinalIgnoreCase)));
 
         if (result.IsBreakingChange)
         {
-            context.LabelsToAdd.Add(GitHubLabels.ImpactBreakingChange);
-
-            var report = _formatter.FormatAbiBreakingChange(result.Details);
-            context.PendingComments.Add(report);
+            if (!context.ExistingLabels.Contains(GitHubLabels.ImpactBreakingChange))
+            {
+                var report = _formatter.FormatAbiBreakingChange(result.Details);
+                context.PendingComments.Add(report);
+            }
             _logger?.LogWarning("PR #{PrNumber} flagged with ABI breaking changes.", context.PrNumber);
         }
     }

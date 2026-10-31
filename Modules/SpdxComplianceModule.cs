@@ -61,9 +61,14 @@ public partial class SpdxComplianceModule : IPullRequestModule
             .ToList();
 
         if (specFiles.Count == 0)
+        {
+            context.ReconcileLabels(ManagedLabels, _ => false);
             return;
+        }
 
         var licenseIssues = new List<(string File, string Expression, string Details)>();
+        var hasUnverifiedSpecFiles = false;
+        var verifiedSpecCount = 0;
 
         foreach (var file in specFiles)
         {
@@ -76,13 +81,19 @@ public partial class SpdxComplianceModule : IPullRequestModule
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Failed to retrieve content for spec file {Filename} in PR #{PrNumber}",
+                _logger?.LogWarning(ex, "Failed to retrieve content for spec file {Filename} in PR #{PrNumber}. Skipping file verification.",
                     file.FileName, context.PrNumber);
+                hasUnverifiedSpecFiles = true;
                 continue;
             }
 
             if (string.IsNullOrWhiteSpace(content))
+            {
+                hasUnverifiedSpecFiles = true;
                 continue;
+            }
+
+            verifiedSpecCount++;
 
             var matches = LicenseTagRegex().Matches(content);
             if (matches.Count == 0)
@@ -112,17 +123,24 @@ public partial class SpdxComplianceModule : IPullRequestModule
 
         if (licenseIssues.Count > 0)
         {
-            context.LabelsToAdd.Add(GitHubLabels.ComplianceLicenseIssue);
-            var report = _formatter.FormatSpdxLicenseIssue(licenseIssues);
-
-            context.PendingComments.Add(report);
+            context.ReconcileLabels(ManagedLabels, GitHubLabels.ComplianceLicenseIssue);
+            if (!context.ExistingLabels.Contains(GitHubLabels.ComplianceLicenseIssue))
+            {
+                var report = _formatter.FormatSpdxLicenseIssue(licenseIssues);
+                context.PendingComments.Add(report);
+            }
             _logger?.LogInformation("PR #{PrNumber} flagged with License Issue ({Count} issues found).",
                 context.PrNumber, licenseIssues.Count);
         }
-        else
+        else if (!hasUnverifiedSpecFiles && verifiedSpecCount > 0)
         {
             // All spec files have valid licenses: remove any previous license issue label
-            context.LabelsToRemove.Add(GitHubLabels.ComplianceLicenseIssue);
+            context.ReconcileLabels(ManagedLabels, (string?)null);
+        }
+        else
+        {
+            _logger?.LogWarning("PR #{PrNumber} contains unverified spec files; skipping license issue label removal to fail safe.",
+                context.PrNumber);
         }
     }
 }

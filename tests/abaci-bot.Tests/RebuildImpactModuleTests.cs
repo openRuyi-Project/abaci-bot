@@ -29,8 +29,10 @@ public class RebuildImpactModuleTests
     private PullRequestContext CreateContext(
         IReadOnlyList<PullRequestFile> files,
         string baseBranch = "main",
-        IEnumerable<string>? existingLabels = null)
+        IEnumerable<string>? existingLabels = null,
+        PullRequestAction? prAction = null)
     {
+        var effectiveAction = prAction ?? PullRequestAction.Opened;
         _gitHub.GetPullRequestFilesAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(files);
 
@@ -50,9 +52,9 @@ public class RebuildImpactModuleTests
             body: "Rebuild impact test",
             senderLogin: "contributor",
             authorLogin: "contributor",
-            action: "opened",
+            action: effectiveAction.ToString().ToLowerInvariant(),
             existingLabels: existingLabels ?? Array.Empty<string>(),
-            prAction: PullRequestAction.Opened);
+            prAction: effectiveAction);
     }
 
     private static Stream CreateGzippedXmlStream(string xmlContent)
@@ -196,6 +198,31 @@ public class RebuildImpactModuleTests
     }
 
     [Fact]
+    public async Task ProcessAsync_HighImpactOnRolling_AlreadyBlocked_DoesNotDuplicateComment()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        var largeSet = Enumerable.Range(1, 1200).Select(i => $"pkg-{i}").ToHashSet();
+        dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
+        dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
+        var module = new RebuildImpactModule(dependencyService, options);
+
+        var file = CreateFile("SPECS/glibc/glibc.spec");
+        var context = CreateContext(
+            new[] { file },
+            baseBranch: "main",
+            existingLabels: new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.Rebuild1001To2500 },
+            prAction: PullRequestAction.Edited);
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.Rebuild1001To2500, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
     public async Task ProcessAsync_HighImpactOnStagingBranch_DoesNotBlock()
     {
         var dependencyService = Substitute.For<IRpmDependencyService>();
@@ -255,6 +282,76 @@ public class RebuildImpactModuleTests
     }
 
     [Fact]
+    public async Task RpmDependencyService_ChunkedNonSeekableZstdStream_DetectsMagicAndLoadsMetadata()
+    {
+        var xml = """
+        <metadata xmlns="http://linux.duke.edu/metadata/common" xmlns:rpm="http://linux.duke.edu/metadata/rpm">
+          <package type="rpm">
+            <name>kernel</name>
+            <format>
+              <rpm:provides>
+                <rpm:entry name="kernel-core"/>
+              </rpm:provides>
+            </format>
+          </package>
+          <package type="rpm">
+            <name>kernel-modules</name>
+            <format>
+              <rpm:requires>
+                <rpm:entry name="kernel-core"/>
+              </rpm:requires>
+            </format>
+          </package>
+        </metadata>
+        """;
+
+        using var compressor = new ZstdSharp.Compressor();
+        var compressedBytes = compressor.Wrap(Encoding.UTF8.GetBytes(xml)).ToArray();
+        using var stream = new OneByteChunkedStream(compressedBytes);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { CalculationMode = "Transitive" });
+        var service = new RpmDependencyService(_httpClientFactory, options);
+
+        await service.LoadMetadataAsync(stream);
+
+        var affected = service.GetAffectedPackages("kernel");
+        Assert.Single(affected);
+        Assert.Contains("kernel-modules", affected);
+    }
+
+    private class OneByteChunkedStream : Stream
+    {
+        private readonly byte[] _data;
+        private int _pos;
+
+        public OneByteChunkedStream(byte[] data) => _data = data;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_pos >= _data.Length || count <= 0) return 0;
+            buffer[offset] = _data[_pos++];
+            return 1;
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_pos >= _data.Length || buffer.Length <= 0) return ValueTask.FromResult(0);
+            buffer.Span[0] = _data[_pos++];
+            return ValueTask.FromResult(1);
+        }
+    }
+
+    [Fact]
     public async Task ProcessAsync_ImpactDropsBelowThreshold_RemovesWorkflowBlockedLabel()
     {
         var dependencyService = Substitute.For<IRpmDependencyService>();
@@ -266,11 +363,60 @@ public class RebuildImpactModuleTests
         var module = new RebuildImpactModule(dependencyService, options);
 
         var file = CreateFile("SPECS/leafpkg/leafpkg.spec");
-        var context = CreateContext(new[] { file }, baseBranch: "main", existingLabels: new[] { GitHubLabels.WorkflowBlocked });
+        var context = CreateContext(new[] { file }, baseBranch: "main", existingLabels: new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.Rebuild1001To2500 });
 
         await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Contains(GitHubLabels.WorkflowBlocked, context.LabelsToRemove);
+        Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_RetargetFromRollingToLts_ClearsWorkflowBlockedLabel()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        var largeSet = Enumerable.Range(1, 1500).Select(i => $"pkg-{i}").ToHashSet();
+        dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
+        dependencyService.MapAffectedCountToRebuildLabel(1500).Returns(GitHubLabels.Rebuild1001To2500);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001, TargetBranchToBlock = "Rolling" });
+        var module = new RebuildImpactModule(dependencyService, options);
+
+        var file = CreateFile("SPECS/glibc/glibc.spec");
+        // PR was previously blocked on main (Rolling), then retargeted to LTS branch via Edited action without new commits
+        var context = CreateContext(
+            new[] { file },
+            baseBranch: "lts-24.03",
+            prAction: PullRequestAction.Edited,
+            existingLabels: new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.Rebuild1001To2500 });
+
+        Assert.True(module.ShouldProcess(context));
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.WorkflowBlocked, context.LabelsToRemove);
+        Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_HumanBlockedWithoutRebuildLabel_DoesNotUnblock()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.GetAffectedPackages("leafpkg", Arg.Any<int?>())
+            .Returns(new HashSet<string> { "dep1" });
+        dependencyService.MapAffectedCountToRebuildLabel(1).Returns(GitHubLabels.Rebuild1To10);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
+        var module = new RebuildImpactModule(dependencyService, options);
+
+        // PR was blocked by a human maintainer without any rebuild tier label
+        var file = CreateFile("SPECS/leafpkg/leafpkg.spec");
+        var context = CreateContext(new[] { file }, baseBranch: "main", existingLabels: new[] { GitHubLabels.WorkflowBlocked });
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context.LabelsToRemove);
         Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
         Assert.Empty(context.PendingComments);
     }
@@ -410,6 +556,140 @@ public class RebuildImpactModuleTests
             CancellationToken.None);
 
         Assert.Equal("https://repo.openeuler.org/openEuler-24.03-LTS/OS/x86_64/repodata/new-primary.xml.gz", resolved);
+    }
+
+    [Fact]
+    public async Task RefreshMetadataAsync_EmptyOptions_ReturnsFalseSafely()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions
+        {
+            LocalCachePath = null,
+            PrimaryXmlUrl = null
+        });
+        var service = new RpmDependencyService(_httpClientFactory, options);
+
+        var result = await service.RefreshMetadataAsync(CancellationToken.None);
+        Assert.False(result);
+    }
+
+    [Fact]
+    public async Task RefreshMetadataAsync_WithValidLocalGzipCache_LoadsSuccessfully()
+    {
+        var xml = """
+        <metadata xmlns="http://linux.duke.edu/metadata/common" xmlns:rpm="http://linux.duke.edu/metadata/rpm">
+          <package type="rpm">
+            <name>local-pkg-a</name>
+            <format>
+              <rpm:provides><rpm:entry name="liblocala.so.1"/></rpm:provides>
+            </format>
+          </package>
+        </metadata>
+        """;
+
+        var tempGz = Path.Combine(Path.GetTempPath(), $"test-cache-{Guid.NewGuid():N}.xml.gz");
+        try
+        {
+            using (var fs = File.Create(tempGz))
+            using (var gz = new GZipStream(fs, CompressionMode.Compress))
+            {
+                var bytes = Encoding.UTF8.GetBytes(xml);
+                await gz.WriteAsync(bytes);
+            }
+
+            var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions
+            {
+                LocalCachePath = tempGz
+            });
+            var service = new RpmDependencyService(_httpClientFactory, options);
+
+            var success = await service.RefreshMetadataAsync(CancellationToken.None);
+            Assert.True(success);
+            Assert.Contains(GitHubLabels.Rebuild0, service.MapAffectedCountToRebuildLabel(0));
+        }
+        finally
+        {
+            if (File.Exists(tempGz)) File.Delete(tempGz);
+        }
+    }
+
+    [Fact]
+    public async Task RefreshMetadataAsync_WithCorruptLocalCache_CatchesAndFallsThrough()
+    {
+        var tempCorrupt = Path.Combine(Path.GetTempPath(), $"test-corrupt-{Guid.NewGuid():N}.xml");
+        try
+        {
+            await File.WriteAllTextAsync(tempCorrupt, "corrupt non-xml data");
+
+            var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions
+            {
+                LocalCachePath = tempCorrupt,
+                PrimaryXmlUrl = null
+            });
+            var service = new RpmDependencyService(_httpClientFactory, options);
+
+            var success = await service.RefreshMetadataAsync(CancellationToken.None);
+            Assert.False(success);
+        }
+        finally
+        {
+            if (File.Exists(tempCorrupt)) File.Delete(tempCorrupt);
+        }
+    }
+
+    [Fact]
+    public async Task RefreshMetadataAsync_WithRemoteUrl_SuccessLoadsMetadata()
+    {
+        var xml = """
+        <metadata xmlns="http://linux.duke.edu/metadata/common" xmlns:rpm="http://linux.duke.edu/metadata/rpm">
+          <package type="rpm">
+            <name>remote-pkg-x</name>
+            <format>
+              <rpm:provides><rpm:entry name="libremotex.so.1"/></rpm:provides>
+            </format>
+          </package>
+        </metadata>
+        """;
+
+        var handler = new HttpHandlerStub(req =>
+            new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(xml, Encoding.UTF8, "application/xml")
+            });
+
+        var client = new HttpClient(handler);
+        var clientFactory = Substitute.For<IHttpClientFactory>();
+        clientFactory.CreateClient("RpmMetadataClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions
+        {
+            LocalCachePath = null,
+            PrimaryXmlUrl = "https://repo.example.org/primary.xml"
+        });
+        var service = new RpmDependencyService(clientFactory, options);
+
+        var success = await service.RefreshMetadataAsync(CancellationToken.None);
+        Assert.True(success);
+    }
+
+    [Fact]
+    public async Task RefreshMetadataAsync_WithRemoteUrl_HttpError_ReturnsFalse()
+    {
+        var handler = new HttpHandlerStub(req =>
+            new HttpResponseMessage(System.Net.HttpStatusCode.InternalServerError));
+
+        var client = new HttpClient(handler);
+        var clientFactory = Substitute.For<IHttpClientFactory>();
+        clientFactory.CreateClient("RpmMetadataClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions
+        {
+            LocalCachePath = null,
+            PrimaryXmlUrl = "https://repo.example.org/primary.xml"
+        });
+        var service = new RpmDependencyService(clientFactory, options);
+
+        var success = await service.RefreshMetadataAsync(CancellationToken.None);
+        Assert.False(success);
     }
 
     private sealed class HttpHandlerStub : HttpMessageHandler

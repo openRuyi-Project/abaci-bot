@@ -183,7 +183,7 @@ public class CveSecurityServiceTests
     }
 
     [Fact]
-    public async Task QueryCveAsync_BothSourcesFail_GracefullyReturnsUnknownWithoutThrowing()
+    public async Task QueryCveAsync_BothSourcesServerError_ReturnsQueryFailedWithoutCaching()
     {
         var service = CreateService(req => new HttpResponseMessage(HttpStatusCode.InternalServerError));
 
@@ -191,7 +191,20 @@ public class CveSecurityServiceTests
 
         Assert.Equal("CVE-2099-0001", report.CveId);
         Assert.Null(report.CvssScore);
-        Assert.Equal("Unknown", report.Source);
+        Assert.Equal(CveReport.SourceQueryFailed, report.Source);
+        Assert.Null(report.SeverityLabel);
+    }
+
+    [Fact]
+    public async Task QueryCveAsync_BothSourcesNotFound_ReturnsUnknown()
+    {
+        var service = CreateService(req => new HttpResponseMessage(HttpStatusCode.NotFound));
+
+        var report = await service.QueryCveAsync("CVE-2099-0002");
+
+        Assert.Equal("CVE-2099-0002", report.CveId);
+        Assert.Null(report.CvssScore);
+        Assert.Equal(CveReport.SourceUnknown, report.Source);
         Assert.Null(report.SeverityLabel);
         Assert.Equal("Vulnerability details unavailable.", report.Summary);
     }

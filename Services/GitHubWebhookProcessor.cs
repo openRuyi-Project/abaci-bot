@@ -230,7 +230,11 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         {
             try
             {
-                var tempDir = Path.Combine(Path.GetTempPath(), "abaci_abi_" + Guid.NewGuid().ToString("N"));
+                var tempExtractionDir = _config.GetSection("AbiCompliance").GetValue<string>("TempExtractionDirectory");
+                var baseTemp = !string.IsNullOrWhiteSpace(tempExtractionDir)
+                    ? tempExtractionDir
+                    : Path.GetTempPath();
+                var tempDir = Path.Combine(baseTemp, "abaci_abi_" + Guid.NewGuid().ToString("N"));
                 try
                 {
                     var prRpms = await _artifactService.DownloadRunRpmArtifactsAsync(owner, repo, runId, tempDir, cancellationToken);
@@ -242,9 +246,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                         if (!string.IsNullOrEmpty(baselineRpm) && File.Exists(baselineRpm))
                         {
                             var diff = await _abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, cancellationToken);
+                            abiResult = diff;
                             if (diff.Succeeded && (diff.HasAbiChange || diff.IsBreakingChange))
                             {
-                                abiResult = diff;
                                 break;
                             }
                         }

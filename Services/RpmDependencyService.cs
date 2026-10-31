@@ -121,7 +121,7 @@ public class RpmDependencyService : IRpmDependencyService
     public async Task LoadMetadataAsync(Stream stream, bool isGzipped = true, CancellationToken ct = default)
     {
         var header = new byte[4];
-        var bytesRead = await stream.ReadAsync(header.AsMemory(0, 4), ct);
+        var bytesRead = await stream.ReadAtLeastAsync(header.AsMemory(0, 4), 4, throwOnEndOfStream: false, ct);
 
         Stream baseStream;
         if (stream.CanSeek)

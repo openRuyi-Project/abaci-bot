@@ -71,10 +71,26 @@ public class SpdxLicenseService : ISpdxLicenseService
 
     private static readonly string[] EmbeddedExceptions =
     [
-        "Classpath-exception-2.0", "GCC-exception-2.0", "GCC-exception-3.1", "LLVM-exception",
-        "Font-exception-2.0", "Autoconf-exception-2.0", "Autoconf-exception-3.0", "Bison-exception-2.2",
-        "Bootloader-exception", "GPL-3.0-linking-exception", "LGPL-3.0-linking-exception", "OCCT-exception-1.0",
-        "Universal-FOSS-exception-1.0", "Linux-syscall-note"
+        "389-exception", "Asterisk-exception", "Asterisk-linking-protocols-exception", "Autoconf-exception-2.0",
+        "Autoconf-exception-3.0", "Autoconf-exception-generic", "Autoconf-exception-generic-3.0", "Autoconf-exception-macro",
+        "Bison-exception-1.24", "Bison-exception-2.2", "Bootloader-exception", "CGAL-linking-exception",
+        "Classpath-exception-2.0", "CLISP-exception-2.0", "cryptsetup-OpenSSL-exception", "DigiRule-FOSS-exception",
+        "eCos-exception-2.0", "erlang-otp-linking-exception", "Fawkes-Runtime-exception", "FLTK-exception",
+        "fmt-exception", "Font-exception-2.0", "freertos-exception-2.0", "GCC-exception-2.0",
+        "GCC-exception-2.0-note", "GCC-exception-3.1", "Gmsh-exception", "GNAT-exception",
+        "GNOME-examples-exception", "GNU-compiler-exception", "gnu-javamail-exception", "GPL-3.0-389-ds-base-exception",
+        "GPL-3.0-interface-exception", "GPL-3.0-linking-exception", "GPL-3.0-linking-source-exception", "GPL-CC-1.0",
+        "GStreamer-exception-2005", "GStreamer-exception-2008", "harbour-exception", "i2p-gpl-java-exception",
+        "Independent-modules-exception", "KiCad-libraries-exception", "LGPL-3.0-linking-exception", "libpri-OpenH323-exception",
+        "Libtool-exception", "Linux-syscall-note", "LLGPL", "LLVM-exception",
+        "LZMA-exception", "mif-exception", "mxml-exception", "Nokia-Qt-exception-1.1",
+        "OCaml-LGPL-linking-exception", "OCCT-exception-1.0", "OpenJDK-assembly-exception-1.0", "openvpn-openssl-exception",
+        "PCRE2-exception", "PS-or-PDF-font-exception-20170817", "QPL-1.0-INRIA-2004-exception", "Qt-GPL-exception-1.0",
+        "Qt-LGPL-exception-1.1", "Qwt-exception-1.0", "romic-exception", "RRDtool-FLOSS-exception-2.0",
+        "SANE-exception", "SHL-2.0", "SHL-2.1", "stunnel-exception",
+        "SWI-exception", "Swift-exception", "Texinfo-exception", "u-boot-exception-2.0",
+        "UBDL-exception", "Universal-FOSS-exception-1.0", "vsftpd-openssl-exception", "WxWindows-exception-3.1",
+        "x11vnc-openssl-exception"
     ];
 
     public SpdxLicenseService(
@@ -87,15 +103,22 @@ public class SpdxLicenseService : ISpdxLicenseService
         _logger = logger;
 
         LoadEmbeddedLicenses();
+        LoadEmbeddedExceptions();
 
-        foreach (var id in EmbeddedStandardLicenses)
+        if (_canonicalLicenses.IsEmpty)
         {
-            _canonicalLicenses[id] = id;
+            foreach (var id in EmbeddedStandardLicenses)
+            {
+                _canonicalLicenses[id] = id;
+            }
         }
 
-        foreach (var ex in EmbeddedExceptions)
+        if (_exceptions.IsEmpty)
         {
-            _exceptions[ex] = ex;
+            foreach (var ex in EmbeddedExceptions)
+            {
+                _exceptions[ex] = ex;
+            }
         }
     }
 
@@ -164,50 +187,129 @@ public class SpdxLicenseService : ISpdxLicenseService
         return parser.Parse();
     }
 
-    public async Task<bool> RefreshRemoteLicensesAsync(CancellationToken cancellationToken = default)
+    public async Task<bool> RefreshRemoteMetadataAsync(CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(_options.UpdateRemoteUrl))
-            return false;
+        var refreshedAny = false;
 
-        try
+        if (!string.IsNullOrWhiteSpace(_options.UpdateRemoteUrl))
         {
-            var client = _httpClientFactory.CreateClient("SpdxLicenseClient");
-            var response = await client.GetAsync(_options.UpdateRemoteUrl, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            try
             {
-                _logger?.LogWarning("Remote SPDX update returned status code {StatusCode}", response.StatusCode);
-                return false;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-
-            if (doc.RootElement.TryGetProperty("licenses", out var licensesArray) &&
-                licensesArray.ValueKind == JsonValueKind.Array)
-            {
-                var count = 0;
-                foreach (var element in licensesArray.EnumerateArray())
+                var client = _httpClientFactory.CreateClient("SpdxLicenseClient");
+                var response = await client.GetAsync(_options.UpdateRemoteUrl, cancellationToken);
+                if (response.IsSuccessStatusCode)
                 {
-                    if (element.TryGetProperty("licenseId", out var idProp))
+                    await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                    using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+                    if (doc.RootElement.TryGetProperty("licenses", out var licensesArray) &&
+                        licensesArray.ValueKind == JsonValueKind.Array)
                     {
-                        var id = idProp.GetString();
-                        if (!string.IsNullOrWhiteSpace(id))
+                        var fetchedLicenses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var element in licensesArray.EnumerateArray())
                         {
-                            _canonicalLicenses[id] = id;
-                            count++;
+                            if (element.TryGetProperty("licenseId", out var idProp))
+                            {
+                                var id = idProp.GetString();
+                                if (!string.IsNullOrWhiteSpace(id))
+                                {
+                                    fetchedLicenses.Add(id);
+                                }
+                            }
+                        }
+
+                        if (fetchedLicenses.Count > 0)
+                        {
+                            var addedCount = fetchedLicenses.Count(id => !_canonicalLicenses.ContainsKey(id));
+                            var removedCount = _canonicalLicenses.Keys.Count(id => !fetchedLicenses.Contains(id));
+
+                            _canonicalLicenses.Clear();
+                            foreach (var id in fetchedLicenses)
+                            {
+                                _canonicalLicenses[id] = id;
+                            }
+
+                            _logger?.LogInformation("Successfully reconciled SPDX licenses: {Total} total (+{Added}/-{Removed}).",
+                                _canonicalLicenses.Count, addedCount, removedCount);
+                            refreshedAny = true;
+                        }
+                        else
+                        {
+                            _logger?.LogWarning("Remote SPDX license update returned 0 valid entries; retaining current dictionary.");
                         }
                     }
                 }
-                _logger?.LogInformation("Successfully refreshed {Count} SPDX licenses from remote source.", count);
-                return true;
+                else
+                {
+                    _logger?.LogWarning("Remote SPDX license update returned status code {StatusCode}", response.StatusCode);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogWarning(ex, "Failed to refresh remote SPDX licenses. Retaining current dictionary.");
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        if (!string.IsNullOrWhiteSpace(_options.UpdateExceptionsRemoteUrl))
         {
-            _logger?.LogWarning(ex, "Failed to refresh remote SPDX licenses. Retaining embedded dictionary.");
+            try
+            {
+                var client = _httpClientFactory.CreateClient("SpdxLicenseClient");
+                var response = await client.GetAsync(_options.UpdateExceptionsRemoteUrl, cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                    using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+                    if (doc.RootElement.TryGetProperty("exceptions", out var exceptionsArray) &&
+                        exceptionsArray.ValueKind == JsonValueKind.Array)
+                    {
+                        var fetchedExceptions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var element in exceptionsArray.EnumerateArray())
+                        {
+                            if (element.TryGetProperty("licenseExceptionId", out var idProp))
+                            {
+                                var id = idProp.GetString();
+                                if (!string.IsNullOrWhiteSpace(id))
+                                {
+                                    fetchedExceptions.Add(id);
+                                }
+                            }
+                        }
+
+                        if (fetchedExceptions.Count > 0)
+                        {
+                            var addedCount = fetchedExceptions.Count(id => !_exceptions.ContainsKey(id));
+                            var removedCount = _exceptions.Keys.Count(id => !fetchedExceptions.Contains(id));
+
+                            _exceptions.Clear();
+                            foreach (var id in fetchedExceptions)
+                            {
+                                _exceptions[id] = id;
+                            }
+
+                            _logger?.LogInformation("Successfully reconciled SPDX exceptions: {Total} total (+{Added}/-{Removed}).",
+                                _exceptions.Count, addedCount, removedCount);
+                            refreshedAny = true;
+                        }
+                        else
+                        {
+                            _logger?.LogWarning("Remote SPDX exception update returned 0 valid entries; retaining current dictionary.");
+                        }
+                    }
+                }
+                else
+                {
+                    _logger?.LogWarning("Remote SPDX exception update returned status code {StatusCode}", response.StatusCode);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogWarning(ex, "Failed to refresh remote SPDX exceptions. Retaining current dictionary.");
+            }
         }
 
-        return false;
+        return refreshedAny;
     }
 
     private static List<Token> Tokenize(string expression)
@@ -430,6 +532,43 @@ public class SpdxLicenseService : ISpdxLicenseService
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Failed to load embedded spdx-licenses.json resource.");
+        }
+    }
+
+    private void LoadEmbeddedExceptions()
+    {
+        try
+        {
+            var asm = typeof(SpdxLicenseService).Assembly;
+            var resName = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("spdx-exceptions.json", StringComparison.OrdinalIgnoreCase));
+            if (resName != null)
+            {
+                using var stream = asm.GetManifestResourceStream(resName);
+                if (stream != null)
+                {
+                    using var doc = JsonDocument.Parse(stream);
+                    if (doc.RootElement.TryGetProperty("exceptions", out var exceptionsArray) &&
+                        exceptionsArray.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var item in exceptionsArray.EnumerateArray())
+                        {
+                            if (item.TryGetProperty("licenseExceptionId", out var idProp))
+                            {
+                                var id = idProp.GetString();
+                                if (!string.IsNullOrWhiteSpace(id))
+                                {
+                                    _exceptions[id] = id;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to load embedded spdx-exceptions.json resource.");
         }
     }
 }

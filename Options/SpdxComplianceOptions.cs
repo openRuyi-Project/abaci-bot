@@ -16,6 +16,11 @@ public class SpdxComplianceOptions
     public string UpdateRemoteUrl { get; set; } = "https://spdx.org/licenses/licenses.json";
 
     /// <summary>
+    /// Remote URL of the official SPDX exceptions JSON index.
+    /// </summary>
+    public string UpdateExceptionsRemoteUrl { get; set; } = "https://spdx.org/licenses/exceptions.json";
+
+    /// <summary>
     /// Periodic background update interval in hours. Set to 0 to disable remote polling.
     /// </summary>
     public double AutoUpdateIntervalHours { get; set; } = 24;

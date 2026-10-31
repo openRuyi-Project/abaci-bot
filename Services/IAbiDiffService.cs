@@ -8,7 +8,8 @@ public record AbiDiffResult(
     bool HasAbiChange,
     bool IsBreakingChange,
     string Details,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    bool ToolMissing = false);
 
 /// <summary>
 /// Pluggable runner contract for executing the external abidiff tool or simulation.

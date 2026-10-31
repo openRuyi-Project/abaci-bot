@@ -11,17 +11,20 @@ namespace abaci_bot.Services;
 /// </summary>
 public class ArtifactService : IArtifactService
 {
+    private readonly IGitHubService _gitHubService;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly AbiComplianceOptions _options;
     private readonly IRpmDependencyService? _rpmDependencyService;
     private readonly ILogger<ArtifactService>? _logger;
 
     public ArtifactService(
+        IGitHubService gitHubService,
         IHttpClientFactory httpClientFactory,
         IOptions<AbiComplianceOptions> options,
         IRpmDependencyService? rpmDependencyService = null,
         ILogger<ArtifactService>? logger = null)
     {
+        _gitHubService = gitHubService ?? throw new ArgumentNullException(nameof(gitHubService));
         _httpClientFactory = httpClientFactory;
         _options = options.Value;
         _rpmDependencyService = rpmDependencyService;
@@ -37,19 +40,8 @@ public class ArtifactService : IArtifactService
 
         try
         {
-            var client = _httpClientFactory.CreateClient("GitHubArtifactClient");
-            var url = $"https://api.github.com/repos/{owner}/{repo}/actions/artifacts/{artifactId}/zip";
-
-            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger?.LogWarning("Failed to download artifact {ArtifactId}. Status: {StatusCode}", artifactId, response.StatusCode);
-                return extractedRpms;
-            }
-
-            await using var zipStream = await response.Content.ReadAsStreamAsync(ct);
+            await using var zipStream = await _gitHubService.DownloadArtifactZipStreamAsync(owner, repo, artifactId, ct);
             using var archive = new ZipArchive(zipStream, ZipArchiveMode.Read);
-
             foreach (var entry in archive.Entries)
             {
                 if (entry.FullName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
@@ -86,30 +78,17 @@ public class ArtifactService : IArtifactService
         var allRpms = new List<string>();
         try
         {
-            var client = _httpClientFactory.CreateClient("GitHubArtifactClient");
-            var url = $"https://api.github.com/repos/{owner}/{repo}/actions/runs/{runId}/artifacts";
-
-            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            if (!response.IsSuccessStatusCode)
+            var artifacts = await _gitHubService.ListWorkflowRunArtifactsAsync(owner, repo, runId, ct);
+            if (artifacts.Count == 0)
             {
-                _logger?.LogDebug("No artifacts found or query failed for run {RunId}. Status: {StatusCode}", runId, response.StatusCode);
+                _logger?.LogInformation("No workflow run artifacts found for run {RunId} in {Owner}/{Repo}", runId, owner, repo);
                 return allRpms;
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-
-            if (doc.RootElement.TryGetProperty("artifacts", out var artifactsProp) &&
-                artifactsProp.ValueKind == JsonValueKind.Array)
+            foreach (var (artifactId, _, _) in artifacts)
             {
-                foreach (var art in artifactsProp.EnumerateArray())
-                {
-                    if (art.TryGetProperty("id", out var idProp) && idProp.TryGetInt64(out var artifactId))
-                    {
-                        var rpms = await DownloadAndExtractRpmArtifactAsync(owner, repo, artifactId, destinationDirectory, ct);
-                        allRpms.AddRange(rpms);
-                    }
-                }
+                var rpms = await DownloadAndExtractRpmArtifactAsync(owner, repo, artifactId, destinationDirectory, ct);
+                allRpms.AddRange(rpms);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

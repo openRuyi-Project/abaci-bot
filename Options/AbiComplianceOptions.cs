@@ -24,4 +24,9 @@ public class AbiComplianceOptions
     /// Working directory for RPM extraction and temporary artifact caching.
     /// </summary>
     public string? TempExtractionDirectory { get; set; }
+
+    /// <summary>
+    /// Process timeout in seconds for abidiff execution. Defaults to 300 seconds.
+    /// </summary>
+    public int TimeoutSeconds { get; set; } = 300;
 }

@@ -349,6 +349,55 @@ public class GitHubService : IGitHubService, IDisposable
         }
     }
 
+    public async Task<IReadOnlyList<(long Id, string Name, long SizeInBytes)>> ListWorkflowRunArtifactsAsync(
+        string owner, string repo, long runId, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        try
+        {
+            var response = await _client.Actions.Artifacts.ListWorkflowArtifacts(owner, repo, runId);
+            if (response?.Artifacts == null)
+                return Array.Empty<(long Id, string Name, long SizeInBytes)>();
+
+            return response.Artifacts
+                .Select(a => (a.Id, a.Name, (long)a.SizeInBytes))
+                .ToList();
+        }
+        catch (NotFoundException)
+        {
+            _logger?.LogDebug("Workflow run {RunId} not found or has no artifacts for {Owner}/{Repo}", runId, owner, repo);
+            return Array.Empty<(long Id, string Name, long SizeInBytes)>();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "Failed to list artifacts for workflow run {RunId} in {Owner}/{Repo}", runId, owner, repo);
+            return Array.Empty<(long Id, string Name, long SizeInBytes)>();
+        }
+    }
+
+    public async Task<Stream> DownloadArtifactZipStreamAsync(
+        string owner, string repo, long artifactId, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        try
+        {
+            return await _client.Actions.Artifacts.DownloadArtifact(owner, repo, artifactId, "zip");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "Failed to download artifact {ArtifactId} for {Owner}/{Repo}", artifactId, owner, repo);
+            throw;
+        }
+    }
+
     public void Dispose()
     {
         _authLock.Dispose();

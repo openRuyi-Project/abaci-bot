@@ -281,5 +281,319 @@ public class SpdxComplianceModuleTests
         Assert.NotEmpty(context.PendingComments);
         Assert.Contains("InvalidFakeLicense123", context.PendingComments[0]);
     }
+
+    [Fact]
+    public async Task ProcessAsync_SpecWithIssues_AlreadyFlagged_DoesNotDuplicateComment()
+    {
+        var service = CreateService();
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions());
+        var module = new SpdxComplianceModule(service, options);
+
+        var file = CreateFile("SPECS/multilib/multilib.spec");
+        var context = CreateContext(
+            new[] { file },
+            action: PullRequestAction.Edited,
+            existingLabels: new[] { GitHubLabels.ComplianceLicenseIssue });
+
+        var specContent = """
+            Name: multilib
+            Version: 1.0
+            License: InvalidFakeLicense123
+            """;
+
+        _gitHub.GetFileContentAsync(Arg.Any<string>(), Arg.Any<string>(), "SPECS/multilib/multilib.spec", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(specContent);
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.ComplianceLicenseIssue, context.LabelsToAdd);
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_NoSpecFilesRemaining_RemovesComplianceLicenseIssueLabel()
+    {
+        var service = CreateService();
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions());
+        var module = new SpdxComplianceModule(service, options);
+
+        // PR with a non-spec file, and previously had Compliance: License Issue
+        var file = CreateFile("README.md");
+        var context = CreateContext(new[] { file }, existingLabels: new[] { GitHubLabels.ComplianceLicenseIssue });
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.DoesNotContain(GitHubLabels.ComplianceLicenseIssue, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.ComplianceLicenseIssue, context.LabelsToRemove);
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Theory]
+    [InlineData("LGPL-3.0-only WITH Qt-GPL-exception-1.0")]
+    [InlineData("GPL-3.0-only WITH Qt-GPL-exception-1.0")]
+    [InlineData("LGPL-2.1-only WITH Qt-LGPL-exception-1.1")]
+    [InlineData("BSD-3-Clause WITH mif-exception")]
+    [InlineData("GPL-3.0-or-later WITH Texinfo-exception")]
+    [InlineData("GPL-2.0-or-later WITH GNAT-exception")]
+    [InlineData("Apache-2.0 WITH mxml-exception")]
+    [InlineData("GPL-2.0-only WITH PS-or-PDF-font-exception-20170817")]
+    [InlineData("GPL-3.0-only WITH GNOME-examples-exception")]
+    public void SpdxLicenseService_OfficialExceptions_QtAndOtherExceptions_Valid(string expression)
+    {
+        var service = CreateService();
+        var result = service.ValidateExpression(expression);
+
+        Assert.True(result.IsValid, $"Expected '{expression}' to be valid with official exception.");
+        Assert.Empty(result.InvalidIdentifiers);
+    }
+
+    [Theory]
+    [InlineData("GPL-2.0-only WITH SWIG-exception")]
+    [InlineData("GPL-2.0-only WITH Rust-license-exception")]
+    [InlineData("GPL-2.0-only WITH PS-or-PDF-font-exception-20170904")]
+    [InlineData("GPL-2.0-only WITH Qhull-exception")]
+    [InlineData("GPL-2.0-only WITH tcsh-exception")]
+    public void SpdxLicenseService_FabricatedExceptions_AreRejectedAsInvalid(string expression)
+    {
+        var service = CreateService();
+        var result = service.ValidateExpression(expression);
+
+        Assert.False(result.IsValid, $"Expected fabricated expression '{expression}' to be invalid.");
+        Assert.NotEmpty(result.InvalidIdentifiers);
+    }
+
+    [Fact]
+    public void SpdxExceptionsResource_ContainsExactOfficialV326List()
+    {
+        var service = CreateService();
+        var asm = typeof(SpdxLicenseService).Assembly;
+        var resName = asm.GetManifestResourceNames()
+            .FirstOrDefault(n => n.EndsWith("spdx-exceptions.json", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(resName);
+
+        using var stream = asm.GetManifestResourceStream(resName!);
+        Assert.NotNull(stream);
+        using var doc = System.Text.Json.JsonDocument.Parse(stream!);
+
+        Assert.Equal("3.26.0", doc.RootElement.GetProperty("licenseListVersion").GetString());
+        var exceptionsArray = doc.RootElement.GetProperty("exceptions");
+        Assert.Equal(77, exceptionsArray.GetArrayLength());
+
+        // Official items present
+        Assert.True(service.IsValidSpdxException("Autoconf-exception-generic-3.0"));
+        Assert.True(service.IsValidSpdxException("SANE-exception"));
+        Assert.True(service.IsValidSpdxException("harbour-exception"));
+        Assert.True(service.IsValidSpdxException("LLVM-exception"));
+
+        // Non-standard items removed
+        Assert.False(service.IsValidSpdxException("Digia-Qt-LGPL-exception-1.1"));
+        Assert.False(service.IsValidSpdxException("rsync-linking-exception"));
+    }
+
+    [Fact]
+    public async Task SpdxLicenseService_RefreshRemoteMetadataAsync_LoadsLicensesAndExceptions()
+    {
+        var licenseJson = """
+        {
+          "licenses": [
+            { "licenseId": "Custom-Test-Lic-999" }
+          ]
+        }
+        """;
+
+        var exceptionJson = """
+        {
+          "exceptions": [
+            { "licenseExceptionId": "Custom-Test-Ex-888" }
+          ]
+        }
+        """;
+
+        var handler = new SimpleHttpHandler(req =>
+        {
+            if (req.RequestUri!.ToString().Contains("exceptions.json"))
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(exceptionJson, System.Text.Encoding.UTF8, "application/json")
+                };
+            }
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(licenseJson, System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+
+        var client = new HttpClient(handler);
+        var clientFactory = Substitute.For<IHttpClientFactory>();
+        clientFactory.CreateClient("SpdxLicenseClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions
+        {
+            UpdateRemoteUrl = "https://example.org/licenses.json",
+            UpdateExceptionsRemoteUrl = "https://example.org/exceptions.json"
+        });
+
+        var service = new SpdxLicenseService(clientFactory, options);
+
+        Assert.False(service.IsValidSpdxIdentifier("Custom-Test-Lic-999"));
+        Assert.False(service.IsValidSpdxException("Custom-Test-Ex-888"));
+
+        var success = await service.RefreshRemoteMetadataAsync(CancellationToken.None);
+        Assert.True(success);
+
+        Assert.True(service.IsValidSpdxIdentifier("Custom-Test-Lic-999"));
+        Assert.True(service.IsValidSpdxException("Custom-Test-Ex-888"));
+    }
+
+    [Fact]
+    public async Task SpdxLicenseService_RefreshRemoteMetadataAsync_HttpError_ReturnsFalseGracefully()
+    {
+        var handler = new SimpleHttpHandler(req =>
+            new HttpResponseMessage(System.Net.HttpStatusCode.InternalServerError));
+
+        var client = new HttpClient(handler);
+        var clientFactory = Substitute.For<IHttpClientFactory>();
+        clientFactory.CreateClient("SpdxLicenseClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions
+        {
+            UpdateRemoteUrl = "https://example.org/licenses.json",
+            UpdateExceptionsRemoteUrl = "https://example.org/exceptions.json"
+        });
+
+        var service = new SpdxLicenseService(clientFactory, options);
+        var result = await service.RefreshRemoteMetadataAsync(CancellationToken.None);
+        Assert.False(result);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenGetFileContentThrows_DoesNotRemoveExistingLicenseIssueLabel()
+    {
+        var service = CreateService();
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions());
+        var module = new SpdxComplianceModule(service, options);
+
+        var file = CreateFile("SPECS/test/test.spec");
+        var context = CreateContext(
+            new[] { file },
+            existingLabels: new[] { GitHubLabels.ComplianceLicenseIssue });
+
+        _gitHub.GetFileContentAsync(Arg.Any<string>(), Arg.Any<string>(), "SPECS/test/test.spec", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns<Task<string>>(_ => throw new HttpRequestException("404 Not Found"));
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        // Fail safe: must NOT remove Compliance: License Issue when content was unverified
+        Assert.DoesNotContain(GitHubLabels.ComplianceLicenseIssue, context.LabelsToRemove);
+        Assert.DoesNotContain(GitHubLabels.ComplianceLicenseIssue, context.LabelsToAdd);
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
+    public async Task SpdxLicenseService_RefreshRemoteMetadataAsync_WhenRemoteRemovesLicense_ReconcilesAndRemovesLocally()
+    {
+        var licenseJson = """
+        {
+          "licenses": [
+            { "licenseId": "Apache-2.0" },
+            { "licenseId": "MIT" }
+          ]
+        }
+        """;
+
+        var exceptionJson = """
+        {
+          "exceptions": [
+            { "licenseExceptionId": "LLVM-exception" }
+          ]
+        }
+        """;
+
+        var handler = new SimpleHttpHandler(req =>
+        {
+            if (req.RequestUri!.ToString().Contains("exceptions.json"))
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(exceptionJson, System.Text.Encoding.UTF8, "application/json")
+                };
+            }
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(licenseJson, System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+
+        var client = new HttpClient(handler);
+        var clientFactory = Substitute.For<IHttpClientFactory>();
+        clientFactory.CreateClient("SpdxLicenseClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions
+        {
+            UpdateRemoteUrl = "https://example.org/licenses.json",
+            UpdateExceptionsRemoteUrl = "https://example.org/exceptions.json"
+        });
+
+        var service = new SpdxLicenseService(clientFactory, options);
+
+        // Initial state before refresh: contains 0BSD from embedded baseline
+        Assert.True(service.IsValidSpdxIdentifier("0BSD"));
+        Assert.True(service.IsValidSpdxException("GCC-exception-3.1"));
+
+        var success = await service.RefreshRemoteMetadataAsync(CancellationToken.None);
+        Assert.True(success);
+
+        // After refresh: only items in new remote list exist; removed items are reconciled
+        Assert.True(service.IsValidSpdxIdentifier("Apache-2.0"));
+        Assert.True(service.IsValidSpdxIdentifier("MIT"));
+        Assert.False(service.IsValidSpdxIdentifier("0BSD")); // Reconciled and removed
+
+        Assert.True(service.IsValidSpdxException("LLVM-exception"));
+        Assert.False(service.IsValidSpdxException("GCC-exception-3.1")); // Reconciled and removed
+    }
+
+    [Fact]
+    public async Task SpdxLicenseService_RefreshRemoteMetadataAsync_WhenRemoteReturnsEmpty_RejectsAndRetainsExisting()
+    {
+        var emptyLicenseJson = """
+        {
+          "licenses": []
+        }
+        """;
+
+        var handler = new SimpleHttpHandler(req =>
+            new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(emptyLicenseJson, System.Text.Encoding.UTF8, "application/json")
+            });
+
+        var client = new HttpClient(handler);
+        var clientFactory = Substitute.For<IHttpClientFactory>();
+        clientFactory.CreateClient("SpdxLicenseClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions
+        {
+            UpdateRemoteUrl = "https://example.org/licenses.json",
+            UpdateExceptionsRemoteUrl = string.Empty // disabled exceptions
+        });
+
+        var service = new SpdxLicenseService(clientFactory, options);
+        Assert.True(service.IsValidSpdxIdentifier("Apache-2.0"));
+
+        var result = await service.RefreshRemoteMetadataAsync(CancellationToken.None);
+        Assert.False(result);
+
+        // Existing dictionary retained, not emptied!
+        Assert.True(service.IsValidSpdxIdentifier("Apache-2.0"));
+    }
+
+    private sealed class SimpleHttpHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+        public SimpleHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) => _handler = handler;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(_handler(request));
+    }
 }
 

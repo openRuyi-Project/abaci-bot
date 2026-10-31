@@ -34,32 +34,97 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 ErrorMessage: $"Target RPM file not found: old='{oldRpmPath}', new='{newRpmPath}'");
         }
 
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_options.TimeoutSeconds > 0 ? _options.TimeoutSeconds : 300));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        var effectiveCt = linkedCts.Token;
+
+        Process? process = null;
         try
         {
             var startInfo = new ProcessStartInfo
             {
                 FileName = _options.AbidiffExecutablePath,
-                Arguments = $"\"{oldRpmPath}\" \"{newRpmPath}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
+            startInfo.ArgumentList.Add(oldRpmPath);
+            startInfo.ArgumentList.Add(newRpmPath);
 
-            using var process = new Process { StartInfo = startInfo };
+            process = new Process { StartInfo = startInfo };
             process.Start();
 
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-            var stderrTask = process.StandardError.ReadToEndAsync(ct);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(effectiveCt);
+            var stderrTask = process.StandardError.ReadToEndAsync(effectiveCt);
 
-            await process.WaitForExitAsync(ct);
+            await process.WaitForExitAsync(effectiveCt);
             var stdout = await stdoutTask;
             var stderr = await stderrTask;
 
             var exitCode = process.ExitCode;
             return InterpretExitCode(exitCode, stdout, stderr);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            try
+            {
+                if (process is { HasExited: false })
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch
+            {
+                // Ignore kill errors
+            }
+
+            _logger?.LogWarning("abidiff process timed out after {Timeout} seconds.", _options.TimeoutSeconds);
+            return new AbiDiffResult(
+                Succeeded: false,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: string.Empty,
+                ErrorMessage: $"abidiff process timed out after {_options.TimeoutSeconds} seconds.");
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (process is { HasExited: false })
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch
+            {
+                // Ignore kill errors
+            }
+            throw;
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            _logger?.LogError(ex, "Libabigail abidiff executable '{Path}' not found on host system. ABI compliance checks cannot run.", _options.AbidiffExecutablePath);
+            return new AbiDiffResult(
+                Succeeded: false,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: string.Empty,
+                ErrorMessage: $"abidiff executable not found: {ex.Message}",
+                ToolMissing: true);
+        }
+        catch (FileNotFoundException ex)
+        {
+            _logger?.LogError(ex, "Libabigail abidiff executable '{Path}' not found on host system. ABI compliance checks cannot run.", _options.AbidiffExecutablePath);
+            return new AbiDiffResult(
+                Succeeded: false,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: string.Empty,
+                ErrorMessage: $"abidiff executable not found: {ex.Message}",
+                ToolMissing: true);
+        }
+        catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Failed to run abidiff executable '{Path}'. Skipping ABI analysis.", _options.AbidiffExecutablePath);
             return new AbiDiffResult(
@@ -68,6 +133,10 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 IsBreakingChange: false,
                 Details: string.Empty,
                 ErrorMessage: $"abidiff execution failed: {ex.Message}");
+        }
+        finally
+        {
+            process?.Dispose();
         }
     }
 
@@ -82,12 +151,10 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
         // 2 = usage error (ABIDIFF_USAGE_ERROR)
         // 4 = ABI change detected (ABIDIFF_ABI_CHANGE)
         // 8 = ABI incompatible / breaking change (ABIDIFF_ABI_INCOMPATIBLE_CHANGE)
-        // 16 = architecture change (ABIDIFF_ARCHITECTURE_CHANGE)
         const int abidiffError = 1;
         const int abidiffUsage = 2;
         const int abidiffChange = 4;
         const int abidiffIncompatible = 8;
-        const int abidiffArch = 16;
 
         if ((exitCode & abidiffError) != 0 || (exitCode & abidiffUsage) != 0)
         {
@@ -99,7 +166,7 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 ErrorMessage: $"abidiff reported tool failure (exit code: {exitCode})");
         }
 
-        var hasChange = (exitCode & (abidiffChange | abidiffIncompatible | abidiffArch)) != 0;
+        var hasChange = (exitCode & (abidiffChange | abidiffIncompatible)) != 0;
         var isBreaking = (exitCode & abidiffIncompatible) != 0;
 
         return new AbiDiffResult(

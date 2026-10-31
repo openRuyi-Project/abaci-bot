@@ -84,7 +84,7 @@ public class AbiComplianceModuleTests
     }
 
     [Fact]
-    public async Task ProcessAsync_AbidiffFailedOrSkipped_GracefullyDoesNotAddLabels()
+    public async Task ProcessAsync_AbidiffFailedOrSkipped_AddsImpactAbiCheckFailedLabel()
     {
         var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
         var module = new AbiComplianceModule(_abiService, options);
@@ -100,8 +100,51 @@ public class AbiComplianceModuleTests
 
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.Empty(context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.ImpactAbi, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
         Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_CompatibleDiffOnPreviouslyBreakingPr_RemovesOldImpactLabels()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(_abiService, options);
+
+        var context = new PullRequestContext(
+            gitHubService: _gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "openRuyi-Project",
+            repo: "openRuyi",
+            prNumber: 88,
+            headSha: "head123",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: null,
+            title: "Update libfoo",
+            body: "PR body",
+            senderLogin: "contributor",
+            authorLogin: "contributor",
+            action: "synchronize",
+            existingLabels: new[] { GitHubLabels.ImpactAbi, GitHubLabels.ImpactBreakingChange, GitHubLabels.ImpactAbiCheckFailed },
+            prAction: PullRequestAction.Synchronize);
+
+        var diffResult = new AbiDiffResult(
+            Succeeded: true,
+            HasAbiChange: false,
+            IsBreakingChange: false,
+            Details: "No ABI changes detected");
+        context.AbiResult = diffResult;
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Empty(context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.ImpactAbi, context.LabelsToRemove);
+        Assert.Contains(GitHubLabels.ImpactBreakingChange, context.LabelsToRemove);
+        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToRemove);
     }
 
     [Theory]
@@ -109,8 +152,8 @@ public class AbiComplianceModuleTests
     [InlineData(4, true, true, false)]   // ABIDIFF_ABI_CHANGE
     [InlineData(8, true, true, true)]    // ABIDIFF_ABI_INCOMPATIBLE_CHANGE
     [InlineData(12, true, true, true)]   // 4 | 8
-    [InlineData(16, true, true, false)]  // ABIDIFF_ARCHITECTURE_CHANGE
-    [InlineData(24, true, true, true)]   // 8 | 16
+    [InlineData(16, true, false, false)] // Bit 16 alone is not ABI change
+    [InlineData(24, true, true, true)]   // 8 | 16 -> Has bit 8
     public void ProcessAbiDiffRunner_InterpretExitCode_ValidBitmasks(int exitCode, bool expectedSuccess, bool expectedHasChange, bool expectedIsBreaking)
     {
         var result = ProcessAbiDiffRunner.InterpretExitCode(exitCode, "abi summary details", "");
@@ -173,6 +216,128 @@ public class AbiComplianceModuleTests
             42,
             Arg.Is<string>(c => c.Contains("ABI Breaking Change Detected")),
             Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessAsync_BreakingAbiChange_AlreadyFlagged_DoesNotDuplicateComment()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(_abiService, options);
+
+        var context = new PullRequestContext(
+            gitHubService: _gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "openRuyi-Project",
+            repo: "openRuyi",
+            prNumber: 88,
+            headSha: "head123",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: null,
+            title: "Update libfoo",
+            body: "PR body",
+            senderLogin: "contributor",
+            authorLogin: "contributor",
+            action: "synchronize",
+            existingLabels: new[] { GitHubLabels.ImpactBreakingChange },
+            prAction: PullRequestAction.Synchronize);
+
+        var diffResult = new AbiDiffResult(
+            Succeeded: true,
+            HasAbiChange: true,
+            IsBreakingChange: true,
+            Details: "SONAME changed from libfoo.so.1 to libfoo.so.2");
+        context.AbiResult = diffResult;
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
+    public async Task AbiComplianceModule_ToolMissing_DoesNotAddCheckFailedLabel()
+    {
+        var abiService = Substitute.For<IAbiDiffService>();
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(abiService, options);
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var context = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 12,
+            headSha: "head123",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: null,
+            title: "PR",
+            body: "PR body",
+            senderLogin: "user",
+            authorLogin: "user",
+            action: "synchronize",
+            existingLabels: Array.Empty<string>(),
+            prAction: PullRequestAction.Synchronize);
+
+        context.AbiResult = new AbiDiffResult(
+            Succeeded: false,
+            HasAbiChange: false,
+            IsBreakingChange: false,
+            Details: string.Empty,
+            ErrorMessage: "Executable not found",
+            ToolMissing: true);
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.DoesNotContain(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.Empty(context.LabelsToAdd);
+    }
+
+    [Fact]
+    public async Task AbiComplianceModule_ToolExecutionFailed_AddsCheckFailedLabel()
+    {
+        var abiService = Substitute.For<IAbiDiffService>();
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(abiService, options);
+
+        var gitHub = Substitute.For<IGitHubService>();
+        var context = new PullRequestContext(
+            gitHubService: gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "owner",
+            repo: "repo",
+            prNumber: 12,
+            headSha: "head123",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: null,
+            title: "PR",
+            body: "PR body",
+            senderLogin: "user",
+            authorLogin: "user",
+            action: "synchronize",
+            existingLabels: Array.Empty<string>(),
+            prAction: PullRequestAction.Synchronize);
+
+        // Tool exited with error code (ToolMissing: false)
+        context.AbiResult = new AbiDiffResult(
+            Succeeded: false,
+            HasAbiChange: false,
+            IsBreakingChange: false,
+            Details: string.Empty,
+            ErrorMessage: "abidiff reported tool failure (exit code: 1)",
+            ToolMissing: false);
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
     }
 }
 
