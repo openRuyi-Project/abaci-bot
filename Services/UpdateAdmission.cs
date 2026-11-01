@@ -99,4 +99,41 @@ public static class UpdateAdmission
 
         return false;
     }
+
+    /// <summary>
+    /// Checks whether an upgrade crosses a major version boundary.
+    /// Parses the leading numeric component before the first dot.
+    /// </summary>
+    public static bool IsCrossMajorVersion(string currentVersion, string targetVersion)
+    {
+        var cleanCurrent = StripVersionSuffix(currentVersion);
+        var cleanTarget = StripVersionSuffix(targetVersion);
+
+        if (string.IsNullOrWhiteSpace(cleanCurrent) || string.IsNullOrWhiteSpace(cleanTarget))
+            return false;
+
+        var currentMajor = ExtractMajorComponent(cleanCurrent);
+        var targetMajor = ExtractMajorComponent(cleanTarget);
+
+        if (currentMajor != null && targetMajor != null)
+        {
+            return currentMajor != targetMajor;
+        }
+
+        return false;
+    }
+
+    private static int? ExtractMajorComponent(string version)
+    {
+        var dotIdx = version.IndexOf('.');
+        var majorStr = dotIdx >= 0 ? version.Substring(0, dotIdx) : version;
+
+        // Trim leading non-digits if any (e.g. v1.2.3 -> 1)
+        var span = majorStr.AsSpan().TrimStart("vV");
+        if (int.TryParse(span, out var major))
+            return major;
+
+        return null;
+    }
 }
+

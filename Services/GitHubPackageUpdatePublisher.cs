@@ -157,11 +157,13 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
             _logger?.LogInformation("Creating new PR for branch {Branch}", branchName);
             pr = await _gitHubService.CreatePullRequestAsync(owner, repo, prTitle, branchName, baseBranch, prBody, ct);
 
-            // Add source-specific label
-            var label = candidate.Origin == CandidateOrigin.RustCrate
-                ? "Auto-Update: Rust"
-                : "Auto-Update";
-            await _gitHubService.AddLabelsAsync(owner, repo, pr.Number, new[] { label }, ct);
+            // Add baseline Auto-Update label and optional source-specific label
+            var labels = new List<string> { "Auto-Update" };
+            if (candidate.Origin == CandidateOrigin.RustCrate)
+            {
+                labels.Add("Auto-Update: Rust");
+            }
+            await _gitHubService.AddLabelsAsync(owner, repo, pr.Number, labels.ToArray(), ct);
         }
 
         return new PublishResult(true, false, null, pr.Number, pr.HtmlUrl);

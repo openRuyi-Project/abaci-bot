@@ -204,6 +204,14 @@ public class PackageUpdateService : BackgroundService
                 continue;
             }
 
+            // Check AllowCrossMajorVersion option
+            if (!_options.AllowCrossMajorVersion && UpdateAdmission.IsCrossMajorVersion(candidate.CurrentVersion, candidate.TargetVersion))
+            {
+                _logger?.LogInformation("Skipping {Package} because {Current} -> {Target} crosses major version boundary and AllowCrossMajorVersion=false",
+                    candidate.PackageName, candidate.CurrentVersion, candidate.TargetVersion);
+                continue;
+            }
+
             // D. Select compatible rewriter
             var specContext = new SpecContext(candidate.PackageName, candidate.PackageName, specContent);
             var rewriter = _specRewriters.FirstOrDefault(r => r.CanHandle(specContext));
@@ -264,18 +272,23 @@ public class PackageUpdateService : BackgroundService
                 // Check PR branch workflow runs
                 var fullPr = await _gitHubService.GetPullRequestAsync(owner, repo, pr.Number, ct);
                 var branchName = fullPr?.Head?.Ref;
+                var headSha = fullPr?.Head?.Sha;
                 var runs = !string.IsNullOrWhiteSpace(branchName)
                     ? await _gitHubService.ListWorkflowRunsAsync(owner, repo, branchName, ct)
                     : Array.Empty<Octokit.WorkflowRun>();
 
-                var latestRun = runs.OrderByDescending(r => r.CreatedAt).FirstOrDefault();
-                bool isFailed = latestRun != null && latestRun.Conclusion == Octokit.WorkflowRunConclusion.Failure;
+                // Precise gate matching: find remoteasset run for backfill
+                var remoteAssetRun = WorkflowGateLocator.FindRemoteAssetRun(runs, headSha);
+                bool isRemoteAssetFailed = remoteAssetRun != null && remoteAssetRun.Conclusion == Octokit.WorkflowRunConclusion.Failure;
 
-                // P0-3: sha256 RemoteAsset backfill
-                // If the run failed, inspect if there is a remoteassets diff artifact to commit back
-                if (isFailed && !string.IsNullOrWhiteSpace(branchName) && latestRun != null && !_options.DryRun)
+                // Overall CI failure: check if any run on head commit failed
+                var runsOnHead = runs.Where(r => headSha == null || string.Equals(r.HeadSha, headSha, StringComparison.OrdinalIgnoreCase)).ToList();
+                bool isFailed = runsOnHead.Any(r => r.Conclusion == Octokit.WorkflowRunConclusion.Failure);
+
+                // P0-2: sha256 RemoteAsset backfill targeted at the remoteasset run
+                if (isRemoteAssetFailed && !string.IsNullOrWhiteSpace(branchName) && remoteAssetRun != null && !_options.DryRun)
                 {
-                    await TryBackfillRemoteAssetDiffAsync(owner, repo, branchName, pr.Number, latestRun.Id, ct);
+                    await TryBackfillRemoteAssetDiffAsync(owner, repo, branchName, pr.Number, remoteAssetRun.Id, ct);
                 }
 
                 // P1-2: Wire failure detection into RecordFailure & 30-day cooldown

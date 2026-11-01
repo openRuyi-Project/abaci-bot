@@ -57,3 +57,4 @@ public static class ArtifactDiffExtractor
         return await textReader.ReadToEndAsync(ct);
     }
 }
+

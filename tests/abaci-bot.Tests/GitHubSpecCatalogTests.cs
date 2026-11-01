@@ -58,4 +58,30 @@ public class GitHubSpecCatalogTests
 
         Assert.Contains("+#!RemoteAsset: sha256:bbb", result);
     }
+
+    [Fact]
+    public async Task ArtifactDiffExtractor_ParsesZipArchiveDiffStream()
+    {
+        var rawDiff = """
+            --- a/SPECS/foo/foo.spec
+            +++ b/SPECS/foo/foo.spec
+            @@ -1,2 +1,2 @@
+            -#!RemoteAsset: sha256:old
+            +#!RemoteAsset: sha256:new
+            """;
+
+        using var ms = new MemoryStream();
+        using (var archive = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var entry = archive.CreateEntry("pr-123-remoteassets.diff");
+            using var writer = new StreamWriter(entry.Open());
+            await writer.WriteAsync(rawDiff);
+        }
+        ms.Position = 0;
+
+        var result = await ArtifactDiffExtractor.ExtractDiffContentAsync(ms);
+
+        Assert.Contains("+#!RemoteAsset: sha256:new", result);
+    }
 }
+

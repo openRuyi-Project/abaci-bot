@@ -32,6 +32,8 @@ public class ObsPostMergeVerifier
         _logger = logger;
     }
 
+    private static readonly string[] BlockedLabels = { "Auto-Update: Blocked" };
+
     public async Task VerifyMergedPullRequestsAsync(string targetRepo, CancellationToken ct = default)
     {
         var parts = targetRepo.Split('/');
@@ -41,13 +43,12 @@ public class ObsPostMergeVerifier
         var owner = parts[0].Trim();
         var repo = parts[1].Trim();
 
-        var botAuthor = string.IsNullOrWhiteSpace(_options.BotLogin) ? "aqua-rium" : _options.BotLogin;
         var checkSince = DateTimeOffset.UtcNow.AddDays(-7);
 
         IReadOnlyList<Octokit.PullRequest> mergedPrs;
         try
         {
-            mergedPrs = await _gitHubService.SearchMergedPullRequestsAsync(owner, repo, botAuthor, checkSince, ct);
+            mergedPrs = await _gitHubService.SearchMergedPullRequestsAsync(owner, repo, string.Empty, checkSince, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -100,6 +101,17 @@ public class ObsPostMergeVerifier
             if (_options.Obs.RequireObsSuccessAfterMerge && buildResult.Code != ObsStatusCode.Succeeded)
             {
                 _logger?.LogWarning("Merged PR #{PrNumber} failed post-merge OBS gate requirement ({Status})", pr.Number, buildResult.Code);
+                if (!_options.DryRun)
+                {
+                    try
+                    {
+                        await _gitHubService.AddLabelsAsync(owner, repo, pr.Number, BlockedLabels, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogDebug(ex, "Failed to apply blocked label to merged PR #{Number}", pr.Number);
+                    }
+                }
             }
 
             // P2-8: Deduplicate comments - skip if already posted

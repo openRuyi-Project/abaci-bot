@@ -88,6 +88,15 @@ public class CveActiveWatchService : BackgroundService
 
         _logger?.LogInformation("Starting CveActiveWatchService scan sweep for {TargetRepo} (DryRun={DryRun})", targetRepo, _options.DryRun);
 
+        // Rate limit snapshot check before starting expensive scan
+        var rateLimit = await _gitHubService.GetRateLimitSnapshotAsync(ct);
+        if (rateLimit != null && rateLimit.CoreRemaining.HasValue && rateLimit.CoreRemaining < 500)
+        {
+            _logger?.LogWarning("Rate limit remaining ({Remaining}) is low; deferring CVE scan sweep",
+                rateLimit.CoreRemaining.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            return;
+        }
+
         var packages = await LoadPackageCatalogAsync(ct);
         if (packages.Count == 0)
         {
