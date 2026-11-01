@@ -21,3 +21,4 @@ public interface ISpecCatalog
     /// </summary>
     Task<IReadOnlyList<string>> GetAllPackageNamesAsync(CancellationToken ct = default);
 }
+

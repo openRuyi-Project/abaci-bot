@@ -120,7 +120,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
                 }
 
                 var evidenceUrl = !string.IsNullOrWhiteSpace(pkg.DetailUrl)
-                    ? pkg.DetailUrl
+                    ? (pkg.DetailUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? pkg.DetailUrl : $"{baseUrl.TrimEnd('/')}/{pkg.DetailUrl.TrimStart('/')}")
                     : (!string.IsNullOrWhiteSpace(pkg.EvidenceUrl)
                         ? pkg.EvidenceUrl
                         : $"{baseUrl}/package/{pkg.Name}");

@@ -97,6 +97,11 @@ public class ObsPostMergeVerifier
             _logger?.LogInformation("OBS build result for merged PR #{PrNumber} ({Package}): {Status}",
                 pr.Number, packageName, buildResult.Code);
 
+            if (_options.Obs.RequireObsSuccessAfterMerge && buildResult.Code != ObsStatusCode.Succeeded)
+            {
+                _logger?.LogWarning("Merged PR #{PrNumber} failed post-merge OBS gate requirement ({Status})", pr.Number, buildResult.Code);
+            }
+
             // P2-8: Deduplicate comments - skip if already posted
             try
             {

@@ -25,6 +25,7 @@ public class PackageUpdateService : BackgroundService
     // In-memory tracking of consecutive failures and cooldown timestamps
     private readonly ConcurrentDictionary<string, int> _failureCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _cooldowns = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<int, bool> _recordedFailedPrs = new();
 
     public PackageUpdateService(
         IGitHubService gitHubService,
@@ -92,14 +93,15 @@ public class PackageUpdateService : BackgroundService
 
         _logger?.LogInformation("Starting PackageUpdateService sweep for {TargetRepo} (DryRun={DryRun})", targetRepo, _options.DryRun);
 
-        // P1-7: Ensure automation labels exist in target repository (Self-healing idempotency)
+        // P1-5 & P1-7: Ensure automation labels exist in target repository (Self-healing idempotency)
         try
         {
             await _gitHubService.EnsureLabelsExistAsync(owner, repo, new[]
             {
                 ("Auto-Update", "0366d6", "Pull requests automatically created for package updates"),
                 ("Auto-Update: Rust", "dea584", "Pull requests automatically created for Rust crate updates"),
-                ("Auto-Update: Blocked", "d73a4a", "Package updates blocked due to repeated failures or missing dependencies")
+                ("Auto-Update: Blocked", "d73a4a", "Package updates blocked due to repeated failures or missing dependencies"),
+                (GitHubLabels.StatusPinned, "ffffff", "Exempt from automatic stale closure")
             }, ct);
         }
         catch (Exception ex)
@@ -109,10 +111,10 @@ public class PackageUpdateService : BackgroundService
 
         // 1. Quota & Rate Limit Gate
         var rateLimit = await _gitHubService.GetRateLimitSnapshotAsync(ct);
-        if (rateLimit.CoreRemaining < _options.MinRateLimitRemaining)
+        if (rateLimit.CoreRemaining == null || rateLimit.CoreRemaining < _options.MinRateLimitRemaining)
         {
-            _logger?.LogWarning("Rate limit remaining ({Remaining}) is below threshold ({Min}); deferring sweep",
-                rateLimit.CoreRemaining, _options.MinRateLimitRemaining);
+            _logger?.LogWarning("Rate limit remaining ({Remaining}) is unknown or below threshold ({Min}); deferring sweep",
+                rateLimit.CoreRemaining?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown", _options.MinRateLimitRemaining);
             return;
         }
 
@@ -195,6 +197,13 @@ public class PackageUpdateService : BackgroundService
                 continue;
             }
 
+            // Check SkipPackagesWithPatches option
+            if (_options.SkipPackagesWithPatches && Regex.IsMatch(specContent, @"^Patch\d*:", RegexOptions.Multiline | RegexOptions.IgnoreCase))
+            {
+                _logger?.LogInformation("Skipping {Package} because it contains downstream Patch directives and SkipPackagesWithPatches=true", candidate.PackageName);
+                continue;
+            }
+
             // D. Select compatible rewriter
             var specContext = new SpecContext(candidate.PackageName, candidate.PackageName, specContent);
             var rewriter = _specRewriters.FirstOrDefault(r => r.CanHandle(specContext));
@@ -235,9 +244,9 @@ public class PackageUpdateService : BackgroundService
         int activeCount = 0;
         try
         {
-            var botAuthor = string.IsNullOrWhiteSpace(_options.BotLogin) ? "aqua-rium" : _options.BotLogin;
+            // Search all open auto-update PRs by label instead of hardcoded author login to support GitHub App bots seamlessly
             var openPrs = await _gitHubService.SearchStaleCandidatesAsync(
-                owner, repo, DateTimeOffset.UtcNow, isPr: true, labelFilter: $"author:{botAuthor} is:open", ct: ct);
+                owner, repo, DateTimeOffset.UtcNow, isPr: true, labelFilter: "label:\"Auto-Update\" is:pr is:open", ct: ct);
 
             foreach (var pr in openPrs)
             {
@@ -358,13 +367,7 @@ public class PackageUpdateService : BackgroundService
                 diffArtifact.Name, diffArtifact.Id, prNumber);
 
             await using var stream = await _gitHubService.DownloadArtifactAsync(owner, repo, diffArtifact.Id, ct);
-            using var archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Read);
-            var diffEntry = archive.Entries.FirstOrDefault(e => e.Name.EndsWith(".diff", StringComparison.OrdinalIgnoreCase) || e.Name.EndsWith(".patch", StringComparison.OrdinalIgnoreCase));
-            if (diffEntry == null)
-                return;
-
-            using var reader = new StreamReader(diffEntry.Open());
-            var diffContent = await reader.ReadToEndAsync(ct);
+            var diffContent = await ArtifactDiffExtractor.ExtractDiffContentAsync(stream, ct);
             if (string.IsNullOrWhiteSpace(diffContent))
                 return;
 
@@ -409,8 +412,15 @@ public class PackageUpdateService : BackgroundService
 
     private async Task CheckAndRecordFailureAsync(string owner, string repo, string packageName, int prNumber, CancellationToken ct)
     {
+        // P1-2: De-duplicate failure events by PR Number: only count once per distinct failed PR
+        if (!_recordedFailedPrs.TryAdd(prNumber, true))
+            return;
+
+        if (IsInCooldown(packageName))
+            return;
+
         var count = _failureCounts.AddOrUpdate(packageName, 1, (_, current) => current + 1);
-        _logger?.LogWarning("Detected CI failure on PR #{Number} for package {Package} (Consecutive failures: {Count})", prNumber, packageName, count);
+        _logger?.LogWarning("Detected CI failure on distinct PR #{Number} for package {Package} (Consecutive failures: {Count})", prNumber, packageName, count);
 
         if (count >= _options.MaxConsecutiveFailures)
         {
@@ -419,21 +429,25 @@ public class PackageUpdateService : BackgroundService
             _logger?.LogWarning("Package {Package} reached {Max} consecutive CI failures; entering {Days}-day cooldown",
                 packageName, _options.MaxConsecutiveFailures, _options.GiveUpIssueCooldownDays);
 
-            if (!_options.DryRun)
+            if (!_options.DryRun && _options.IssueOnGivingUp)
             {
                 var issueTitle = $"[Auto-Update: Blocked] Repeated CI failures on package {packageName}";
                 var issueBody = $"""
                     ## Repeated CI Failures Alert
-                    Automated updates for package `{packageName}` have encountered repeated CI failures ({_options.MaxConsecutiveFailures} times).
+                    Automated updates for package `{packageName}` have encountered repeated CI failures ({_options.MaxConsecutiveFailures} distinct failed PRs).
 
-                    - **Related PR**: #{prNumber}
+                    - **Latest Failed PR**: #{prNumber}
                     - **Action Taken**: Entering {_options.GiveUpIssueCooldownDays}-day cooldown before further automated attempts.
                     - **Guidance**: Please inspect dependencies or build requirements manually.
                     """;
 
                 try
                 {
-                    await _gitHubService.CreateIssueAsync(owner, repo, issueTitle, issueBody, new[] { "Auto-Update: Blocked", GitHubLabels.StatusPinned }, ct);
+                    var issueLabel = !string.IsNullOrWhiteSpace(_options.GiveUpIssueLabel)
+                        ? _options.GiveUpIssueLabel
+                        : GitHubLabels.StatusPinned;
+
+                    await _gitHubService.CreateIssueAsync(owner, repo, issueTitle, issueBody, new[] { "Auto-Update: Blocked", issueLabel }, ct);
                 }
                 catch (Exception ex)
                 {
@@ -448,10 +462,11 @@ public class PackageUpdateService : BackgroundService
         var count = _failureCounts.AddOrUpdate(packageName, 1, (_, current) => current + 1);
         if (count >= _options.MaxConsecutiveFailures)
         {
-            _cooldowns[packageName] = DateTimeOffset.UtcNow.AddDays(_options.GiveUpIssueCooldownDays);
+            var cooldownHours = _options.CooldownHours > 0 ? _options.CooldownHours : _options.GiveUpIssueCooldownDays * 24;
+            _cooldowns[packageName] = DateTimeOffset.UtcNow.AddHours(cooldownHours);
             _failureCounts.TryRemove(packageName, out _);
-            _logger?.LogWarning("Package {Package} reached consecutive failure limit; entering {Days}-day cooldown",
-                packageName, _options.GiveUpIssueCooldownDays);
+            _logger?.LogWarning("Package {Package} reached consecutive failure limit; entering {Hours}-hour cooldown",
+                packageName, cooldownHours);
         }
     }
 }

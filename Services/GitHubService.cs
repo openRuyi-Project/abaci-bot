@@ -667,7 +667,9 @@ public class GitHubService : IGitHubService, IDisposable
         ct.ThrowIfCancellationRequested();
 
         var dateStr = updatedAfter.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture);
-        var query = $"repo:{owner}/{repo} is:pr is:merged author:{author} updated:>{dateStr}";
+        // Search merged auto-update PRs by label and optionally by author to support both GitHub App and PAT
+        var authorFilter = !string.IsNullOrWhiteSpace(author) ? $"author:{author} " : "";
+        var query = $"repo:{owner}/{repo} is:pr is:merged label:\"Auto-Update\" {authorFilter}updated:>{dateStr}";
 
         var searchResult = await _client.Search.SearchIssues(new SearchIssuesRequest(query)
         {
@@ -757,7 +759,7 @@ public class GitHubService : IGitHubService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to list artifacts for workflow run {RunId} in {Owner}/{Repo}", runId, owner, repo);
+            _logger?.LogWarning(ex, "Failed to list artifacts for workflow run {RunId} in {Owner}/{Repo}", runId, owner, repo);
             return Array.Empty<Artifact>();
         }
     }
@@ -777,7 +779,7 @@ public class GitHubService : IGitHubService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to query existing labels for {Owner}/{Repo}", owner, repo);
+            _logger?.LogWarning(ex, "Failed to query existing labels for {Owner}/{Repo}", owner, repo);
             return;
         }
 
@@ -795,12 +797,12 @@ public class GitHubService : IGitHubService, IDisposable
                     Description = description
                 };
                 await _client.Issue.Labels.Create(owner, repo, newLabel);
-                _logger.LogInformation("Successfully created missing label '{Label}' in {Owner}/{Repo}", name, owner, repo);
+                _logger?.LogInformation("Successfully created missing label '{Label}' in {Owner}/{Repo}", name, owner, repo);
                 existingSet.Add(name);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to create label '{Label}' in {Owner}/{Repo}", name, owner, repo);
+                _logger?.LogWarning(ex, "Failed to create label '{Label}' in {Owner}/{Repo}", name, owner, repo);
             }
         }
     }

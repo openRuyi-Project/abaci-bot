@@ -120,11 +120,8 @@ public class RustCrateVersionSource : IUpdateCandidateSource
             if (string.IsNullOrWhiteSpace(currentVersion))
                 continue;
 
-            // Deduce branch
-            var prefix = $"rust-{crateName}-";
-            var branch = spec.DirectoryName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-                ? spec.DirectoryName.Substring(prefix.Length)
-                : string.Empty;
+            // Deduce branch via unified UpdateAdmission helper
+            var branch = UpdateAdmission.DeduceBranch(spec.DirectoryName, crateName);
 
             var indexPath = GetSparseIndexPath(crateName);
             var url = $"{baseUrl}/{indexPath}";

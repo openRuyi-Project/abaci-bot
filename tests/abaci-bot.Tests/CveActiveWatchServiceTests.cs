@@ -22,7 +22,7 @@ public class CveActiveWatchServiceTests
         var finding = new PackageVulnerabilityFinding("python-jinja2", "2.4.1", new[] { "CVE-2020-28493" }, new[] { sampleReport });
 
         scannerMock.ScanPackagesAsync(Arg.Any<IEnumerable<(string, string)>>(), Arg.Any<CancellationToken>())
-            .Returns(new[] { finding });
+            .Returns(new PackageVulnerabilityScanResult(new[] { finding }, new HashSet<string> { "python-jinja2" }));
 
         var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
         {
@@ -64,9 +64,9 @@ public class CveActiveWatchServiceTests
             .Returns(new[] { existingIssue });
 
         var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
-        // Scan returns 0 findings now! (Vulnerability has been patched)
+        // Scan returns 0 findings now! (Vulnerability has been patched, but package was successfully scanned)
         scannerMock.ScanPackagesAsync(Arg.Any<IEnumerable<(string, string)>>(), Arg.Any<CancellationToken>())
-            .Returns(Array.Empty<PackageVulnerabilityFinding>());
+            .Returns(new PackageVulnerabilityScanResult(Array.Empty<PackageVulnerabilityFinding>(), new HashSet<string> { "python-jinja2" }));
 
         var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
         {

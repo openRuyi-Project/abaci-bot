@@ -51,7 +51,10 @@ public class StaleLifecycleOptions
         Services.GitHubLabels.StatusStaleExempt,
         Services.GitHubLabels.WorkflowBlocked,
         "Security",
-        "Epic"
+        "Epic",
+        "Auto-Update",
+        "Auto-Update: Rust",
+        "Auto-Update: Blocked"
     };
 
     public const string DefaultStaleCommentTemplate =

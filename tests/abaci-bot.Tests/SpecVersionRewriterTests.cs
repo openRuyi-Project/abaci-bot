@@ -138,6 +138,58 @@ public class SpecVersionRewriterTests
     }
 
     [Fact]
+    public void RustCrateSpecRewriter_HandlesCrateNamesWithUnderscores_AndDeducesBranch()
+    {
+        // Tests rand_core (with underscore in crate name) in directory rust-rand-core-0.10
+        var original = """
+            %global crate_name rand_core
+            %global full_version 0.10.0-rc.6
+
+            Name:           rust-rand-core-0.10
+            Version:        0.10.0
+            Release:        %autorelease
+            """;
+
+        var rewriter = new RustCrateSpecRewriter();
+        var context = new SpecContext("rust-rand-core-0.10", "rust-rand-core-0.10", original);
+
+        Assert.True(rewriter.CanHandle(context));
+
+        // Compatible within branch 0.10
+        var validResult = rewriter.Rewrite(context, "0.10.1");
+        Assert.True(validResult.Success);
+        Assert.Contains("0.10.1", validResult.UpdatedContent);
+
+        // Incompatible across major / minor branch (e.g. 0.11.0)
+        var invalidResult = rewriter.Rewrite(context, "0.11.0");
+        Assert.False(invalidResult.Success);
+        Assert.Contains("branch constraint", invalidResult.ErrorMessage);
+    }
+
+    [Fact]
+    public void RustCrateSpecRewriter_PreservesPlusSuffixInFullVersion()
+    {
+        var original = """
+            %global crate_name libloading
+            %global full_version 0.4.87+curl-8.19.0
+
+            Name:           rust-libloading
+            Version:        0.4.87
+            Release:        %autorelease
+            """;
+
+        var rewriter = new RustCrateSpecRewriter();
+        var context = new SpecContext("rust-libloading", "rust-libloading", original);
+
+        Assert.True(rewriter.CanHandle(context));
+
+        var result = rewriter.Rewrite(context, "0.4.88");
+        Assert.True(result.Success);
+        Assert.Contains("%global full_version 0.4.88+curl-8.19.0", result.UpdatedContent);
+        Assert.Contains("Version:        0.4.88", result.UpdatedContent);
+    }
+
+    [Fact]
     public void MutationGuard_WholeLineReplacement_ViolatesBytePreservationInvariant()
     {
         // Guard asserting why whole-line replacement is defective compared to pure token replacement

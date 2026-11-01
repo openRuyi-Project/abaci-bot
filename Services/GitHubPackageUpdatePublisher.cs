@@ -99,13 +99,11 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
                 return new PublishResult(true, true, $"Human commits by {latestCommit.Value.CommitterLogin} detected on branch");
             }
 
-            // 2. Branch SPEC version reading (strong idempotency: skip if already at target version)
+            // 2. Branch SPEC version reading (strong idempotency: skip if already at target version, ignoring +suffix)
             try
             {
                 var branchSpecContent = await _gitHubService.GetFileContentAsync(owner, repo, specPath, branchName, ct);
-                var branchVersion = ExtractVersionFromSpec(branchSpecContent);
-
-                if (string.Equals(branchVersion, candidate.TargetVersion, StringComparison.Ordinal))
+                if (UpdateAdmission.IsVersionAtTarget(branchSpecContent, candidate.TargetVersion))
                 {
                     _logger?.LogInformation("Branch {Branch} is already at target version {Version}; skipping push",
                         branchName, candidate.TargetVersion);
@@ -115,7 +113,8 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger?.LogDebug(ex, "Could not read existing SPEC from branch {Branch}; proceeding with write", branchName);
+                _logger?.LogWarning(ex, "Could not read existing SPEC from branch {Branch}; failing closed", branchName);
+                return new PublishResult(false, false, $"Failed to read spec on branch '{branchName}' (fail-closed)");
             }
         }
         else

@@ -48,15 +48,12 @@ public class RustCrateSpecRewriter : ISpecVersionRewriter
 
         var crateName = crateMatch.Groups["name"].Value.Trim();
 
-        // Deduce branch from directory name without guessing:
-        // DirectoryName = "rust-{crateName}-{branch}" or "rust-{crateName}"
+        // Deduce branch from directory name using unified UpdateAdmission helper
         var dirName = context.DirectoryName?.Trim() ?? string.Empty;
-        var prefix = $"rust-{crateName}-";
-
-        if (dirName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        var branch = UpdateAdmission.DeduceBranch(dirName, crateName);
+        if (!string.IsNullOrEmpty(branch))
         {
-            var branch = dirName.Substring(prefix.Length);
-            if (!IsVersionCompatibleWithBranch(targetVersion, branch))
+            if (!UpdateAdmission.IsVersionCompatibleWithBranch(targetVersion, branch))
             {
                 return new SpecRewriteResult(false, context.Content,
                     $"Target version '{targetVersion}' does not satisfy branch constraint '{branch}' declared in directory '{dirName}'");
@@ -117,20 +114,11 @@ public class RustCrateSpecRewriter : ISpecVersionRewriter
 
     /// <summary>
     /// Checks whether the target version is compatible with the branch name deduced from the directory.
-    /// E.g. branch "0.6" requires target "0.6.x"; branch "1" requires target "1.x".
+    /// Delegated to UpdateAdmission for centralized invariant maintenance.
     /// </summary>
     public static bool IsVersionCompatibleWithBranch(string targetVersion, string branch)
     {
-        if (string.IsNullOrWhiteSpace(branch))
-            return true;
-
-        if (string.Equals(targetVersion, branch, StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // If branch is "0.6", target must be "0.6.*"
-        // If branch is "1", target must be "1.*"
-        var branchPrefix = branch.EndsWith('.') ? branch : branch + ".";
-        return targetVersion.StartsWith(branchPrefix, StringComparison.Ordinal);
+        return UpdateAdmission.IsVersionCompatibleWithBranch(targetVersion, branch);
     }
 }
 

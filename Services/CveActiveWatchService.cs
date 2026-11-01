@@ -101,7 +101,8 @@ public class CveActiveWatchService : BackgroundService
 
         _logger?.LogInformation("Dispatching OSV scan for {Count} packages", packagesToScan.Count);
 
-        var findings = await _scanner.ScanPackagesAsync(packagesToScan, ct);
+        var scanResult = await _scanner.ScanPackagesAsync(packagesToScan, ct);
+        var findings = scanResult.Findings;
         var vulnerablePackages = findings.ToDictionary(f => f.PackageName, f => f, StringComparer.OrdinalIgnoreCase);
 
         _logger?.LogInformation("Vulnerability scan identified {Count} packages with outstanding CVEs", findings.Count);
@@ -115,9 +116,8 @@ public class CveActiveWatchService : BackgroundService
             await ProcessPackageFindingAsync(owner, repo, finding, ct);
         }
 
-        // 2. Pure scan-based auto-close: check existing open CVE issues whose package was scanned and now has 0 CVEs
-        var scannedSet = new HashSet<string>(packagesToScan.Select(p => p.PackageName), StringComparer.OrdinalIgnoreCase);
-        await CheckAndCloseResolvedIssuesAsync(owner, repo, scannedSet, vulnerablePackages, ct);
+        // 2. Pure scan-based auto-close: ONLY check existing open CVE issues whose package was successfully scanned in this sweep
+        await CheckAndCloseResolvedIssuesAsync(owner, repo, scanResult.SuccessfullyScannedPackages, vulnerablePackages, ct);
     }
 
     private async Task ProcessPackageFindingAsync(
@@ -127,9 +127,13 @@ public class CveActiveWatchService : BackgroundService
         var body = GenerateIssueBody(finding);
         var maxSeverity = CalculateMaxSeverity(finding.DetailedReports);
 
+        var issueLabel = !string.IsNullOrWhiteSpace(_options.IssueLabel)
+            ? _options.IssueLabel
+            : GitHubLabels.VulnerabilityDetected;
+
         var labels = new List<string>
         {
-            GitHubLabels.VulnerabilityDetected,
+            issueLabel,
             maxSeverity,
             GitHubLabels.StatusPinned
         };
@@ -168,7 +172,7 @@ public class CveActiveWatchService : BackgroundService
     }
 
     private async Task CheckAndCloseResolvedIssuesAsync(
-        string owner, string repo, HashSet<string> scannedPackages, Dictionary<string, PackageVulnerabilityFinding> currentVulnerabilities, CancellationToken ct)
+        string owner, string repo, IReadOnlySet<string> successfullyScannedPackages, Dictionary<string, PackageVulnerabilityFinding> currentVulnerabilities, CancellationToken ct)
     {
         try
         {
@@ -186,8 +190,8 @@ public class CveActiveWatchService : BackgroundService
 
                 var packageName = match.Groups["pkg"].Value.Trim();
 
-                // P1-9: ONLY auto-close if this package was actually included in the successful scan batch
-                if (!scannedPackages.Contains(packageName))
+                // P1-4: ONLY auto-close if this package was actually included in the successful scan batch
+                if (!successfullyScannedPackages.Contains(packageName))
                     continue;
 
                 if (!currentVulnerabilities.ContainsKey(packageName))
@@ -227,20 +231,39 @@ public class CveActiveWatchService : BackgroundService
 
     public static string GenerateIssueBody(PackageVulnerabilityFinding finding)
     {
-        var rows = string.Join("\n", finding.DetailedReports.Select(r =>
+        const int maxDisplayCount = 100;
+        var totalCount = finding.DetailedReports.Count;
+        var displayReports = finding.DetailedReports
+            .OrderByDescending(r => r.CvssScore ?? 0)
+            .Take(maxDisplayCount)
+            .ToList();
+
+        var rows = string.Join("\n", displayReports.Select(r =>
             $"| [{r.CveId}](https://nvd.nist.gov/vuln/detail/{r.CveId}) | `{r.SeverityLabel ?? "Unknown"}` | {r.CvssScore?.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) ?? "N/A"} | {EscapeMarkdown(r.Summary ?? "Vulnerability details unavailable")} |"));
 
-        return $"""
+        var truncationNotice = totalCount > maxDisplayCount
+            ? $"\n\n> ⚠️ **Notice**: Truncated. Displaying top {maxDisplayCount} highest severity CVEs out of {totalCount} total vulnerabilities."
+            : string.Empty;
+
+        var body = $"""
             ## Vulnerability Assessment for `{finding.PackageName}` ({finding.Version})
 
             The following unpatched CVE vulnerabilities were actively detected in `{finding.PackageName}`:
 
             | CVE ID | Severity | CVSS Score | Summary |
             |---|---|---|---|
-            {rows}
+            {rows}{truncationNotice}
 
             > Automatically tracked by abaci-bot. When this package is updated and CVEs are cleared, this issue will close automatically.
             """;
+
+        // Hard cap at 60,000 characters to prevent GitHub 422 limit (65536 max)
+        if (body.Length > 60000)
+        {
+            body = string.Concat(body.AsSpan(0, 59900), "\n\n> ⚠️ [Content truncated due to size limits]");
+        }
+
+        return body;
     }
 
     private static string EscapeMarkdown(string text)
