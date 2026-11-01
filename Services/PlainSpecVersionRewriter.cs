@@ -30,7 +30,7 @@ public class PlainSpecVersionRewriter : ISpecVersionRewriter
         if (!match.Success)
             return false;
 
-        // P1-4: Reject macro versions (e.g. Version: %{base_version})
+        // Reject macro versions (e.g. Version: %{base_version})
         var verToken = match.Groups["ver"].Value;
         if (verToken.Contains("%{"))
             return false;

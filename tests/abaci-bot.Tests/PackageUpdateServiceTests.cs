@@ -87,13 +87,18 @@ public class PackageUpdateServiceTests
             obsVerifier,
             options);
 
+        // Initial state: not in cooldown
+        Assert.False(service.IsInCooldown("failing-pkg"));
+
         // Record 1st and 2nd failure
         service.RecordFailure("failing-pkg");
-        service.RecordFailure("failing-pkg");
+        Assert.False(service.IsInCooldown("failing-pkg"));
 
-        // 3rd failure triggers cooldown
         service.RecordFailure("failing-pkg");
+        Assert.False(service.IsInCooldown("failing-pkg"));
 
-        Assert.NotNull(service);
+        // 3rd failure reaches MaxConsecutiveFailures (3) and triggers cooldown
+        service.RecordFailure("failing-pkg");
+        Assert.True(service.IsInCooldown("failing-pkg"));
     }
 }

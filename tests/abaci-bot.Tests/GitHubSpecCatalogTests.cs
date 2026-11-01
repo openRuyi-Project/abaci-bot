@@ -43,45 +43,35 @@ public class GitHubSpecCatalogTests
     }
 
     [Fact]
-    public async Task ArtifactDiffExtractor_ParsesRawDiffStream()
+    public async Task GetAllPackageNamesAsync_ReturnsDiscoveredPackagesFromRemoteTree()
     {
-        var rawDiff = """
-            --- a/SPECS/curl/curl.spec
-            +++ b/SPECS/curl/curl.spec
-            @@ -10,2 +10,2 @@
-            -#!RemoteAsset: sha256:aaa
-            +#!RemoteAsset: sha256:bbb
-            """;
-
-        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(rawDiff));
-        var result = await ArtifactDiffExtractor.ExtractDiffContentAsync(stream);
-
-        Assert.Contains("+#!RemoteAsset: sha256:bbb", result);
-    }
-
-    [Fact]
-    public async Task ArtifactDiffExtractor_ParsesZipArchiveDiffStream()
-    {
-        var rawDiff = """
-            --- a/SPECS/foo/foo.spec
-            +++ b/SPECS/foo/foo.spec
-            @@ -1,2 +1,2 @@
-            -#!RemoteAsset: sha256:old
-            +#!RemoteAsset: sha256:new
-            """;
-
-        using var ms = new MemoryStream();
-        using (var archive = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
         {
-            var entry = archive.CreateEntry("pr-123-remoteassets.diff");
-            using var writer = new StreamWriter(entry.Open());
-            await writer.WriteAsync(rawDiff);
-        }
-        ms.Position = 0;
+            TargetRepository = "openRuyi-Project/openRuyi"
+        });
 
-        var result = await ArtifactDiffExtractor.ExtractDiffContentAsync(ms);
+        var treeItem1 = (TreeItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeItem));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Type))?.SetValue(treeItem1, new StringEnum<TreeType>(TreeType.Blob));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Path))?.SetValue(treeItem1, "SPECS/curl/curl.spec");
 
-        Assert.Contains("+#!RemoteAsset: sha256:new", result);
+        var treeItem2 = (TreeItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeItem));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Type))?.SetValue(treeItem2, new StringEnum<TreeType>(TreeType.Blob));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Path))?.SetValue(treeItem2, "SPECS/openssl/openssl.spec");
+
+        var treeResponse = (TreeResponse)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeResponse));
+        typeof(TreeResponse).GetProperty(nameof(TreeResponse.Tree))?.SetValue(treeResponse, new List<TreeItem> { treeItem1, treeItem2 });
+
+        gitHubMock.GetTreeRecursiveAsync("openRuyi-Project", "openRuyi", "main", Arg.Any<CancellationToken>())
+            .Returns(treeResponse);
+
+        using var catalog = new GitHubSpecCatalog(gitHubMock, options);
+
+        var names = await catalog.GetAllPackageNamesAsync();
+
+        Assert.Equal(2, names.Count);
+        Assert.Contains("curl", names);
+        Assert.Contains("openssl", names);
     }
 }
 

@@ -114,7 +114,7 @@ public class ObsPostMergeVerifier
                 }
             }
 
-            // P2-8: Deduplicate comments - skip if already posted
+            // Deduplicate comments - skip if verification comment already posted
             try
             {
                 var existingComments = await _gitHubService.GetIssueCommentsAsync(owner, repo, pr.Number, ct);

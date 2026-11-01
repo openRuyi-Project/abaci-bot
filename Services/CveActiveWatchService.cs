@@ -199,7 +199,7 @@ public class CveActiveWatchService : BackgroundService
 
                 var packageName = match.Groups["pkg"].Value.Trim();
 
-                // P1-4: ONLY auto-close if this package was actually included in the successful scan batch
+                // Only auto-close if this package was verified in a successful scan batch without outstanding CVEs
                 if (!successfullyScannedPackages.Contains(packageName))
                     continue;
 

@@ -86,7 +86,7 @@ public class RustCrateVersionSource : IUpdateCandidateSource
             return Array.Empty<UpdateCandidate>();
         }
 
-        // P2-7: Apply rotating memory cursor across sweeps to cover all crates eventually
+        // Apply rotating memory cursor across sweeps to cover all crates eventually
         var totalSpecs = specs.Count;
         int startIndex = 0;
         if (totalSpecs > 0)

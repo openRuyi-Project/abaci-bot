@@ -131,7 +131,16 @@ public static class UpdateAdmission
         // Trim leading non-digits if any (e.g. v1.2.3 -> 1)
         var span = majorStr.AsSpan().TrimStart("vV");
         if (int.TryParse(span, out var major))
+        {
+            // CalVer support: if major is an 8-digit date (e.g. 20260526) or a 4-digit year (e.g. 2024),
+            // extract the 4-digit year so updates within the same year (20260526 -> 20260817) are not blocked as cross-major.
+            if (major >= 19900000 && major <= 21000000)
+            {
+                return major / 10000;
+            }
+
             return major;
+        }
 
         return null;
     }

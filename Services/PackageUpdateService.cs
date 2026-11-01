@@ -93,7 +93,7 @@ public class PackageUpdateService : BackgroundService
 
         _logger?.LogInformation("Starting PackageUpdateService sweep for {TargetRepo} (DryRun={DryRun})", targetRepo, _options.DryRun);
 
-        // P1-5 & P1-7: Ensure automation labels exist in target repository (Self-healing idempotency)
+        // Ensure required automation and status labels exist in target repository (self-healing idempotency)
         try
         {
             await _gitHubService.EnsureLabelsExistAsync(owner, repo, new[]
@@ -261,14 +261,6 @@ public class PackageUpdateService : BackgroundService
                 if (ct.IsCancellationRequested)
                     break;
 
-                // P1-1: Check if this is an auto-update PR (has Auto-Update or Auto-Update: Rust label)
-                var isAutoUpdatePr = pr.Labels.Any(l => l.Name.StartsWith("Auto-Update", StringComparison.OrdinalIgnoreCase));
-                if (!isAutoUpdatePr)
-                {
-                    activeCount++;
-                    continue;
-                }
-
                 // Check PR branch workflow runs
                 var fullPr = await _gitHubService.GetPullRequestAsync(owner, repo, pr.Number, ct);
                 var branchName = fullPr?.Head?.Ref;
@@ -285,13 +277,13 @@ public class PackageUpdateService : BackgroundService
                 var runsOnHead = runs.Where(r => headSha == null || string.Equals(r.HeadSha, headSha, StringComparison.OrdinalIgnoreCase)).ToList();
                 bool isFailed = runsOnHead.Any(r => r.Conclusion == Octokit.WorkflowRunConclusion.Failure);
 
-                // P0-2: sha256 RemoteAsset backfill targeted at the remoteasset run
+                // Backfill updated #!RemoteAsset checksums when remoteasset workflow fails
                 if (isRemoteAssetFailed && !string.IsNullOrWhiteSpace(branchName) && remoteAssetRun != null && !_options.DryRun)
                 {
                     await TryBackfillRemoteAssetDiffAsync(owner, repo, branchName, pr.Number, remoteAssetRun.Id, ct);
                 }
 
-                // P1-2: Wire failure detection into RecordFailure & 30-day cooldown
+                // Wire failure detection into cooldown tracking
                 var branchPackageName = branchName != null && branchName.StartsWith(_options.BranchPrefix ?? "autoupdate/", StringComparison.OrdinalIgnoreCase)
                     ? branchName.Substring((_options.BranchPrefix ?? "autoupdate/").Length)
                     : null;
@@ -353,8 +345,11 @@ public class PackageUpdateService : BackgroundService
         }
     }
 
-    private bool IsInCooldown(string packageName)
+    public bool IsInCooldown(string packageName)
     {
+        if (string.IsNullOrWhiteSpace(packageName))
+            return false;
+
         if (_cooldowns.TryGetValue(packageName, out var cooldownUntil))
         {
             if (DateTimeOffset.UtcNow < cooldownUntil)
@@ -364,6 +359,20 @@ public class PackageUpdateService : BackgroundService
         }
 
         return false;
+    }
+
+    public void RecordFailure(string packageName)
+    {
+        if (string.IsNullOrWhiteSpace(packageName) || IsInCooldown(packageName))
+            return;
+
+        var count = _failureCounts.AddOrUpdate(packageName, 1, (_, current) => current + 1);
+        if (count >= _options.MaxConsecutiveFailures)
+        {
+            var cooldownHours = _options.CooldownHours > 0 ? _options.CooldownHours : _options.GiveUpIssueCooldownDays * 24;
+            _cooldowns[packageName] = DateTimeOffset.UtcNow.AddHours(cooldownHours);
+            _failureCounts.TryRemove(packageName, out _);
+        }
     }
 
     private async Task TryBackfillRemoteAssetDiffAsync(
@@ -425,7 +434,7 @@ public class PackageUpdateService : BackgroundService
 
     private async Task CheckAndRecordFailureAsync(string owner, string repo, string packageName, int prNumber, CancellationToken ct)
     {
-        // P1-2: De-duplicate failure events by PR Number: only count once per distinct failed PR
+        // De-duplicate failure events by PR Number: only count once per distinct failed PR
         if (!_recordedFailedPrs.TryAdd(prNumber, true))
             return;
 
@@ -437,10 +446,11 @@ public class PackageUpdateService : BackgroundService
 
         if (count >= _options.MaxConsecutiveFailures)
         {
-            _cooldowns[packageName] = DateTimeOffset.UtcNow.AddDays(_options.GiveUpIssueCooldownDays);
+            var cooldownHours = _options.CooldownHours > 0 ? _options.CooldownHours : _options.GiveUpIssueCooldownDays * 24;
+            _cooldowns[packageName] = DateTimeOffset.UtcNow.AddHours(cooldownHours);
             _failureCounts.TryRemove(packageName, out _);
-            _logger?.LogWarning("Package {Package} reached {Max} consecutive CI failures; entering {Days}-day cooldown",
-                packageName, _options.MaxConsecutiveFailures, _options.GiveUpIssueCooldownDays);
+            _logger?.LogWarning("Package {Package} reached {Max} consecutive CI failures; entering {Hours}-hour cooldown",
+                packageName, _options.MaxConsecutiveFailures, cooldownHours);
 
             if (!_options.DryRun && _options.IssueOnGivingUp)
             {
@@ -450,7 +460,7 @@ public class PackageUpdateService : BackgroundService
                     Automated updates for package `{packageName}` have encountered repeated CI failures ({_options.MaxConsecutiveFailures} distinct failed PRs).
 
                     - **Latest Failed PR**: #{prNumber}
-                    - **Action Taken**: Entering {_options.GiveUpIssueCooldownDays}-day cooldown before further automated attempts.
+                    - **Action Taken**: Entering {cooldownHours / 24}-day cooldown before further automated attempts.
                     - **Guidance**: Please inspect dependencies or build requirements manually.
                     """;
 
@@ -467,19 +477,6 @@ public class PackageUpdateService : BackgroundService
                     _logger?.LogWarning(ex, "Failed to create blocked issue for {Package}", packageName);
                 }
             }
-        }
-    }
-
-    public void RecordFailure(string packageName)
-    {
-        var count = _failureCounts.AddOrUpdate(packageName, 1, (_, current) => current + 1);
-        if (count >= _options.MaxConsecutiveFailures)
-        {
-            var cooldownHours = _options.CooldownHours > 0 ? _options.CooldownHours : _options.GiveUpIssueCooldownDays * 24;
-            _cooldowns[packageName] = DateTimeOffset.UtcNow.AddHours(cooldownHours);
-            _failureCounts.TryRemove(packageName, out _);
-            _logger?.LogWarning("Package {Package} reached consecutive failure limit; entering {Hours}-hour cooldown",
-                packageName, cooldownHours);
         }
     }
 }
