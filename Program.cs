@@ -61,6 +61,7 @@ builder.Services.AddSingleton<IGitHubService>(sp => new GitHubService(
     builder.Configuration.GetValue<int>("GitHubApp:AppId"),
     builder.Configuration["GitHubApp:PrivateKey"]!,
     builder.Configuration.GetValue<long>("GitHubApp:InstallationId"),
+    builder.Configuration["PackageUpdate:BotPat"],
     sp.GetService<ILogger<GitHubService>>()
 ));
 
@@ -79,6 +80,8 @@ builder.Services.Configure<RebuildImpactOptions>(config.GetSection("RebuildImpac
 builder.Services.Configure<AbiComplianceOptions>(config.GetSection("AbiCompliance"));
 builder.Services.Configure<FileCacheOptions>(config.GetSection("FileCache"));
 builder.Services.AddSingleton<IFileContentCache, FileContentCache>();
+builder.Services.Configure<PackageUpdateOptions>(config.GetSection("PackageUpdate"));
+builder.Services.Configure<CveActiveWatchOptions>(config.GetSection("CveActiveWatch"));
 
 // Register pipeline infrastructure and mutual-exclusion engine
 builder.Services.AddSingleton<PullRequestLockManager>();
@@ -105,6 +108,17 @@ builder.Services.AddSingleton<IAbiDiffService>(sp =>
 builder.Services.AddSingleton<IArtifactService, ArtifactService>();
 builder.Services.AddSingleton<IGovernanceCommentFormatter, GovernanceCommentFormatter>();
 
+// Register Part 3 domain services, rewriters, candidate sources and publishers
+builder.Services.AddSingleton<ISpecCatalog, GitHubSpecCatalog>();
+builder.Services.AddSingleton<ISpecVersionRewriter, PlainSpecVersionRewriter>();
+builder.Services.AddSingleton<ISpecVersionRewriter, RustCrateSpecRewriter>();
+builder.Services.AddSingleton<IUpdateCandidateSource, LookoutVersionSource>();
+builder.Services.AddSingleton<IUpdateCandidateSource, RustCrateVersionSource>();
+builder.Services.AddSingleton<IObsBuildService, ObsBuildService>();
+builder.Services.AddSingleton<IPackageUpdatePublisher, GitHubPackageUpdatePublisher>();
+builder.Services.AddSingleton<ObsPostMergeVerifier>();
+builder.Services.AddSingleton<IPackageVulnerabilityScanner, PackageVulnerabilityScanner>();
+
 // Register pluggable pull request governance modules (executed in priority order)
 builder.Services.AddSingleton<IPullRequestModule, WorkflowStateModule>();
 builder.Services.AddSingleton<IPullRequestModule, StaleUnstaleModule>();
@@ -124,6 +138,8 @@ builder.Services.AddHostedService<AbiEngineProbe>();
 builder.Services.AddHostedService<StaleLifecycleService>();
 builder.Services.AddHostedService<RebuildMetadataRefreshService>();
 builder.Services.AddHostedService<SpdxMetadataRefreshService>();
+builder.Services.AddHostedService<PackageUpdateService>();
+builder.Services.AddHostedService<CveActiveWatchService>();
 
 // Register the pipeline orchestrator
 builder.Services.AddSingleton<PullRequestPipeline>();

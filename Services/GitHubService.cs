@@ -14,26 +14,38 @@ public class GitHubService : IGitHubService, IDisposable
     private readonly int _appId;
     private readonly string _privateKey;
     private readonly long _installationId;
+    private readonly string? _botPat;
     private IGitHubClient _client;
     private DateTimeOffset _tokenExpiry;
     private readonly SemaphoreSlim _authLock = new(1, 1);
     private readonly ILogger<GitHubService>? _logger;
 
     public GitHubService(int appId, string privateKey, long installationId, ILogger<GitHubService>? logger = null)
-        : this(appId, privateKey, installationId, CreateDefaultClient(), logger)
+        : this(appId, privateKey, installationId, (string?)null, CreateDefaultClient(), logger)
+    {
+    }
+
+    public GitHubService(int appId, string privateKey, long installationId, string? botPat, ILogger<GitHubService>? logger = null)
+        : this(appId, privateKey, installationId, botPat, CreateDefaultClient(), logger)
     {
     }
 
     internal GitHubService(int appId, string privateKey, long installationId, HttpMessageHandler httpMessageHandler, ILogger<GitHubService>? logger = null)
-        : this(appId, privateKey, installationId, CreateClientWithTransport(new HttpClientAdapter(() => httpMessageHandler)), logger)
+        : this(appId, privateKey, installationId, null, CreateClientWithTransport(new HttpClientAdapter(() => httpMessageHandler)), logger)
     {
     }
 
     internal GitHubService(int appId, string privateKey, long installationId, IGitHubClient client, ILogger<GitHubService>? logger = null)
+        : this(appId, privateKey, installationId, null, client, logger)
+    {
+    }
+
+    internal GitHubService(int appId, string privateKey, long installationId, string? botPat, IGitHubClient client, ILogger<GitHubService>? logger = null)
     {
         _appId = appId;
         _privateKey = privateKey;
         _installationId = installationId;
+        _botPat = botPat;
         _client = client;
         _logger = logger;
     }
@@ -70,6 +82,14 @@ public class GitHubService : IGitHubService, IDisposable
     private async Task EnsureAuthenticatedAsync(CancellationToken cancellationToken = default)
     {
         using var _ = SetAmbientToken(cancellationToken);
+
+        // If a dedicated Bot PAT is configured, prioritize it
+        if (!string.IsNullOrWhiteSpace(_botPat))
+        {
+            _client.Connection.Credentials = new Credentials(_botPat);
+            return;
+        }
+
         if (_tokenExpiry > DateTimeOffset.UtcNow.AddMinutes(5))
             return;
 
@@ -308,11 +328,59 @@ public class GitHubService : IGitHubService, IDisposable
         await _client.Issue.Update(owner, repo, number, update);
     }
 
+    public async Task<Issue> CreateIssueAsync(
+        string owner, string repo, string title, string body, string[]? labels = null, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var newIssue = new NewIssue(title)
+        {
+            Body = body
+        };
+
+        if (labels != null && labels.Length > 0)
+        {
+            foreach (var label in labels)
+            {
+                newIssue.Labels.Add(label);
+            }
+        }
+
+        return await _client.Issue.Create(owner, repo, newIssue);
+    }
+
+    public async Task<Issue> UpdateIssueAsync(
+        string owner, string repo, int number, string title, string body, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var update = new IssueUpdate
+        {
+            Title = title,
+            Body = body
+        };
+
+        return await _client.Issue.Update(owner, repo, number, update);
+    }
+
     public async Task CreateCommentAsync(string owner, string repo, int number, string comment, CancellationToken ct = default)
     {
         using var _ = SetAmbientToken(ct);
         await EnsureAuthenticatedAsync(ct);
         await _client.Issue.Comment.Create(owner, repo, number, comment);
+    }
+
+    public async Task<IReadOnlyList<IssueComment>> GetIssueCommentsAsync(string owner, string repo, int number, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        await EnsureAuthenticatedAsync(ct);
+        return await _client.Issue.Comment.GetAllForIssue(owner, repo, number);
     }
 
     public async Task<GitHubRateLimitSnapshot> GetRateLimitSnapshotAsync(CancellationToken ct = default)
@@ -395,6 +463,345 @@ public class GitHubService : IGitHubService, IDisposable
         {
             _logger?.LogWarning(ex, "Failed to download artifact {ArtifactId} for {Owner}/{Repo}", artifactId, owner, repo);
             throw;
+        }
+    }
+
+    public async Task<string?> GetRefShaAsync(
+        string owner, string repo, string branchName, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var refPath = branchName.StartsWith("heads/", StringComparison.OrdinalIgnoreCase)
+            ? branchName
+            : $"heads/{branchName.TrimStart('/')}";
+
+        try
+        {
+            var reference = await _client.Git.Reference.Get(owner, repo, refPath);
+            return reference?.Object?.Sha;
+        }
+        catch (NotFoundException)
+        {
+            return null;
+        }
+    }
+
+    public async Task CreateOrUpdateRefAsync(
+        string owner, string repo, string branchName, string commitSha, bool force = true, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var cleanBranch = branchName.TrimStart('/');
+        if (cleanBranch.StartsWith("refs/heads/", StringComparison.OrdinalIgnoreCase))
+            cleanBranch = cleanBranch.Substring("refs/heads/".Length);
+        else if (cleanBranch.StartsWith("heads/", StringComparison.OrdinalIgnoreCase))
+            cleanBranch = cleanBranch.Substring("heads/".Length);
+
+        var fullRefName = $"refs/heads/{cleanBranch}";
+        var subRef = $"heads/{cleanBranch}";
+
+        try
+        {
+            var existing = await _client.Git.Reference.Get(owner, repo, subRef);
+            if (existing != null)
+            {
+                await _client.Git.Reference.Update(owner, repo, subRef, new ReferenceUpdate(commitSha, force));
+                return;
+            }
+        }
+        catch (NotFoundException)
+        {
+            // Fall through to create
+        }
+
+        await _client.Git.Reference.Create(owner, repo, new NewReference(fullRefName, commitSha));
+    }
+
+    public async Task DeleteRefAsync(
+        string owner, string repo, string branchName, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var cleanBranch = branchName.TrimStart('/');
+        if (cleanBranch.StartsWith("refs/heads/", StringComparison.OrdinalIgnoreCase))
+            cleanBranch = cleanBranch.Substring("refs/heads/".Length);
+        else if (cleanBranch.StartsWith("heads/", StringComparison.OrdinalIgnoreCase))
+            cleanBranch = cleanBranch.Substring("heads/".Length);
+
+        try
+        {
+            await _client.Git.Reference.Delete(owner, repo, $"heads/{cleanBranch}");
+        }
+        catch (NotFoundException)
+        {
+            // Idempotent delete
+        }
+    }
+
+    public async Task<string> UpdateFileContentAsync(
+        string owner, string repo, string path, string message, string content, string branch, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        try
+        {
+            var existing = await _client.Repository.Content.GetAllContentsByRef(owner, repo, path, branch);
+            var existingSha = existing != null && existing.Count > 0 ? existing[0].Sha : null;
+
+            if (!string.IsNullOrEmpty(existingSha))
+            {
+                var updateResult = await _client.Repository.Content.UpdateFile(
+                    owner, repo, path, new UpdateFileRequest(message, content, existingSha, branch));
+                return updateResult.Commit.Sha;
+            }
+        }
+        catch (NotFoundException)
+        {
+            // File does not exist yet on branch, create it
+        }
+
+        var createResult = await _client.Repository.Content.CreateFile(
+            owner, repo, path, new CreateFileRequest(message, content, branch));
+        return createResult.Commit.Sha;
+    }
+
+    public async Task<PullRequest?> FindOpenPullRequestByHeadAsync(
+        string owner, string repo, string headBranch, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var cleanHead = headBranch.TrimStart('/');
+        if (cleanHead.StartsWith("refs/heads/", StringComparison.OrdinalIgnoreCase))
+            cleanHead = cleanHead.Substring("refs/heads/".Length);
+        else if (cleanHead.StartsWith("heads/", StringComparison.OrdinalIgnoreCase))
+            cleanHead = cleanHead.Substring("heads/".Length);
+
+        var request = new PullRequestRequest
+        {
+            State = ItemStateFilter.Open,
+            Head = $"{owner}:{cleanHead}"
+        };
+
+        var prs = await _client.PullRequest.GetAllForRepository(owner, repo, request);
+        return prs != null && prs.Count > 0 ? prs[0] : null;
+    }
+
+    public async Task<PullRequest> CreatePullRequestAsync(
+        string owner, string repo, string title, string head, string baseBranch, string body, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var newPr = new NewPullRequest(title, head, baseBranch)
+        {
+            Body = body
+        };
+
+        return await _client.PullRequest.Create(owner, repo, newPr);
+    }
+
+    public async Task<PullRequest> UpdatePullRequestAsync(
+        string owner, string repo, int prNumber, string title, string body, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var update = new PullRequestUpdate
+        {
+            Title = title,
+            Body = body
+        };
+
+        return await _client.PullRequest.Update(owner, repo, prNumber, update);
+    }
+
+    public async Task<Stream> DownloadArtifactAsync(
+        string owner, string repo, long artifactId, CancellationToken ct = default)
+    {
+        return await DownloadArtifactZipStreamAsync(owner, repo, artifactId, ct);
+    }
+
+    public async Task<IReadOnlyList<WorkflowRun>> ListWorkflowRunsAsync(
+        string owner, string repo, string? branch = null, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var request = new WorkflowRunsRequest();
+        if (!string.IsNullOrWhiteSpace(branch))
+        {
+            request.Branch = branch;
+        }
+
+        var response = await _client.Actions.Workflows.Runs.List(owner, repo, request);
+        return response?.WorkflowRuns ?? (IReadOnlyList<WorkflowRun>)Array.Empty<WorkflowRun>();
+    }
+
+    public async Task<IReadOnlyList<PullRequest>> SearchMergedPullRequestsAsync(
+        string owner, string repo, string author, DateTimeOffset updatedAfter, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var dateStr = updatedAfter.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture);
+        var query = $"repo:{owner}/{repo} is:pr is:merged author:{author} updated:>{dateStr}";
+
+        var searchResult = await _client.Search.SearchIssues(new SearchIssuesRequest(query)
+        {
+            PerPage = 30
+        });
+
+        if (searchResult?.Items == null || searchResult.Items.Count == 0)
+            return Array.Empty<PullRequest>();
+
+        var prList = new List<PullRequest>();
+        foreach (var issue in searchResult.Items)
+        {
+            if (ct.IsCancellationRequested)
+                break;
+
+            var pr = await GetPullRequestAsync(owner, repo, issue.Number, ct);
+            if (pr != null)
+            {
+                prList.Add(pr);
+            }
+        }
+
+        return prList;
+    }
+
+    public async Task<(string Sha, string Message, string CommitterLogin, string CommitterEmail)?> GetBranchLatestCommitAsync(
+        string owner, string repo, string branch, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        try
+        {
+            var branchModel = await _client.Repository.Branch.Get(owner, repo, branch);
+            if (branchModel?.Commit?.Sha == null)
+                return null;
+
+            var commit = await _client.Repository.Commit.Get(owner, repo, branchModel.Commit.Sha);
+            if (commit == null)
+                return null;
+
+            var sha = commit.Sha;
+            var msg = commit.Commit?.Message ?? string.Empty;
+            var login = commit.Committer?.Login ?? commit.Author?.Login ?? string.Empty;
+            var email = commit.Commit?.Committer?.Email ?? commit.Commit?.Author?.Email ?? string.Empty;
+
+            return (sha, msg, login, email);
+        }
+        catch (NotFoundException)
+        {
+            return null;
+        }
+    }
+
+    public async Task<TreeResponse?> GetTreeRecursiveAsync(
+        string owner, string repo, string branchOrSha, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        try
+        {
+            return await _client.Git.Tree.GetRecursive(owner, repo, branchOrSha);
+        }
+        catch (NotFoundException)
+        {
+            return null;
+        }
+    }
+
+    public async Task<IReadOnlyList<Artifact>> ListWorkflowArtifactsAsync(
+        string owner, string repo, long runId, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        try
+        {
+            var response = await _client.Actions.Artifacts.ListWorkflowArtifacts(owner, repo, runId);
+            return response?.Artifacts ?? (IReadOnlyList<Artifact>)Array.Empty<Artifact>();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to list artifacts for workflow run {RunId} in {Owner}/{Repo}", runId, owner, repo);
+            return Array.Empty<Artifact>();
+        }
+    }
+
+    public async Task EnsureLabelsExistAsync(
+        string owner, string repo, IEnumerable<(string Name, string Color, string Description)> labels, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        IReadOnlyList<Label> existingLabels;
+        try
+        {
+            existingLabels = await _client.Issue.Labels.GetAllForRepository(owner, repo);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to query existing labels for {Owner}/{Repo}", owner, repo);
+            return;
+        }
+
+        var existingSet = new HashSet<string>(existingLabels.Select(l => l.Name), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (name, color, description) in labels)
+        {
+            if (existingSet.Contains(name))
+                continue;
+
+            try
+            {
+                var newLabel = new NewLabel(name, color.TrimStart('#'))
+                {
+                    Description = description
+                };
+                await _client.Issue.Labels.Create(owner, repo, newLabel);
+                _logger.LogInformation("Successfully created missing label '{Label}' in {Owner}/{Repo}", name, owner, repo);
+                existingSet.Add(name);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to create label '{Label}' in {Owner}/{Repo}", name, owner, repo);
+            }
         }
     }
 

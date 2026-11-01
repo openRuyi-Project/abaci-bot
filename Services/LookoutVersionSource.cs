@@ -1,0 +1,257 @@
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using abaci_bot.Options;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace abaci_bot.Services;
+
+/// <summary>
+/// Primary update candidate source consuming lookout.openruyi.cn fact read-model.
+/// Evaluates 'last_known_relation == outdated', skips yanked annotations, and filters stale records.
+/// </summary>
+public class LookoutVersionSource : IUpdateCandidateSource
+{
+    private readonly HttpClient _httpClient;
+    private readonly LookoutUpdateOptions _options;
+    private readonly ILogger<LookoutVersionSource>? _logger;
+
+    public string SourceName => "Lookout";
+
+    public LookoutVersionSource(
+        HttpClient httpClient,
+        IOptions<PackageUpdateOptions> options,
+        ILogger<LookoutVersionSource>? logger = null)
+    {
+        _httpClient = httpClient;
+        _options = options.Value.Lookout;
+        _logger = logger;
+    }
+
+    public async Task<IReadOnlyList<UpdateCandidate>> GetCandidatesAsync(CancellationToken ct = default)
+    {
+        if (!_options.Enabled || string.IsNullOrWhiteSpace(_options.BaseUrl))
+        {
+            _logger?.LogInformation("Lookout version source is disabled or BaseUrl is empty");
+            return Array.Empty<UpdateCandidate>();
+        }
+
+        var candidates = new List<UpdateCandidate>();
+        var baseUrl = _options.BaseUrl.TrimEnd('/');
+        int page = 1;
+        const int perPage = 200;
+
+        while (!ct.IsCancellationRequested)
+        {
+            var url = $"{baseUrl}/api/v2/packages?per_page={perPage}&page={page}";
+            HttpResponseMessage response;
+            try
+            {
+                response = await _httpClient.GetAsync(url, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogWarning(ex, "Failed to query Lookout packages page {Page} from {Url}", page, url);
+                break;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger?.LogWarning("Lookout API returned status code {StatusCode} on page {Page}", response.StatusCode, page);
+                break;
+            }
+
+            LookoutPackageResponse? pageResult;
+            try
+            {
+                pageResult = await response.Content.ReadFromJsonAsync<LookoutPackageResponse>(cancellationToken: ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogWarning(ex, "Failed to deserialize Lookout response on page {Page}", page);
+                break;
+            }
+
+            var items = pageResult?.Packages ?? pageResult?.Data ?? pageResult?.Items;
+            if (items == null || items.Count == 0)
+                break;
+
+            foreach (var pkg in items)
+            {
+                if (string.IsNullOrWhiteSpace(pkg.Name))
+                    continue;
+
+                // Support both nested structure (monitors.version.data) and legacy flat structure for maximum resilience
+                var versionData = pkg.Monitors?.Version?.Data;
+                var currentVer = versionData?.Current ?? pkg.CurrentVersion;
+                var latestVer = versionData?.Latest ?? pkg.LatestVersion;
+                var relation = versionData?.LastKnownRelation ?? versionData?.Relation ?? pkg.LastKnownRelation ?? pkg.Relation;
+                var isStale = versionData?.Stale ?? pkg.Stale;
+                var updatedAt = versionData?.UpdatedAt ?? pkg.UpdatedAt;
+                var annotations = versionData?.Annotations ?? pkg.Annotations;
+
+                // 1. Must be outdated
+                if (!string.Equals(relation, "outdated", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (string.IsNullOrWhiteSpace(currentVer) || string.IsNullOrWhiteSpace(latestVer))
+                    continue;
+
+                if (string.Equals(currentVer, latestVer, StringComparison.Ordinal))
+                    continue;
+
+                // 2. Yanked filter: skip if annotations declare monitor == "yanked"
+                if (annotations != null && annotations.Any(a => string.Equals(a.Monitor, "yanked", StringComparison.OrdinalIgnoreCase)))
+                {
+                    _logger?.LogDebug("Skipping {Package} because it is marked as yanked in Lookout", pkg.Name);
+                    continue;
+                }
+
+                // 3. Stale filter: if stale == true and older than threshold
+                if (isStale && updatedAt.HasValue)
+                {
+                    var age = DateTimeOffset.UtcNow - updatedAt.Value;
+                    if (age.TotalHours > _options.StaleThresholdHours)
+                    {
+                        _logger?.LogDebug("SKIP: lookout stale (last observed: {UpdatedAt}) for {Package}", updatedAt.Value, pkg.Name);
+                        continue;
+                    }
+                }
+
+                var evidenceUrl = !string.IsNullOrWhiteSpace(pkg.DetailUrl)
+                    ? pkg.DetailUrl
+                    : (!string.IsNullOrWhiteSpace(pkg.EvidenceUrl)
+                        ? pkg.EvidenceUrl
+                        : $"{baseUrl}/package/{pkg.Name}");
+
+                // 4. Security advisory: annotations have monitor == "security"
+                var hasSecurity = pkg.HasSecurityAdvisory || 
+                                  (annotations != null && annotations.Any(a => string.Equals(a.Monitor, "security", StringComparison.OrdinalIgnoreCase)));
+
+                candidates.Add(new UpdateCandidate(
+                    PackageName: pkg.Name,
+                    CurrentVersion: currentVer,
+                    TargetVersion: latestVer,
+                    Origin: CandidateOrigin.Lookout,
+                    EvidenceUrl: evidenceUrl,
+                    IsSecurityAdvisory: hasSecurity,
+                    PublishedAt: pkg.PublishedAt));
+            }
+
+            if (items.Count < perPage)
+                break;
+
+            page++;
+        }
+
+        _logger?.LogInformation("Lookout version source discovered {Count} outdated candidates", candidates.Count);
+        return candidates;
+    }
+
+    public class LookoutPackageResponse
+    {
+        [JsonPropertyName("packages")]
+        public List<LookoutPackageItem>? Packages { get; set; }
+
+        [JsonPropertyName("data")]
+        public List<LookoutPackageItem>? Data { get; set; }
+
+        [JsonPropertyName("items")]
+        public List<LookoutPackageItem>? Items { get; set; }
+    }
+
+    public class LookoutPackageItem
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("detail_url")]
+        public string? DetailUrl { get; set; }
+
+        [JsonPropertyName("monitors")]
+        public LookoutMonitors? Monitors { get; set; }
+
+        [JsonPropertyName("current_version")]
+        public string? CurrentVersion { get; set; }
+
+        [JsonPropertyName("latest_version")]
+        public string? LatestVersion { get; set; }
+
+        [JsonPropertyName("relation")]
+        public string? Relation { get; set; }
+
+        [JsonPropertyName("last_known_relation")]
+        public string? LastKnownRelation { get; set; }
+
+        [JsonPropertyName("stale")]
+        public bool Stale { get; set; }
+
+        [JsonPropertyName("updated_at")]
+        public DateTimeOffset? UpdatedAt { get; set; }
+
+        [JsonPropertyName("published_at")]
+        public DateTimeOffset? PublishedAt { get; set; }
+
+        [JsonPropertyName("has_security_advisory")]
+        public bool HasSecurityAdvisory { get; set; }
+
+        [JsonPropertyName("evidence_url")]
+        public string? EvidenceUrl { get; set; }
+
+        [JsonPropertyName("annotations")]
+        public List<LookoutAnnotation>? Annotations { get; set; }
+    }
+
+    public class LookoutMonitors
+    {
+        [JsonPropertyName("version")]
+        public LookoutMonitorVersion? Version { get; set; }
+    }
+
+    public class LookoutMonitorVersion
+    {
+        [JsonPropertyName("data")]
+        public LookoutMonitorVersionData? Data { get; set; }
+    }
+
+    public class LookoutMonitorVersionData
+    {
+        [JsonPropertyName("kind")]
+        public string? Kind { get; set; }
+
+        [JsonPropertyName("current")]
+        public string? Current { get; set; }
+
+        [JsonPropertyName("latest")]
+        public string? Latest { get; set; }
+
+        [JsonPropertyName("relation")]
+        public string? Relation { get; set; }
+
+        [JsonPropertyName("last_known_relation")]
+        public string? LastKnownRelation { get; set; }
+
+        [JsonPropertyName("stale")]
+        public bool Stale { get; set; }
+
+        [JsonPropertyName("updated_at")]
+        public DateTimeOffset? UpdatedAt { get; set; }
+
+        [JsonPropertyName("annotations")]
+        public List<LookoutAnnotation>? Annotations { get; set; }
+    }
+
+    public class LookoutAnnotation
+    {
+        [JsonPropertyName("monitor")]
+        public string? Monitor { get; set; }
+
+        [JsonPropertyName("label")]
+        public string? Label { get; set; }
+
+        [JsonPropertyName("scope")]
+        public string? Scope { get; set; }
+    }
+}
+

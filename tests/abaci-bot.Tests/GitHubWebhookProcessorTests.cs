@@ -2176,6 +2176,26 @@ public class GitHubWebhookProcessorTests
             return Task.CompletedTask;
         }
 
+        public Task<Octokit.Issue> CreateIssueAsync(
+            string owner, string repo, string title, string body, string[]? labels = null, CancellationToken ct = default)
+        {
+            var issue = (Octokit.Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Issue));
+            typeof(Octokit.Issue).GetProperty(nameof(Octokit.Issue.Number))?.SetValue(issue, 999);
+            typeof(Octokit.Issue).GetProperty(nameof(Octokit.Issue.Title))?.SetValue(issue, title);
+            typeof(Octokit.Issue).GetProperty(nameof(Octokit.Issue.Body))?.SetValue(issue, body);
+            return Task.FromResult(issue);
+        }
+
+        public Task<Octokit.Issue> UpdateIssueAsync(
+            string owner, string repo, int number, string title, string body, CancellationToken ct = default)
+        {
+            var issue = (Octokit.Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Issue));
+            typeof(Octokit.Issue).GetProperty(nameof(Octokit.Issue.Number))?.SetValue(issue, number);
+            typeof(Octokit.Issue).GetProperty(nameof(Octokit.Issue.Title))?.SetValue(issue, title);
+            typeof(Octokit.Issue).GetProperty(nameof(Octokit.Issue.Body))?.SetValue(issue, body);
+            return Task.FromResult(issue);
+        }
+
         public Task CreateCommentAsync(string owner, string repo, int number, string comment, CancellationToken ct = default)
         {
             CreatedComments.Add((number, comment));
@@ -2197,6 +2217,98 @@ public class GitHubWebhookProcessorTests
             string owner, string repo, long artifactId, CancellationToken ct = default)
         {
             return Task.FromResult<Stream>(new MemoryStream());
+        }
+
+        public Task<string?> GetRefShaAsync(
+            string owner, string repo, string branchName, CancellationToken ct = default)
+        {
+            return Task.FromResult<string?>("dummy_ref_sha");
+        }
+
+        public Task CreateOrUpdateRefAsync(
+            string owner, string repo, string branchName, string commitSha, bool force = true, CancellationToken ct = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteRefAsync(
+            string owner, string repo, string branchName, CancellationToken ct = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<string> UpdateFileContentAsync(
+            string owner, string repo, string path, string message, string content, string branch, CancellationToken ct = default)
+        {
+            FileContents[path] = content;
+            return Task.FromResult("dummy_commit_sha");
+        }
+
+        public Task<Octokit.PullRequest?> FindOpenPullRequestByHeadAsync(
+            string owner, string repo, string headBranch, CancellationToken ct = default)
+        {
+            return Task.FromResult<Octokit.PullRequest?>(null);
+        }
+
+        public Task<Octokit.PullRequest> CreatePullRequestAsync(
+            string owner, string repo, string title, string head, string baseBranch, string body, CancellationToken ct = default)
+        {
+            return Task.FromResult(PullRequest);
+        }
+
+        public Task<Octokit.PullRequest> UpdatePullRequestAsync(
+            string owner, string repo, int prNumber, string title, string body, CancellationToken ct = default)
+        {
+            return Task.FromResult(PullRequest);
+        }
+
+        public Task<Stream> DownloadArtifactAsync(
+            string owner, string repo, long artifactId, CancellationToken ct = default)
+        {
+            return Task.FromResult<Stream>(new MemoryStream());
+        }
+
+        public Task<IReadOnlyList<Octokit.WorkflowRun>> ListWorkflowRunsAsync(
+            string owner, string repo, string? branch = null, CancellationToken ct = default)
+        {
+            return Task.FromResult<IReadOnlyList<Octokit.WorkflowRun>>(Array.Empty<Octokit.WorkflowRun>());
+        }
+
+        public Task<IReadOnlyList<Octokit.PullRequest>> SearchMergedPullRequestsAsync(
+            string owner, string repo, string author, DateTimeOffset updatedAfter, CancellationToken ct = default)
+        {
+            return Task.FromResult<IReadOnlyList<Octokit.PullRequest>>(Array.Empty<Octokit.PullRequest>());
+        }
+
+        public Task<(string Sha, string Message, string CommitterLogin, string CommitterEmail)?> GetBranchLatestCommitAsync(
+            string owner, string repo, string branch, CancellationToken ct = default)
+        {
+            return Task.FromResult<(string Sha, string Message, string CommitterLogin, string CommitterEmail)?>((
+                "dummy_sha", "commit message", "aqua-rium", "bot@openruyi.org"));
+        }
+
+        public Task<IReadOnlyList<Octokit.IssueComment>> GetIssueCommentsAsync(
+            string owner, string repo, int number, CancellationToken ct = default)
+        {
+            return Task.FromResult<IReadOnlyList<Octokit.IssueComment>>(Array.Empty<Octokit.IssueComment>());
+        }
+
+        public Task<Octokit.TreeResponse?> GetTreeRecursiveAsync(
+            string owner, string repo, string branchOrSha, CancellationToken ct = default)
+        {
+            return Task.FromResult<Octokit.TreeResponse?>(null);
+        }
+
+        public Task<IReadOnlyList<Octokit.Artifact>> ListWorkflowArtifactsAsync(
+            string owner, string repo, long runId, CancellationToken ct = default)
+        {
+            return Task.FromResult<IReadOnlyList<Octokit.Artifact>>(Array.Empty<Octokit.Artifact>());
+        }
+
+        public Task EnsureLabelsExistAsync(
+            string owner, string repo, IEnumerable<(string Name, string Color, string Description)> labels, CancellationToken ct = default)
+        {
+            return Task.CompletedTask;
         }
     }
 
