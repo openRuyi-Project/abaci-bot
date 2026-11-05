@@ -2202,6 +2202,11 @@ public class GitHubWebhookProcessorTests
             return Task.CompletedTask;
         }
 
+        public Task UpdateCommentAsync(string owner, string repo, long commentId, string comment, CancellationToken ct = default)
+        {
+            return Task.CompletedTask;
+        }
+
         public Task<GitHubRateLimitSnapshot> GetRateLimitSnapshotAsync(CancellationToken ct = default)
         {
             return Task.FromResult(new GitHubRateLimitSnapshot(RemainingRateLimit, null, RemainingSearchRateLimit, null));

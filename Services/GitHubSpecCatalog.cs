@@ -17,7 +17,7 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
     private readonly IOptions<PackageUpdateOptions> _options;
     private readonly ILogger<GitHubSpecCatalog>? _logger;
 
-    private readonly ConcurrentDictionary<string, SpecContext> _specCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (SpecContext Context, DateTimeOffset Expiry)> _specCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _specPathMap = new(StringComparer.OrdinalIgnoreCase);
     private DateTimeOffset _lastCatalogRefresh = DateTimeOffset.MinValue;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
@@ -46,8 +46,8 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
 
         await EnsureCatalogLoadedAsync(ct);
 
-        if (_specCache.TryGetValue(packageName, out var cached))
-            return cached;
+        if (_specCache.TryGetValue(packageName, out var cached) && cached.Expiry > DateTimeOffset.UtcNow)
+            return cached.Context;
 
         // Check local disk fallback if present
         var localDir = Path.Combine("SPECS", packageName);
@@ -58,7 +58,7 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
             {
                 var content = await File.ReadAllTextAsync(specFiles[0], ct);
                 var ctx = new SpecContext(packageName, packageName, content);
-                _specCache[packageName] = ctx;
+                _specCache[packageName] = (ctx, DateTimeOffset.UtcNow.AddHours(6));
                 return ctx;
             }
         }
@@ -73,7 +73,7 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
             {
                 var content = await _gitHubService.GetFileContentAsync(owner, repo, remotePath, baseBranch, ct);
                 var ctx = new SpecContext(packageName, Path.GetFileName(Path.GetDirectoryName(remotePath)) ?? packageName, content);
-                _specCache[packageName] = ctx;
+                _specCache[packageName] = (ctx, DateTimeOffset.UtcNow.AddHours(6));
                 return ctx;
             }
             catch (Exception ex)
@@ -180,6 +180,12 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
             var tree = await _gitHubService.GetTreeRecursiveAsync(owner, repo, baseBranch, ct);
             if (tree?.Tree != null)
             {
+                if (tree.Truncated)
+                {
+                    _logger?.LogWarning("Remote spec tree from GitHub for {Owner}/{Repo} was truncated by GitHub API (>100k items)", owner, repo);
+                }
+
+                _specCache.Clear();
                 foreach (var item in tree.Tree)
                 {
                     if (item.Type == Octokit.TreeType.Blob && item.Path.StartsWith("SPECS/", StringComparison.OrdinalIgnoreCase) && item.Path.EndsWith(".spec", StringComparison.OrdinalIgnoreCase))

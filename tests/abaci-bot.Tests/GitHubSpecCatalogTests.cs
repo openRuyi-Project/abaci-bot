@@ -73,5 +73,71 @@ public class GitHubSpecCatalogTests
         Assert.Contains("curl", names);
         Assert.Contains("openssl", names);
     }
+
+    [Fact]
+    public async Task GetRustSpecsAsync_DiscoversRustPrefixSpecsFromRemoteCatalog()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            TargetRepository = "openRuyi-Project/openRuyi"
+        });
+
+        var treeItem1 = (TreeItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeItem));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Type))?.SetValue(treeItem1, new StringEnum<TreeType>(TreeType.Blob));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Path))?.SetValue(treeItem1, "SPECS/rust-ripgrep/rust-ripgrep.spec");
+
+        var treeItem2 = (TreeItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeItem));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Type))?.SetValue(treeItem2, new StringEnum<TreeType>(TreeType.Blob));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Path))?.SetValue(treeItem2, "SPECS/curl/curl.spec");
+
+        var treeResponse = (TreeResponse)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeResponse));
+        typeof(TreeResponse).GetProperty(nameof(TreeResponse.Tree))?.SetValue(treeResponse, new List<TreeItem> { treeItem1, treeItem2 });
+
+        gitHubMock.GetTreeRecursiveAsync("openRuyi-Project", "openRuyi", "main", Arg.Any<CancellationToken>())
+            .Returns(treeResponse);
+
+        gitHubMock.GetFileContentAsync("openRuyi-Project", "openRuyi", "SPECS/rust-ripgrep/rust-ripgrep.spec", "main", Arg.Any<CancellationToken>())
+            .Returns("Name: rust-ripgrep\nVersion: 14.1.0\n");
+
+        using var catalog = new GitHubSpecCatalog(gitHubMock, options);
+
+        var rustSpecs = await catalog.GetRustSpecsAsync();
+
+        Assert.Single(rustSpecs);
+        Assert.Equal("rust-ripgrep", rustSpecs[0].PackageName);
+        Assert.Contains("Version: 14.1.0", rustSpecs[0].Content);
+    }
+
+    [Fact]
+    public async Task EnsureCatalogLoadedAsync_HandlesTruncatedTreeResponseGracefully()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            TargetRepository = "openRuyi-Project/openRuyi"
+        });
+
+        var treeItem = (TreeItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeItem));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Type))?.SetValue(treeItem, new StringEnum<TreeType>(TreeType.Blob));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Path))?.SetValue(treeItem, "SPECS/curl/curl.spec");
+
+        var treeResponse = (TreeResponse)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeResponse));
+        typeof(TreeResponse).GetProperty(nameof(TreeResponse.Tree))?.SetValue(treeResponse, new List<TreeItem> { treeItem });
+        typeof(TreeResponse).GetProperty(nameof(TreeResponse.Truncated))?.SetValue(treeResponse, true);
+
+        gitHubMock.GetTreeRecursiveAsync("openRuyi-Project", "openRuyi", "main", Arg.Any<CancellationToken>())
+            .Returns(treeResponse);
+
+        gitHubMock.GetFileContentAsync("openRuyi-Project", "openRuyi", "SPECS/curl/curl.spec", "main", Arg.Any<CancellationToken>())
+            .Returns("Name: curl\nVersion: 8.21.0\n");
+
+        using var catalog = new GitHubSpecCatalog(gitHubMock, options);
+
+        var spec = await catalog.GetSpecAsync("curl");
+
+        Assert.NotNull(spec);
+        Assert.Equal("curl", spec.PackageName);
+    }
 }
 

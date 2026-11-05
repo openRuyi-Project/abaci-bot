@@ -91,14 +91,17 @@ public class PackageUpdateServiceTests
         Assert.False(service.IsInCooldown("failing-pkg"));
 
         // Record 1st and 2nd failure
-        service.RecordFailure("failing-pkg");
+        var entered1 = service.RecordFailure("failing-pkg");
+        Assert.False(entered1);
         Assert.False(service.IsInCooldown("failing-pkg"));
 
-        service.RecordFailure("failing-pkg");
+        var entered2 = service.RecordFailure("failing-pkg");
+        Assert.False(entered2);
         Assert.False(service.IsInCooldown("failing-pkg"));
 
         // 3rd failure reaches MaxConsecutiveFailures (3) and triggers cooldown
-        service.RecordFailure("failing-pkg");
+        var entered3 = service.RecordFailure("failing-pkg");
+        Assert.True(entered3);
         Assert.True(service.IsInCooldown("failing-pkg"));
     }
 }

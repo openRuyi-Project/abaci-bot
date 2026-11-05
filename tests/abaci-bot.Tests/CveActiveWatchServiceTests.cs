@@ -88,4 +88,28 @@ public class CveActiveWatchServiceTests
         await gitHubMock.Received(1).AddLabelsAsync("openRuyi-Project", "openRuyi", 101, Arg.Is<string[]>(l => l.Contains(GitHubLabels.VulnerabilityResolved)), Arg.Any<CancellationToken>());
         await gitHubMock.Received(1).CloseIssueAsync("openRuyi-Project", "openRuyi", 101, Arg.Any<CancellationToken>());
     }
+
+    [Theory]
+    [InlineData("CVE-2024-1234", "https://nvd.nist.gov/vuln/detail/CVE-2024-1234")]
+    [InlineData("GHSA-xxxx-yyyy-zzzz", "https://github.com/advisories/GHSA-xxxx-yyyy-zzzz")]
+    [InlineData("CGA-1234-5678", "https://osv.dev/vulnerability/CGA-1234-5678")]
+    public void FormatVulnerabilityUrl_RoutesCorrectly(string id, string expectedUrl)
+    {
+        var url = CveActiveWatchService.FormatVulnerabilityUrl(id);
+        Assert.Equal(expectedUrl, url);
+    }
+
+    [Fact]
+    public void GenerateIssueBody_FormatsAdvisoryLinksProperly()
+    {
+        var cveReport = new CveReport("CVE-2024-1234", 9.8, GitHubLabels.Severity1, "OSV", "RCE in curl");
+        var ghsaReport = new CveReport("GHSA-xxxx-yyyy-zzzz", 7.5, GitHubLabels.Severity2, "OSV", "Prototype pollution");
+        var finding = new PackageVulnerabilityFinding("curl", "8.2.1", new[] { "CVE-2024-1234", "GHSA-xxxx-yyyy-zzzz" }, new[] { cveReport, ghsaReport });
+
+        var body = CveActiveWatchService.GenerateIssueBody(finding);
+
+        Assert.Contains("[CVE-2024-1234](https://nvd.nist.gov/vuln/detail/CVE-2024-1234)", body);
+        Assert.Contains("[GHSA-xxxx-yyyy-zzzz](https://github.com/advisories/GHSA-xxxx-yyyy-zzzz)", body);
+        Assert.DoesNotContain("nvd.nist.gov/vuln/detail/GHSA", body);
+    }
 }

@@ -376,6 +376,13 @@ public class GitHubService : IGitHubService, IDisposable
         await _client.Issue.Comment.Create(owner, repo, number, comment);
     }
 
+    public async Task UpdateCommentAsync(string owner, string repo, long commentId, string comment, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        await EnsureAuthenticatedAsync(ct);
+        await _client.Issue.Comment.Update(owner, repo, commentId, comment);
+    }
+
     public async Task<IReadOnlyList<IssueComment>> GetIssueCommentsAsync(string owner, string repo, int number, CancellationToken ct = default)
     {
         using var _ = SetAmbientToken(ct);

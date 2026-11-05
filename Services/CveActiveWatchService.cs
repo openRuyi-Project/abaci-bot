@@ -238,6 +238,21 @@ public class CveActiveWatchService : BackgroundService
         return GitHubLabels.Severity4;
     }
 
+    public static string? FormatVulnerabilityUrl(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+            return null;
+
+        var trimmed = id.Trim();
+        if (trimmed.StartsWith("CVE-", StringComparison.OrdinalIgnoreCase))
+            return $"https://nvd.nist.gov/vuln/detail/{trimmed}";
+
+        if (trimmed.StartsWith("GHSA-", StringComparison.OrdinalIgnoreCase))
+            return $"https://github.com/advisories/{trimmed}";
+
+        return $"https://osv.dev/vulnerability/{Uri.EscapeDataString(trimmed)}";
+    }
+
     public static string GenerateIssueBody(PackageVulnerabilityFinding finding)
     {
         const int maxDisplayCount = 100;
@@ -248,7 +263,11 @@ public class CveActiveWatchService : BackgroundService
             .ToList();
 
         var rows = string.Join("\n", displayReports.Select(r =>
-            $"| [{r.CveId}](https://nvd.nist.gov/vuln/detail/{r.CveId}) | `{r.SeverityLabel ?? "Unknown"}` | {r.CvssScore?.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) ?? "N/A"} | {EscapeMarkdown(r.Summary ?? "Vulnerability details unavailable")} |"));
+        {
+            var linkUrl = FormatVulnerabilityUrl(r.CveId);
+            var idCell = linkUrl != null ? $"[{r.CveId}]({linkUrl})" : $"`{r.CveId}`";
+            return $"| {idCell} | `{r.SeverityLabel ?? "Unknown"}` | {r.CvssScore?.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) ?? "N/A"} | {EscapeMarkdown(r.Summary ?? "Vulnerability details unavailable")} |";
+        }));
 
         var truncationNotice = totalCount > maxDisplayCount
             ? $"\n\n> ⚠️ **Notice**: Truncated. Displaying top {maxDisplayCount} highest severity CVEs out of {totalCount} total vulnerabilities."

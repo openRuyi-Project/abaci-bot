@@ -33,6 +33,11 @@ public class CveActiveWatchOptions
     /// </summary>
     public int NvdRequestDelayMilliseconds { get; set; } = 6500;
 
+    /// <summary>
+    /// Maximum concurrent HTTP requests dispatched when resolving OSV vulnerability details.
+    /// </summary>
+    public int MaxConcurrentOsvRequests { get; set; } = 8;
+
     public string IssueLabel { get; set; } = "Vulnerability: Detected";
 
     public int CacheExpirationHours { get; set; } = 168; // 7 days

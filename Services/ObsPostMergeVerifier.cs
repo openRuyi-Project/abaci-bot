@@ -114,34 +114,56 @@ public class ObsPostMergeVerifier
                 }
             }
 
-            // Deduplicate comments - skip if verification comment already posted
+            var comment = $"""
+                ### OBS Build Verification
+                - **Project**: `{buildResult.Project}`
+                - **Package**: `{buildResult.Package}`
+                - **Repository / Arch**: `{buildResult.Repository}` / `{buildResult.Arch}`
+                - **Status**: `{buildResult.Code}` (`{buildResult.RawCode}`)
+                - **Synchronized Commit**: `{mergeSha}`
+
+                > Verified via `build.openruyi.cn/public` read-model.
+                """;
+
+            Octokit.IssueComment? existingComment = null;
             try
             {
                 var existingComments = await _gitHubService.GetIssueCommentsAsync(owner, repo, pr.Number, ct);
-                if (existingComments.Any(c => c.Body != null && c.Body.Contains("### OBS Build Verification")))
-                {
-                    _logger?.LogDebug("OBS build verification comment already exists on PR #{PrNumber}; skipping duplicate comment", pr.Number);
-                    continue;
-                }
+                existingComment = existingComments.FirstOrDefault(c => c.Body != null && c.Body.Contains("### OBS Build Verification"));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger?.LogDebug(ex, "Failed to check existing comments on PR #{PrNumber}", pr.Number);
             }
 
+            if (existingComment != null)
+            {
+                // If comment already reflects current status and commit, skip
+                if (existingComment.Body != null &&
+                    existingComment.Body.Contains($"- **Status**: `{buildResult.Code}`") &&
+                    existingComment.Body.Contains($"- **Synchronized Commit**: `{mergeSha}`"))
+                {
+                    _logger?.LogDebug("OBS build verification comment is already up-to-date on PR #{PrNumber}; skipping", pr.Number);
+                    continue;
+                }
+
+                if (!_options.DryRun)
+                {
+                    _logger?.LogInformation("Updating OBS build verification comment on PR #{PrNumber} to status {Status}", pr.Number, buildResult.Code);
+                    try
+                    {
+                        await _gitHubService.UpdateCommentAsync(owner, repo, existingComment.Id, comment, ct);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger?.LogDebug(ex, "Failed to update OBS build verification comment on PR #{PrNumber}", pr.Number);
+                    }
+                }
+                continue;
+            }
+
             if (!_options.DryRun)
             {
-                var comment = $"""
-                    ### OBS Build Verification
-                    - **Project**: `{buildResult.Project}`
-                    - **Package**: `{buildResult.Package}`
-                    - **Repository / Arch**: `{buildResult.Repository}` / `{buildResult.Arch}`
-                    - **Status**: `{buildResult.Code}` (`{buildResult.RawCode}`)
-                    - **Synchronized Commit**: `{mergeSha}`
-
-                    > Verified via `build.openruyi.cn/public` read-model.
-                    """;
-
                 try
                 {
                     await _gitHubService.CreateCommentAsync(owner, repo, pr.Number, comment, ct);

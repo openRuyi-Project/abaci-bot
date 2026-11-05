@@ -130,6 +130,17 @@ public interface IGitHubService
         string owner, string repo, int number, string comment, CancellationToken ct = default);
 
     /// <summary>
+    /// Updates the content of an existing issue or pull request comment.
+    /// </summary>
+    /// <param name="owner">Repository owner or organization name.</param>
+    /// <param name="repo">Repository name.</param>
+    /// <param name="commentId">The ID of the comment to update.</param>
+    /// <param name="comment">Updated markdown comment content.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task UpdateCommentAsync(
+        string owner, string repo, long commentId, string comment, CancellationToken ct = default);
+
+    /// <summary>
     /// Retrieves all comments on an issue or pull request.
     /// </summary>
     Task<IReadOnlyList<IssueComment>> GetIssueCommentsAsync(

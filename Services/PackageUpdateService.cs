@@ -361,18 +361,25 @@ public class PackageUpdateService : BackgroundService
         return false;
     }
 
-    public void RecordFailure(string packageName)
+    public bool RecordFailure(string packageName)
     {
         if (string.IsNullOrWhiteSpace(packageName) || IsInCooldown(packageName))
-            return;
+            return false;
 
         var count = _failureCounts.AddOrUpdate(packageName, 1, (_, current) => current + 1);
+        _logger?.LogWarning("Recorded failure for package {Package} (Consecutive failures: {Count})", packageName, count);
+
         if (count >= _options.MaxConsecutiveFailures)
         {
             var cooldownHours = _options.CooldownHours > 0 ? _options.CooldownHours : _options.GiveUpIssueCooldownDays * 24;
             _cooldowns[packageName] = DateTimeOffset.UtcNow.AddHours(cooldownHours);
             _failureCounts.TryRemove(packageName, out _);
+            _logger?.LogWarning("Package {Package} reached {Max} consecutive CI failures; entering {Hours}-hour cooldown",
+                packageName, _options.MaxConsecutiveFailures, cooldownHours);
+            return true;
         }
+
+        return false;
     }
 
     private async Task TryBackfillRemoteAssetDiffAsync(
@@ -438,44 +445,31 @@ public class PackageUpdateService : BackgroundService
         if (!_recordedFailedPrs.TryAdd(prNumber, true))
             return;
 
-        if (IsInCooldown(packageName))
-            return;
-
-        var count = _failureCounts.AddOrUpdate(packageName, 1, (_, current) => current + 1);
-        _logger?.LogWarning("Detected CI failure on distinct PR #{Number} for package {Package} (Consecutive failures: {Count})", prNumber, packageName, count);
-
-        if (count >= _options.MaxConsecutiveFailures)
+        var enteredCooldown = RecordFailure(packageName);
+        if (enteredCooldown && !_options.DryRun && _options.IssueOnGivingUp)
         {
             var cooldownHours = _options.CooldownHours > 0 ? _options.CooldownHours : _options.GiveUpIssueCooldownDays * 24;
-            _cooldowns[packageName] = DateTimeOffset.UtcNow.AddHours(cooldownHours);
-            _failureCounts.TryRemove(packageName, out _);
-            _logger?.LogWarning("Package {Package} reached {Max} consecutive CI failures; entering {Hours}-hour cooldown",
-                packageName, _options.MaxConsecutiveFailures, cooldownHours);
+            var issueTitle = $"[Auto-Update: Blocked] Repeated CI failures on package {packageName}";
+            var issueBody = $"""
+                ## Repeated CI Failures Alert
+                Automated updates for package `{packageName}` have encountered repeated CI failures ({_options.MaxConsecutiveFailures} distinct failed PRs).
 
-            if (!_options.DryRun && _options.IssueOnGivingUp)
+                - **Latest Failed PR**: #{prNumber}
+                - **Action Taken**: Entering {cooldownHours / 24}-day cooldown before further automated attempts.
+                - **Guidance**: Please inspect dependencies or build requirements manually.
+                """;
+
+            try
             {
-                var issueTitle = $"[Auto-Update: Blocked] Repeated CI failures on package {packageName}";
-                var issueBody = $"""
-                    ## Repeated CI Failures Alert
-                    Automated updates for package `{packageName}` have encountered repeated CI failures ({_options.MaxConsecutiveFailures} distinct failed PRs).
+                var issueLabel = !string.IsNullOrWhiteSpace(_options.GiveUpIssueLabel)
+                    ? _options.GiveUpIssueLabel
+                    : GitHubLabels.StatusPinned;
 
-                    - **Latest Failed PR**: #{prNumber}
-                    - **Action Taken**: Entering {cooldownHours / 24}-day cooldown before further automated attempts.
-                    - **Guidance**: Please inspect dependencies or build requirements manually.
-                    """;
-
-                try
-                {
-                    var issueLabel = !string.IsNullOrWhiteSpace(_options.GiveUpIssueLabel)
-                        ? _options.GiveUpIssueLabel
-                        : GitHubLabels.StatusPinned;
-
-                    await _gitHubService.CreateIssueAsync(owner, repo, issueTitle, issueBody, new[] { "Auto-Update: Blocked", issueLabel }, ct);
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogWarning(ex, "Failed to create blocked issue for {Package}", packageName);
-                }
+                await _gitHubService.CreateIssueAsync(owner, repo, issueTitle, issueBody, new[] { "Auto-Update: Blocked", issueLabel }, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to create blocked issue for {Package}", packageName);
             }
         }
     }
