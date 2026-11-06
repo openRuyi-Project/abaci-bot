@@ -66,40 +66,57 @@ public partial class SpdxComplianceModule : IPullRequestModule
             return;
         }
 
-        var licenseIssues = new List<(string File, string Expression, string Details)>();
+        var licenseIssues = new System.Collections.Concurrent.ConcurrentBag<(string File, string Expression, string Details)>();
         var hasUnverifiedSpecFiles = false;
         var verifiedSpecCount = 0;
+        var stateLock = new object();
 
-        foreach (var file in specFiles)
+        var parallelOptions = new ParallelOptions
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            MaxDegreeOfParallelism = _options.MaxDegreeOfParallelism > 0 ? _options.MaxDegreeOfParallelism : 8,
+            CancellationToken = cancellationToken
+        };
+
+        await Parallel.ForEachAsync(specFiles, parallelOptions, async (file, ct) =>
+        {
+            ct.ThrowIfCancellationRequested();
 
             string content;
             try
             {
-                content = await context.GetFileContentAsync(file.FileName, context.HeadSha, cancellationToken);
+                content = await context.GetFileContentAsync(file.FileName, context.HeadSha, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
                 _logger?.LogWarning(ex, "Failed to retrieve content for spec file {Filename} in PR #{PrNumber}. Skipping file verification.",
                     file.FileName, context.PrNumber);
-                hasUnverifiedSpecFiles = true;
-                continue;
+                lock (stateLock)
+                {
+                    hasUnverifiedSpecFiles = true;
+                }
+                return;
             }
 
             if (content == null)
             {
-                hasUnverifiedSpecFiles = true;
-                continue;
+                lock (stateLock)
+                {
+                    hasUnverifiedSpecFiles = true;
+                }
+                return;
             }
 
-            verifiedSpecCount++;
+            Interlocked.Increment(ref verifiedSpecCount);
 
             var matches = LicenseTagRegex().Matches(content);
             if (matches.Count == 0)
             {
                 licenseIssues.Add((file.FileName, "None", "Missing required `License:` field declaration"));
-                continue;
+                return;
             }
 
             var seenExprs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -119,18 +136,23 @@ public partial class SpdxComplianceModule : IPullRequestModule
                     licenseIssues.Add((file.FileName, licenseExpr, details));
                 }
             }
-        }
+        });
 
-        if (licenseIssues.Count > 0)
+        var sortedIssues = licenseIssues
+            .OrderBy(i => i.File, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(i => i.Expression, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (sortedIssues.Count > 0)
         {
             context.ReconcileLabels(ManagedLabels, GitHubLabels.ComplianceLicenseIssue);
             if (!context.ExistingLabels.Contains(GitHubLabels.ComplianceLicenseIssue))
             {
-                var report = _formatter.FormatSpdxLicenseIssue(licenseIssues);
+                var report = _formatter.FormatSpdxLicenseIssue(sortedIssues);
                 context.PendingComments.Add(report);
             }
             _logger?.LogInformation("PR #{PrNumber} flagged with License Issue ({Count} issues found).",
-                context.PrNumber, licenseIssues.Count);
+                context.PrNumber, sortedIssues.Count);
         }
         else if (!hasUnverifiedSpecFiles && verifiedSpecCount > 0)
         {

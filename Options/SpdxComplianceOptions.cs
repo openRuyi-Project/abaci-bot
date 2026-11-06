@@ -29,4 +29,10 @@ public class SpdxComplianceOptions
     /// Whether to accept common RPM legacy license identifiers (e.g., GPLv2+, LGPLv2+).
     /// </summary>
     public bool AllowLegacyAliases { get; set; } = true;
+
+    /// <summary>
+    /// Maximum degree of concurrent HTTP requests when fetching spec file contents for inspection.
+    /// Defaults to 8.
+    /// </summary>
+    public int MaxDegreeOfParallelism { get; set; } = 8;
 }

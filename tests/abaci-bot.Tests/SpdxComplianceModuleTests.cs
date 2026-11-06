@@ -675,6 +675,44 @@ public class SpdxComplianceModuleTests
         Assert.False(readObservedFailure, "Reader observed empty dictionary during concurrent refresh");
     }
 
+    [Fact]
+    public async Task ProcessAsync_ManySpecFiles_FetchesConcurrentlyAndSortsIssuesDeterministically()
+    {
+        var service = CreateService();
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions { MaxDegreeOfParallelism = 8 });
+        var module = new SpdxComplianceModule(service, options);
+
+        var files = Enumerable.Range(1, 20)
+            .Select(i => CreateFile($"SPECS/pkg{i:D2}/pkg{i:D2}.spec"))
+            .ToArray();
+
+        var context = CreateContext(files);
+
+        foreach (var file in files)
+        {
+            var fileName = file.FileName;
+            _gitHub.GetFileContentAsync(Arg.Any<string>(), Arg.Any<string>(), fileName, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult($"Name: test\nVersion: 1.0\nLicense: NonStandard_{fileName}\n"));
+        }
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.ComplianceLicenseIssue, context.LabelsToAdd);
+        Assert.Single(context.PendingComments);
+
+        var comment = context.PendingComments[0];
+        // Ensure deterministic sorting: pkg01 appears before pkg02, pkg02 before pkg03, etc.
+        var lastIndex = -1;
+        for (var i = 1; i <= 20; i++)
+        {
+            var expectedTag = $"pkg{i:D2}.spec";
+            var index = comment.IndexOf(expectedTag, StringComparison.OrdinalIgnoreCase);
+            Assert.True(index >= 0, $"Expected {expectedTag} to be present in comment");
+            Assert.True(index > lastIndex, $"Expected {expectedTag} (at {index}) to appear after previous issue (at {lastIndex})");
+            lastIndex = index;
+        }
+    }
+
     private sealed class SimpleHttpHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
