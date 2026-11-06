@@ -17,8 +17,8 @@ public class SpdxLicenseService : ISpdxLicenseService
     private readonly SpdxComplianceOptions _options;
     private readonly ILogger<SpdxLicenseService>? _logger;
 
-    private readonly ConcurrentDictionary<string, string> _canonicalLicenses = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, string> _exceptions = new(StringComparer.OrdinalIgnoreCase);
+    private volatile Dictionary<string, string> _canonicalLicenses = new(StringComparer.OrdinalIgnoreCase);
+    private volatile Dictionary<string, string> _exceptions = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly Dictionary<string, string> LegacyAliases = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -105,7 +105,7 @@ public class SpdxLicenseService : ISpdxLicenseService
         LoadEmbeddedLicenses();
         LoadEmbeddedExceptions();
 
-        if (_canonicalLicenses.IsEmpty)
+        if (_canonicalLicenses.Count == 0)
         {
             foreach (var id in EmbeddedStandardLicenses)
             {
@@ -113,7 +113,7 @@ public class SpdxLicenseService : ISpdxLicenseService
             }
         }
 
-        if (_exceptions.IsEmpty)
+        if (_exceptions.Count == 0)
         {
             foreach (var ex in EmbeddedExceptions)
             {
@@ -223,11 +223,14 @@ public class SpdxLicenseService : ISpdxLicenseService
                             var addedCount = fetchedLicenses.Count(id => !_canonicalLicenses.ContainsKey(id));
                             var removedCount = _canonicalLicenses.Keys.Count(id => !fetchedLicenses.Contains(id));
 
-                            _canonicalLicenses.Clear();
+                            var newLicenses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                             foreach (var id in fetchedLicenses)
                             {
-                                _canonicalLicenses[id] = id;
+                                newLicenses[id] = id;
                             }
+
+                            // Atomic reference swap prevents readers from observing an empty dictionary
+                            _canonicalLicenses = newLicenses;
 
                             _logger?.LogInformation("Successfully reconciled SPDX licenses: {Total} total (+{Added}/-{Removed}).",
                                 _canonicalLicenses.Count, addedCount, removedCount);
@@ -282,11 +285,14 @@ public class SpdxLicenseService : ISpdxLicenseService
                             var addedCount = fetchedExceptions.Count(id => !_exceptions.ContainsKey(id));
                             var removedCount = _exceptions.Keys.Count(id => !fetchedExceptions.Contains(id));
 
-                            _exceptions.Clear();
+                            var newExceptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                             foreach (var id in fetchedExceptions)
                             {
-                                _exceptions[id] = id;
+                                newExceptions[id] = id;
                             }
+
+                            // Atomic reference swap prevents readers from observing an empty dictionary
+                            _exceptions = newExceptions;
 
                             _logger?.LogInformation("Successfully reconciled SPDX exceptions: {Total} total (+{Added}/-{Removed}).",
                                 _exceptions.Count, addedCount, removedCount);

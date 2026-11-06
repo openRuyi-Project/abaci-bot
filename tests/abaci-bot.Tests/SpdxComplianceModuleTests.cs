@@ -591,6 +591,90 @@ public class SpdxComplianceModuleTests
         Assert.True(service.IsValidSpdxIdentifier("Apache-2.0"));
     }
 
+    [Fact]
+    public async Task ProcessAsync_ZeroByteSpecFile_TreatedAsMissingLicenseIssueNotUnverified()
+    {
+        var service = CreateService();
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions());
+        var module = new SpdxComplianceModule(service, options);
+
+        var file = CreateFile("SPECS/empty/empty.spec");
+        var context = CreateContext(new[] { file });
+
+        // Zero-byte content successfully fetched
+        _gitHub.GetFileContentAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(string.Empty);
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        // Must report compliance license issue because zero-byte spec misses License tag
+        Assert.Contains(GitHubLabels.ComplianceLicenseIssue, context.LabelsToAdd);
+        Assert.NotEmpty(context.PendingComments);
+        Assert.Contains("Missing required `License:` field declaration", context.PendingComments[0]);
+    }
+
+    [Fact]
+    public async Task RefreshRemoteMetadataAsync_ConcurrentValidation_NeverObservesEmptyDictionary()
+    {
+        var licenseJson = """
+        {
+          "licenses": [
+            { "licenseId": "Custom-A" },
+            { "licenseId": "Custom-B" }
+          ]
+        }
+        """;
+
+        var handler = new SimpleHttpHandler(req =>
+            new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(licenseJson, System.Text.Encoding.UTF8, "application/json")
+            });
+
+        var client = new HttpClient(handler);
+        var clientFactory = Substitute.For<IHttpClientFactory>();
+        clientFactory.CreateClient("SpdxLicenseClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions
+        {
+            UpdateRemoteUrl = "https://example.org/licenses.json",
+            UpdateExceptionsRemoteUrl = string.Empty
+        });
+
+        var service = new SpdxLicenseService(clientFactory, options);
+
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var readObservedFailure = false;
+
+        // Concurrent reader task querying canonical licenses
+        var readerTask = Task.Run(() =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                // Must always be true either before or after swap, never empty
+                if (!service.IsValidSpdxIdentifier("MIT") && !service.IsValidSpdxIdentifier("Custom-A"))
+                {
+                    readObservedFailure = true;
+                    break;
+                }
+            }
+        });
+
+        // Concurrent refresh task
+        var refreshTask = Task.Run(async () =>
+        {
+            for (int i = 0; i < 5; i++)
+            {
+                await service.RefreshRemoteMetadataAsync(CancellationToken.None);
+                await Task.Delay(10);
+            }
+            cts.Cancel();
+        });
+
+        await Task.WhenAll(readerTask, refreshTask);
+        Assert.False(readObservedFailure, "Reader observed empty dictionary during concurrent refresh");
+    }
+
     private sealed class SimpleHttpHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;

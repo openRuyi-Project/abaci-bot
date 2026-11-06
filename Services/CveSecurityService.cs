@@ -198,7 +198,8 @@ public class CveSecurityService : ICveSecurityService
                                 cvssScore = num;
                                 break;
                             }
-                            else if (scoreStr.StartsWith("CVSS:3", StringComparison.OrdinalIgnoreCase))
+                            else if (scoreStr.StartsWith("CVSS:3", StringComparison.OrdinalIgnoreCase) ||
+                                     scoreStr.StartsWith("CVSS:4", StringComparison.OrdinalIgnoreCase))
                             {
                                 var calculatedScore = CvssCalculator.CalculateBaseScore(scoreStr);
                                 if (calculatedScore.HasValue)
@@ -268,8 +269,13 @@ public class CveSecurityService : ICveSecurityService
             double? cvssScore = null;
             if (cveObj.TryGetProperty("metrics", out var metrics))
             {
+                // Check cvssMetricV40 (CVSS v4.0)
+                if (metrics.TryGetProperty("cvssMetricV40", out var v40) && v40.GetArrayLength() > 0)
+                {
+                    cvssScore = v40[0].GetProperty("cvssData").GetProperty("baseScore").GetDouble();
+                }
                 // Check cvssMetricV31
-                if (metrics.TryGetProperty("cvssMetricV31", out var v31) && v31.GetArrayLength() > 0)
+                else if (metrics.TryGetProperty("cvssMetricV31", out var v31) && v31.GetArrayLength() > 0)
                 {
                     cvssScore = v31[0].GetProperty("cvssData").GetProperty("baseScore").GetDouble();
                 }

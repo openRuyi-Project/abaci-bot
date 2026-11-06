@@ -285,4 +285,52 @@ public class CveSecurityServiceTests
         Assert.True(ttl > TimeSpan.FromMinutes(50) && ttl <= TimeSpan.FromMinutes(65),
             $"Expected TTL close to 1 hour, but was {ttl.TotalMinutes} minutes.");
     }
+
+    [Fact]
+    public async Task QueryCveAsync_NvdCvssV40_ParsesBaseScoreAccurately()
+    {
+        var nvdJson = """
+        {
+          "vulnerabilities": [
+            {
+              "cve": {
+                "id": "CVE-2024-4444",
+                "descriptions": [ { "lang": "en", "value": "Sample v4 vulnerability" } ],
+                "metrics": {
+                  "cvssMetricV40": [
+                    {
+                      "source": "nvd@nist.gov",
+                      "type": "Primary",
+                      "cvssData": {
+                        "version": "4.0",
+                        "vectorString": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
+                        "baseScore": 9.3,
+                        "baseSeverity": "CRITICAL"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+        """;
+
+        var service = CreateService(req =>
+        {
+            if (req.RequestUri!.Host.Contains("osv.dev"))
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(nvdJson)
+            };
+        });
+
+        var report = await service.QueryCveAsync("CVE-2024-4444");
+        Assert.Equal(9.3, report.CvssScore);
+        Assert.Equal(GitHubLabels.Severity1, report.SeverityLabel);
+        Assert.Equal("NVD", report.Source);
+    }
 }

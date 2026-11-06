@@ -294,8 +294,7 @@ public class AbiComplianceModuleTests
 
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.DoesNotContain(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
-        Assert.Empty(context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
     }
 
     [Fact]
@@ -338,6 +337,39 @@ public class AbiComplianceModuleTests
         await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_ToolMissingOrNotPerformed_AddsImpactAbiCheckFailedAndRemovesOldImpactLabels()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(_abiService, options);
+
+        // Case 1: ToolMissing
+        var context1 = CreateContext();
+        context1.ExistingLabels.Add(GitHubLabels.ImpactAbi);
+        context1.AbiResult = new AbiDiffResult(
+            Succeeded: false,
+            HasAbiChange: false,
+            IsBreakingChange: false,
+            Details: string.Empty,
+            ErrorMessage: "abipkgdiff binary not found in environment",
+            ToolMissing: true);
+
+        await module.ProcessAsync(context1, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context1.LabelsToAdd);
+        Assert.Contains(GitHubLabels.ImpactAbi, context1.LabelsToRemove);
+
+        // Case 2: NotPerformed (e.g. no artifacts or baseline)
+        var context2 = CreateContext();
+        context2.ExistingLabels.Add(GitHubLabels.ImpactBreakingChange);
+        context2.AbiResult = AbiDiffResult.NotPerformed("No RPM artifacts found for workflow run");
+
+        await module.ProcessAsync(context2, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context2.LabelsToAdd);
+        Assert.Contains(GitHubLabels.ImpactBreakingChange, context2.LabelsToRemove);
     }
 }
 

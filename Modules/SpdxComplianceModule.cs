@@ -87,7 +87,7 @@ public partial class SpdxComplianceModule : IPullRequestModule
                 continue;
             }
 
-            if (string.IsNullOrWhiteSpace(content))
+            if (content == null)
             {
                 hasUnverifiedSpecFiles = true;
                 continue;

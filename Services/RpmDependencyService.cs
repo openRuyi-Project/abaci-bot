@@ -20,6 +20,9 @@ public class RpmDependencyService : IRpmDependencyService
     private Dictionary<string, HashSet<string>> _reverseGraph = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _packageLocations = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _graphLock = new();
+    private volatile bool _isMetadataLoaded;
+
+    public bool IsMetadataLoaded => _isMetadataLoaded;
 
     public RpmDependencyService(
         IHttpClientFactory httpClientFactory,
@@ -359,6 +362,7 @@ public class RpmDependencyService : IRpmDependencyService
         {
             _reverseGraph = newReverseGraph;
             _packageLocations = packageLocations;
+            _isMetadataLoaded = true;
         }
 
         _logger?.LogInformation(

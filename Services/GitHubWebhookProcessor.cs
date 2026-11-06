@@ -238,6 +238,8 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                 try
                 {
                     var prRpms = await _artifactService.DownloadRunRpmArtifactsAsync(owner, repo, runId, tempDir, cancellationToken);
+                    var diffResults = new List<AbiDiffResult>();
+
                     foreach (var prRpm in prRpms)
                     {
                         var fileName = Path.GetFileName(prRpm);
@@ -246,12 +248,39 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                         if (!string.IsNullOrEmpty(baselineRpm) && File.Exists(baselineRpm))
                         {
                             var diff = await _abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, cancellationToken);
-                            abiResult = diff;
-                            if (diff.Succeeded && (diff.HasAbiChange || diff.IsBreakingChange))
+                            diffResults.Add(diff);
+                        }
+                    }
+
+                    if (diffResults.Count > 0)
+                    {
+                        // Worst-case aggregation: BreakingChange > AbiChange > Failure > Succeeded
+                        var breaking = diffResults.FirstOrDefault(d => d.Succeeded && d.IsBreakingChange);
+                        if (breaking != null)
+                        {
+                            abiResult = breaking;
+                        }
+                        else
+                        {
+                            var abiChange = diffResults.FirstOrDefault(d => d.Succeeded && d.HasAbiChange);
+                            if (abiChange != null)
                             {
-                                break;
+                                abiResult = abiChange;
+                            }
+                            else
+                            {
+                                var failure = diffResults.FirstOrDefault(d => !d.Succeeded);
+                                abiResult = failure ?? diffResults[0];
                             }
                         }
+                    }
+                    else if (prRpms.Count == 0)
+                    {
+                        abiResult = AbiDiffResult.NotPerformed("No RPM artifacts found for workflow run");
+                    }
+                    else
+                    {
+                        abiResult = AbiDiffResult.NotPerformed("No baseline RPM packages available for comparison");
                     }
                 }
                 finally
@@ -279,6 +308,19 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                     if (fullPr == null)
                     {
                         _logger?.LogWarning("PR #{PrNumber} not found in {Owner}/{Repo} during workflow_run processing; skipping", prNumber, owner, repo);
+                        continue;
+                    }
+
+                    // Prevent stale workflow runs from overwriting newer commits:
+                    // Check if the workflow run's HeadSha matches the current PR Head.Sha
+                    var runHeadSha = workflowRunEvent.WorkflowRun?.HeadSha;
+                    if (!string.IsNullOrWhiteSpace(runHeadSha) &&
+                        !string.IsNullOrWhiteSpace(fullPr.Head?.Sha) &&
+                        !string.Equals(runHeadSha, fullPr.Head.Sha, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger?.LogInformation(
+                            "Workflow run {RunId} head SHA '{RunHeadSha}' does not match PR #{PrNumber} current HEAD '{PrHeadSha}'; skipping outdated run to prevent stale overwrite",
+                            runId, runHeadSha, prNumber, fullPr.Head.Sha);
                         continue;
                     }
 

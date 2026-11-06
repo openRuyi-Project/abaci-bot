@@ -6,8 +6,8 @@ using Microsoft.Extensions.Options;
 namespace abaci_bot.Services;
 
 /// <summary>
-/// Default runner that executes the system 'abidiff' command-line binary.
-/// Gracefully falls back if abidiff is not installed or when running on non-Linux platforms.
+/// Default runner that executes the system 'abipkgdiff' command-line binary.
+/// Gracefully falls back if abipkgdiff is not installed or when running on non-Linux platforms.
 /// </summary>
 public class ProcessAbiDiffRunner : IAbiDiffRunner
 {
@@ -20,6 +20,25 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
     {
         _options = options.Value;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Builds the ProcessStartInfo configured to execute abipkgdiff.
+    /// Exposes process construction for testing CLI contracts without starting external processes.
+    /// </summary>
+    public static ProcessStartInfo BuildStartInfo(string executablePath, string oldRpmPath, string newRpmPath)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executablePath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add(oldRpmPath);
+        startInfo.ArgumentList.Add(newRpmPath);
+        return startInfo;
     }
 
     public async Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
@@ -41,16 +60,7 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
         Process? process = null;
         try
         {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = _options.AbidiffExecutablePath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            startInfo.ArgumentList.Add(oldRpmPath);
-            startInfo.ArgumentList.Add(newRpmPath);
+            var startInfo = BuildStartInfo(_options.AbipkgdiffExecutablePath, oldRpmPath, newRpmPath);
 
             process = new Process { StartInfo = startInfo };
             process.Start();
@@ -141,13 +151,13 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
     }
 
     /// <summary>
-    /// Interprets the bitmask return code from Libabigail abidiff.
+    /// Interprets the bitmask return code from Libabigail abipkgdiff / abidiff.
     /// </summary>
     public static AbiDiffResult InterpretExitCode(int exitCode, string stdout, string stderr = "")
     {
-        // Libabigail abidiff return code bitmask:
+        // Libabigail abipkgdiff return code bitmask:
         // 0 = no change
-        // 1 = error (ABIDIFF_ERROR)
+        // 1 = error (ABIDIFF_ERROR / ABIPKGDIFF_ERROR)
         // 2 = usage error (ABIDIFF_USAGE_ERROR)
         // 4 = ABI change detected (ABIDIFF_ABI_CHANGE)
         // 8 = ABI incompatible / breaking change (ABIDIFF_ABI_INCOMPATIBLE_CHANGE)
@@ -163,7 +173,7 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 HasAbiChange: false,
                 IsBreakingChange: false,
                 Details: string.IsNullOrWhiteSpace(stdout) ? stderr : stdout,
-                ErrorMessage: $"abidiff reported tool failure (exit code: {exitCode})");
+                ErrorMessage: $"abipkgdiff reported tool failure (exit code: {exitCode})");
         }
 
         var hasChange = (exitCode & (abidiffChange | abidiffIncompatible)) != 0;

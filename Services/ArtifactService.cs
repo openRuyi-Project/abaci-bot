@@ -38,12 +38,40 @@ public class ArtifactService : IArtifactService
         var destinationRoot = Path.GetFullPath(destinationDirectory);
         Directory.CreateDirectory(destinationRoot);
 
+        // Defense against zip bombs: enforce entry count, max single file size, and total uncompressed size limits
+        const int maxEntryCount = 1000;
+        const long maxSingleFileSize = 500L * 1024 * 1024; // 500 MB
+        const long maxTotalUncompressedSize = 2L * 1024 * 1024 * 1024; // 2 GB
+
+        long totalUncompressedBytes = 0;
+        int processedEntries = 0;
+
         try
         {
             await using var zipStream = await _gitHubService.DownloadArtifactZipStreamAsync(owner, repo, artifactId, ct);
             using var archive = new ZipArchive(zipStream, ZipArchiveMode.Read);
             foreach (var entry in archive.Entries)
             {
+                processedEntries++;
+                if (processedEntries > maxEntryCount)
+                {
+                    _logger?.LogWarning("Zip archive for artifact {ArtifactId} exceeds max entry count ({Max})", artifactId, maxEntryCount);
+                    break;
+                }
+
+                if (entry.Length > maxSingleFileSize)
+                {
+                    _logger?.LogWarning("Zip entry {EntryName} exceeds max single file size ({Size} > {Max})", entry.FullName, entry.Length, maxSingleFileSize);
+                    continue;
+                }
+
+                totalUncompressedBytes += entry.Length;
+                if (totalUncompressedBytes > maxTotalUncompressedSize)
+                {
+                    _logger?.LogWarning("Zip archive for artifact {ArtifactId} exceeds cumulative uncompressed size ({Total} > {Max})", artifactId, totalUncompressedBytes, maxTotalUncompressedSize);
+                    break;
+                }
+
                 if (entry.FullName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
                 {
                     var targetPath = Path.GetFullPath(Path.Combine(destinationRoot, entry.FullName));

@@ -77,6 +77,14 @@ public partial class RebuildImpactModule : IPullRequestModule
         if (specFiles.Count == 0)
         {
             context.ReconcileLabels(ManagedLabels, _ => false);
+
+            // Safe unblocking: only remove Workflow: Blocked if this PR previously had a blocking rebuild tier
+            var hadBlockingRebuild = context.ExistingLabels.Any(l => IsBlockingRebuildLabel(l, _options.BlockThreshold));
+
+            if (hadBlockingRebuild && context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked))
+            {
+                context.LabelsToRemove.Add(GitHubLabels.WorkflowBlocked);
+            }
             return;
         }
 
@@ -100,7 +108,25 @@ public partial class RebuildImpactModule : IPullRequestModule
 
         if (changedPackages.Count == 0)
         {
+            // All spec files have been removed
             context.ReconcileLabels(ManagedLabels, _ => false);
+
+            // Safe unblocking: only remove Workflow: Blocked if this PR previously had a blocking rebuild tier
+            var hadBlockingRebuild = context.ExistingLabels.Any(l => IsBlockingRebuildLabel(l, _options.BlockThreshold));
+
+            if (hadBlockingRebuild && context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked))
+            {
+                context.LabelsToRemove.Add(GitHubLabels.WorkflowBlocked);
+            }
+            return;
+        }
+
+        // Fail-safe protection: if repository dependency metadata has not been loaded,
+        // do not assign false Rebuild: 0 labels. Log warning and skip label mutation.
+        if (!_dependencyService.IsMetadataLoaded)
+        {
+            _logger?.LogWarning("RPM repository metadata is not loaded; skipping rebuild impact assessment for PR #{PrNumber}",
+                context.PrNumber);
             return;
         }
 
@@ -152,14 +178,34 @@ public partial class RebuildImpactModule : IPullRequestModule
         else
         {
             // Only unblock if this PR was previously blocked by this module (i.e. carried a blocking rebuild tier)
-            var hadRebuildBlock = context.ExistingLabels.Contains(GitHubLabels.Rebuild1001To2500) ||
-                                  context.ExistingLabels.Contains(GitHubLabels.Rebuild2501To5000) ||
-                                  context.ExistingLabels.Contains(GitHubLabels.Rebuild5001Plus);
+            var hadRebuildBlock = context.ExistingLabels.Any(l => IsBlockingRebuildLabel(l, _options.BlockThreshold));
 
             if (hadRebuildBlock && context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked))
             {
                 context.LabelsToRemove.Add(GitHubLabels.WorkflowBlocked);
             }
         }
+    }
+
+    /// <summary>
+    /// Evaluates whether a given label represents a rebuild tier that reaches or exceeds the block threshold.
+    /// Eliminates hardcoded rebuild tiers and prevents desynchronization when BlockThreshold is customized.
+    /// </summary>
+    public static bool IsBlockingRebuildLabel(string label, int blockThreshold)
+    {
+        var upperBound = label switch
+        {
+            GitHubLabels.Rebuild0 => 0,
+            GitHubLabels.Rebuild1To10 => 10,
+            GitHubLabels.Rebuild11To100 => 100,
+            GitHubLabels.Rebuild101To500 => 500,
+            GitHubLabels.Rebuild501To1000 => 1000,
+            GitHubLabels.Rebuild1001To2500 => 2500,
+            GitHubLabels.Rebuild2501To5000 => 5000,
+            GitHubLabels.Rebuild5001Plus => int.MaxValue,
+            _ => -1
+        };
+
+        return upperBound >= blockThreshold && upperBound >= 0;
     }
 }

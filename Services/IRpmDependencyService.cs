@@ -7,6 +7,11 @@ namespace abaci_bot.Services;
 public interface IRpmDependencyService
 {
     /// <summary>
+    /// Indicates whether repository dependency metadata has been successfully loaded into memory.
+    /// </summary>
+    bool IsMetadataLoaded { get; }
+
+    /// <summary>
     /// Computes the set of downstream packages that depend on the specified package.
     /// Supports direct dependencies or transitive closure traversal with optional max depth.
     /// </summary>

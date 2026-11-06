@@ -9,7 +9,11 @@ public record AbiDiffResult(
     bool IsBreakingChange,
     string Details,
     string? ErrorMessage = null,
-    bool ToolMissing = false);
+    bool ToolMissing = false)
+{
+    public static AbiDiffResult NotPerformed(string reason) =>
+        new(Succeeded: false, HasAbiChange: false, IsBreakingChange: false, Details: reason, ErrorMessage: reason);
+}
 
 /// <summary>
 /// Pluggable runner contract for executing the external abidiff tool or simulation.

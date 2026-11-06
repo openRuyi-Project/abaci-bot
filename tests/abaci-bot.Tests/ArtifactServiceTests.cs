@@ -332,5 +332,41 @@ public class ArtifactServiceTests
             }
         }
     }
+
+    [Fact]
+    public async Task DownloadAndExtractRpmArtifactAsync_ExcessiveZipEntries_StopsProcessingToPreventZipBomb()
+    {
+        // Construct a zip file containing 1005 entries
+        using var ms = new MemoryStream();
+        using (var archive = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            for (int i = 0; i < 1005; i++)
+            {
+                var entry = archive.CreateEntry($"pkg-{i}.rpm");
+                using var writer = new StreamWriter(entry.Open());
+                writer.Write("rpm-data");
+            }
+        }
+        ms.Position = 0;
+
+        _gitHub.DownloadArtifactZipStreamAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<long>(), Arg.Any<CancellationToken>())
+            .Returns(new MemoryStream(ms.ToArray()));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var service = new ArtifactService(_gitHub, _httpClientFactory, options);
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_zipbomb_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var rpms = await service.DownloadAndExtractRpmArtifactAsync("owner", "repo", 999, tempDir);
+
+            // Should have stopped extracting after reaching 1000 entries ceiling
+            Assert.True(rpms.Count <= 1000);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
 }
 

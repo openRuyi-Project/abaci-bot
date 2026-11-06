@@ -95,4 +95,46 @@ public class AbiDiffServiceTests
         Assert.Equal("Clean", result.Details);
         await runner.Received(1).RunDiffAsync("old.rpm", "new.rpm", Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public void ProcessAbiDiffRunner_BuildStartInfo_ConstructsAccurateAbipkgdiffCliContract()
+    {
+        var startInfo = ProcessAbiDiffRunner.BuildStartInfo("abipkgdiff", "/tmp/old.rpm", "/tmp/new.rpm");
+
+        Assert.Equal("abipkgdiff", startInfo.FileName);
+        Assert.False(startInfo.UseShellExecute);
+        Assert.True(startInfo.RedirectStandardOutput);
+        Assert.True(startInfo.RedirectStandardError);
+        Assert.True(startInfo.CreateNoWindow);
+        Assert.Equal(2, startInfo.ArgumentList.Count);
+        Assert.Equal("/tmp/old.rpm", startInfo.ArgumentList[0]);
+        Assert.Equal("/tmp/new.rpm", startInfo.ArgumentList[1]);
+    }
+
+    [Fact]
+    public void InterpretExitCode_BitmaskInterpretations_AccuratelyDifferentiatesAbiChanges()
+    {
+        // 0 = clean
+        var res0 = ProcessAbiDiffRunner.InterpretExitCode(0, "clean");
+        Assert.True(res0.Succeeded);
+        Assert.False(res0.HasAbiChange);
+        Assert.False(res0.IsBreakingChange);
+
+        // 4 = ABI change
+        var res4 = ProcessAbiDiffRunner.InterpretExitCode(4, "diff");
+        Assert.True(res4.Succeeded);
+        Assert.True(res4.HasAbiChange);
+        Assert.False(res4.IsBreakingChange);
+
+        // 8 = Breaking change
+        var res8 = ProcessAbiDiffRunner.InterpretExitCode(8, "breaking");
+        Assert.True(res8.Succeeded);
+        Assert.True(res8.HasAbiChange);
+        Assert.True(res8.IsBreakingChange);
+
+        // 1 or 2 = tool error
+        var res1 = ProcessAbiDiffRunner.InterpretExitCode(1, "", "error");
+        Assert.False(res1.Succeeded);
+        Assert.Contains("abipkgdiff reported tool failure", res1.ErrorMessage);
+    }
 }

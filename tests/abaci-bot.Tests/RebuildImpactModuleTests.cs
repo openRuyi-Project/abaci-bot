@@ -156,6 +156,7 @@ public class RebuildImpactModuleTests
     public async Task ProcessAsync_ModerateImpact_AssignsRebuildLabelWithoutBlocking()
     {
         var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
         dependencyService.GetAffectedPackages("testpkg", Arg.Any<int?>())
             .Returns(new HashSet<string> { "dep1", "dep2", "dep3" });
         dependencyService.MapAffectedCountToRebuildLabel(3).Returns(GitHubLabels.Rebuild1To10);
@@ -177,6 +178,7 @@ public class RebuildImpactModuleTests
     public async Task ProcessAsync_HighImpactOnRolling_EnforcesAdmissionBlockAndComment()
     {
         var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
         var largeSet = Enumerable.Range(1, 1200).Select(i => $"pkg-{i}").ToHashSet();
         dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
         dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
@@ -201,6 +203,7 @@ public class RebuildImpactModuleTests
     public async Task ProcessAsync_HighImpactOnRolling_AlreadyBlocked_DoesNotDuplicateComment()
     {
         var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
         var largeSet = Enumerable.Range(1, 1200).Select(i => $"pkg-{i}").ToHashSet();
         dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
         dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
@@ -226,6 +229,7 @@ public class RebuildImpactModuleTests
     public async Task ProcessAsync_HighImpactOnStagingBranch_DoesNotBlock()
     {
         var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
         var largeSet = Enumerable.Range(1, 1500).Select(i => $"pkg-{i}").ToHashSet();
         dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
         dependencyService.MapAffectedCountToRebuildLabel(1500).Returns(GitHubLabels.Rebuild1001To2500);
@@ -355,6 +359,7 @@ public class RebuildImpactModuleTests
     public async Task ProcessAsync_ImpactDropsBelowThreshold_RemovesWorkflowBlockedLabel()
     {
         var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
         dependencyService.GetAffectedPackages("leafpkg", Arg.Any<int?>())
             .Returns(new HashSet<string> { "dep1" });
         dependencyService.MapAffectedCountToRebuildLabel(1).Returns(GitHubLabels.Rebuild1To10);
@@ -376,6 +381,7 @@ public class RebuildImpactModuleTests
     public async Task ProcessAsync_RetargetFromRollingToLts_ClearsWorkflowBlockedLabel()
     {
         var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
         var largeSet = Enumerable.Range(1, 1500).Select(i => $"pkg-{i}").ToHashSet();
         dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
         dependencyService.MapAffectedCountToRebuildLabel(1500).Returns(GitHubLabels.Rebuild1001To2500);
@@ -403,6 +409,7 @@ public class RebuildImpactModuleTests
     public async Task ProcessAsync_HumanBlockedWithoutRebuildLabel_DoesNotUnblock()
     {
         var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
         dependencyService.GetAffectedPackages("leafpkg", Arg.Any<int?>())
             .Returns(new HashSet<string> { "dep1" });
         dependencyService.MapAffectedCountToRebuildLabel(1).Returns(GitHubLabels.Rebuild1To10);
@@ -419,6 +426,63 @@ public class RebuildImpactModuleTests
         Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context.LabelsToRemove);
         Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
         Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_MetadataNotLoaded_DoesNotAssignRebuild0()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(false); // Metadata not ready
+
+        // Configure positive return values so that if the guard is bypassed, it will definitely add Rebuild1To10
+        dependencyService.GetAffectedPackages("pkg", Arg.Any<int?>())
+            .Returns(new HashSet<string> { "dep1", "dep2" });
+        dependencyService.MapAffectedCountToRebuildLabel(2)
+            .Returns(GitHubLabels.Rebuild1To10);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
+        var module = new RebuildImpactModule(dependencyService, options);
+
+        var file = CreateFile("SPECS/pkg/pkg.spec");
+        var context = CreateContext(new[] { file }, baseBranch: "main");
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        // Fail-safe: No Rebuild:* labels should be added when metadata is missing
+        Assert.DoesNotContain(context.LabelsToAdd, l => l.StartsWith("Rebuild:"));
+        Assert.DoesNotContain(GitHubLabels.Rebuild1To10, context.LabelsToAdd);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_AllSpecsRemoved_UnblocksOnlyIfPreviouslyCarriedBlockingRebuild()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
+        var module = new RebuildImpactModule(dependencyService, options);
+
+        // Case 1: PR previously carried Rebuild: 1001-2500 and Workflow: Blocked; all specs now removed
+        var context1 = CreateContext(
+            Array.Empty<PullRequestFile>(),
+            baseBranch: "main",
+            existingLabels: new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.Rebuild1001To2500 });
+
+        await module.ProcessAsync(context1, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.WorkflowBlocked, context1.LabelsToRemove);
+        Assert.Contains(GitHubLabels.Rebuild1001To2500, context1.LabelsToRemove);
+
+        // Case 2: PR previously carried Rebuild: 0 and Workflow: Blocked (e.g. human block); all specs now removed
+        var context2 = CreateContext(
+            Array.Empty<PullRequestFile>(),
+            baseBranch: "main",
+            existingLabels: new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.Rebuild0 });
+
+        await module.ProcessAsync(context2, CancellationToken.None);
+
+        Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context2.LabelsToRemove);
+        Assert.Contains(GitHubLabels.Rebuild0, context2.LabelsToRemove);
     }
 
     [Fact]

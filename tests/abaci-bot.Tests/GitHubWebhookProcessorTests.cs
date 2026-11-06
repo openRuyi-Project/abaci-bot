@@ -1442,7 +1442,8 @@ public class GitHubWebhookProcessorTests
         string conclusion,
         int prNumber,
         string owner = "owner",
-        string repoName = "repo")
+        string repoName = "repo",
+        string? headSha = null)
     {
         var repo = Create<WebhookRepository>(
             (nameof(WebhookRepository.Name), repoName),
@@ -1458,6 +1459,7 @@ public class GitHubWebhookProcessorTests
         var workflowRun = Create<Octokit.Webhooks.Models.WorkflowRun>(
             (nameof(Octokit.Webhooks.Models.WorkflowRun.Id), (object)runId),
             (nameof(Octokit.Webhooks.Models.WorkflowRun.Conclusion), (object)new Octokit.Webhooks.Extensions.StringEnum<WorkflowRunConclusion>(conc)),
+            (nameof(Octokit.Webhooks.Models.WorkflowRun.HeadSha), (object?)headSha),
             (nameof(Octokit.Webhooks.Models.WorkflowRun.PullRequests), (object)new[] { pr }));
 
         return Create<WorkflowRunCompletedEvent>(
@@ -1624,6 +1626,7 @@ public class GitHubWebhookProcessorTests
 
         var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
         typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.User))?.SetValue(pr, user);
+        typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Labels))?.SetValue(pr, Array.Empty<Octokit.Label>());
         return pr;
     }
 
@@ -1869,6 +1872,21 @@ public class GitHubWebhookProcessorTests
                 return Task.FromResult<OctokitPullRequest?>(null);
             }
 
+            if (PullRequest != null && PullRequest.Head != null)
+            {
+                if (PullRequest.Labels == null)
+                {
+                    var prLabels = RemoteLabels.Select(name =>
+                    {
+                        var l = (Octokit.Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Label));
+                        typeof(Octokit.Label).GetProperty(nameof(Octokit.Label.Name))?.SetValue(l, name);
+                        return l;
+                    }).ToArray();
+                    typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Labels))?.SetValue(PullRequest, prLabels);
+                }
+                return Task.FromResult<OctokitPullRequest?>(PullRequest);
+            }
+
             var pr = (OctokitPullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(OctokitPullRequest));
             var labelObjs = RemoteLabels.Select(name =>
             {
@@ -1939,6 +1957,127 @@ public class GitHubWebhookProcessorTests
             string owner, string repo, long artifactId, CancellationToken ct = default)
         {
             return Task.FromResult<Stream>(new MemoryStream());
+        }
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRunAsync_OutdatedHeadSha_SkipsProcessingToPreventStaleOverwrite()
+    {
+        var github = new FakeGitHubService();
+        var fullPr = CreateOctokitPullRequestWithUser("author");
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.Number))?.SetValue(fullPr, 42);
+        var head = (Octokit.GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.GitReference));
+        typeof(Octokit.GitReference).GetProperty(nameof(Octokit.GitReference.Sha))?.SetValue(head, "new-commit-sha-456");
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.Head))?.SetValue(fullPr, head);
+        github.PullRequest = fullPr;
+
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_sha_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpm = Path.Combine(tempDir, "pkg-1.0.rpm");
+        var baseRpm = Path.Combine(tempDir, "pkg-base.rpm");
+        await File.WriteAllTextAsync(prRpm, "rpm");
+        await File.WriteAllTextAsync(baseRpm, "base");
+
+        try
+        {
+            // Configure positive outcomes: if processing were NOT skipped, it would definitely add ImpactBreakingChange
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 1001L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
+            artifactService.DownloadBaselineRpmAsync("pkg", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baseRpm));
+            abiDiffService.CompareRpmsAsync(baseRpm, prRpm, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(Succeeded: true, HasAbiChange: true, IsBreakingChange: true, Details: "Breaking ABI Change")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+
+            var payload = CreateWorkflowRunEvent(1001L, "success", 42, headSha: "old-commit-sha-123");
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            // Verification: Since headSha was outdated, processing was skipped and no labels were applied
+            Assert.Empty(github.LabelOperations);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRunAsync_NoArtifacts_SetsNotPerformedAndAddsCheckFailedLabel()
+    {
+        var github = new FakeGitHubService();
+        var fullPr = CreateOctokitPullRequestWithUser("author");
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.Number))?.SetValue(fullPr, 42);
+        var head = (Octokit.GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.GitReference));
+        typeof(Octokit.GitReference).GetProperty(nameof(Octokit.GitReference.Sha))?.SetValue(head, "current-commit-sha");
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.Head))?.SetValue(fullPr, head);
+        github.PullRequest = fullPr;
+
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        // 0 RPM artifacts downloaded for run
+        artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 1003L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>()));
+
+        var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+        var payload = CreateWorkflowRunEvent(1003L, "success", 42, headSha: "current-commit-sha");
+
+        await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+        // Verification: Pipeline executed, NotPerformed outcome assigned, Impact: ABI Check Failed label added
+        Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRunAsync_MultipleRpms_AggregatesWorstCaseBreakingChange()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_multi_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpmClean = Path.Combine(tempDir, "pkg-clean-1.0.rpm");
+        var prRpmBreak = Path.Combine(tempDir, "pkg-breaking-1.0.rpm");
+        var baseRpmClean = Path.Combine(tempDir, "pkg-clean-base.rpm");
+        var baseRpmBreak = Path.Combine(tempDir, "pkg-breaking-base.rpm");
+
+        await File.WriteAllTextAsync(prRpmClean, "clean");
+        await File.WriteAllTextAsync(prRpmBreak, "break");
+        await File.WriteAllTextAsync(baseRpmClean, "base-clean");
+        await File.WriteAllTextAsync(baseRpmBreak, "base-break");
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 1002L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpmClean, prRpmBreak }));
+
+            artifactService.DownloadBaselineRpmAsync("pkg-clean", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baseRpmClean));
+            artifactService.DownloadBaselineRpmAsync("pkg-breaking", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baseRpmBreak));
+
+            abiDiffService.CompareRpmsAsync(baseRpmClean, prRpmClean, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(Succeeded: true, HasAbiChange: false, IsBreakingChange: false, Details: "Clean")));
+            abiDiffService.CompareRpmsAsync(baseRpmBreak, prRpmBreak, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(Succeeded: true, HasAbiChange: true, IsBreakingChange: true, Details: "Breaking ABI Change")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(1002L, "success", 55, headSha: "commit-sha-match");
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            // Worst-case aggregation must ensure BreakingChange wins over Clean
+            Assert.Contains($"add:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
         }
     }
 

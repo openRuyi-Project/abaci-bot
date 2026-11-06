@@ -68,12 +68,7 @@ public class AbiComplianceModule : IPullRequestModule
             _logger?.LogWarning("ABI analysis was not completed for PR #{PrNumber}: {Error}",
                 context.PrNumber, result.ErrorMessage);
 
-            if (result.ToolMissing)
-            {
-                // Host environment is missing abidiff tool; do not blame PR with user-facing failure label
-                return;
-            }
-
+            // Reconcile managed labels: assign ImpactAbiCheckFailed and strip any obsolete Impact: ABI / Breaking Change labels
             context.ReconcileLabels(ManagedLabels, GitHubLabels.ImpactAbiCheckFailed);
             return;
         }

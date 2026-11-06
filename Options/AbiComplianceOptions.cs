@@ -11,9 +11,18 @@ public class AbiComplianceOptions
     public bool Enabled { get; set; } = true;
 
     /// <summary>
-    /// Path or command name for the abidiff binary executable.
+    /// Path or command name for the abipkgdiff binary executable.
     /// </summary>
-    public string AbidiffExecutablePath { get; set; } = "abidiff";
+    public string AbipkgdiffExecutablePath { get; set; } = "abipkgdiff";
+
+    /// <summary>
+    /// Backward-compatible alias for <see cref="AbipkgdiffExecutablePath"/>.
+    /// </summary>
+    public string AbidiffExecutablePath
+    {
+        get => AbipkgdiffExecutablePath;
+        set => AbipkgdiffExecutablePath = value;
+    }
 
     /// <summary>
     /// Base URL for downloading baseline/stable RPM packages.
