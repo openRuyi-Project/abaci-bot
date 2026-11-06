@@ -1874,7 +1874,7 @@ public class GitHubWebhookProcessorTests
 
             if (PullRequest != null && PullRequest.Head != null)
             {
-                if (PullRequest.Labels == null)
+                if (PullRequest.Labels == null || PullRequest.Labels.Count == 0)
                 {
                     var prLabels = RemoteLabels.Select(name =>
                     {
@@ -2031,6 +2031,61 @@ public class GitHubWebhookProcessorTests
 
         // Verification: Pipeline executed, NotPerformed outcome assigned, Impact: ABI Check Failed label added
         Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRunAsync_AbipkgdiffMissingRpmSupport_AppliesAbiCheckFailedLabel()
+    {
+        var github = new FakeGitHubService();
+        github.RemoteLabels.Add(GitHubLabels.ImpactBreakingChange); // previously had breaking change
+
+        var fullPr = CreateOctokitPullRequestWithUser("author");
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.Number))?.SetValue(fullPr, 42);
+        var head = (Octokit.GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.GitReference));
+        typeof(Octokit.GitReference).GetProperty(nameof(Octokit.GitReference.Sha))?.SetValue(head, "current-commit-sha");
+        typeof(Octokit.PullRequest).GetProperty(nameof(Octokit.PullRequest.Head))?.SetValue(fullPr, head);
+        github.PullRequest = fullPr;
+
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_norpm_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpm = Path.Combine(tempDir, "pkg-1.0.rpm");
+        var baseRpm = Path.Combine(tempDir, "pkg-base.rpm");
+        await File.WriteAllTextAsync(prRpm, "rpm");
+        await File.WriteAllTextAsync(baseRpm, "base");
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 1004L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
+            artifactService.DownloadBaselineRpmAsync("pkg", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baseRpm));
+
+            // Tool output simulates exit 0 with stderr: "Support for rpm hasn't been enabled"
+            const string missingRpmStderr = "abipkgdiff: Support for rpm hasn't been enabled.  Please consider enabling it at package configure time";
+            var result = ProcessAbiDiffRunner.InterpretExitCode(0, "", missingRpmStderr);
+
+            abiDiffService.CompareRpmsAsync(baseRpm, prRpm, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(result));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(1004L, "success", 42, headSha: "current-commit-sha");
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            // Verification: Result was treated as failure, Impact: ABI Check Failed label added, stale labels stripped
+            Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+            Assert.Contains($"remove:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
+            Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, github.RemoteLabels);
+            Assert.DoesNotContain(GitHubLabels.ImpactBreakingChange, github.RemoteLabels);
+            Assert.DoesNotContain(GitHubLabels.ImpactAbi, github.RemoteLabels);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
     }
 
     [Fact]

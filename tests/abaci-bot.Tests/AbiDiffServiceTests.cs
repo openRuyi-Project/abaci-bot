@@ -137,4 +137,48 @@ public class AbiDiffServiceTests
         Assert.False(res1.Succeeded);
         Assert.Contains("abipkgdiff reported tool failure", res1.ErrorMessage);
     }
+
+    [Fact]
+    public void InterpretExitCode_ExitCodeZeroWithMissingRpmSupportStderr_ReturnsToolMissingFailure()
+    {
+        const string missingRpmStderr = "abipkgdiff: Support for rpm hasn't been enabled.  Please consider enabling it at package configure time";
+        var result = ProcessAbiDiffRunner.InterpretExitCode(0, "", missingRpmStderr);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ToolMissing);
+        Assert.False(result.HasAbiChange);
+        Assert.False(result.IsBreakingChange);
+        Assert.Contains("Support for rpm hasn't been enabled", result.ErrorMessage);
+        Assert.Contains("missing RPM support", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void InterpretExitCode_ExitCodeZeroWithGenericErrorStderr_ReturnsFailureWithoutToolMissing()
+    {
+        const string errorStderr = "abipkgdiff: error: failed to open archive file";
+        var result = ProcessAbiDiffRunner.InterpretExitCode(0, "", errorStderr);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ToolMissing);
+        Assert.Contains("abipkgdiff reported error on stderr", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ProcessAbiDiffRunner_RpmSupportMissing_CachesUnavailableAndShortCircuitsSubsequentCalls()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var runner = new ProcessAbiDiffRunner(options);
+
+        Assert.False(runner.IsRpmSupportUnavailable);
+
+        runner.MarkRpmSupportUnavailable("abipkgdiff reported missing RPM support: Support for rpm hasn't been enabled.");
+        Assert.True(runner.IsRpmSupportUnavailable);
+
+        // Subsequent calls should short-circuit immediately without needing files on disk
+        var result = await runner.RunDiffAsync("/nonexistent/old.rpm", "/nonexistent/new.rpm");
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ToolMissing);
+        Assert.Contains("Support for rpm hasn't been enabled", result.ErrorMessage);
+    }
 }

@@ -13,6 +13,16 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
 {
     private readonly AbiComplianceOptions _options;
     private readonly ILogger<ProcessAbiDiffRunner>? _logger;
+    private volatile bool _rpmSupportUnavailable;
+    private string? _cachedRpmErrorMessage;
+
+    internal bool IsRpmSupportUnavailable => _rpmSupportUnavailable;
+
+    internal void MarkRpmSupportUnavailable(string reason)
+    {
+        _rpmSupportUnavailable = true;
+        _cachedRpmErrorMessage = reason;
+    }
 
     public ProcessAbiDiffRunner(
         IOptions<AbiComplianceOptions> options,
@@ -43,6 +53,17 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
 
     public async Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
     {
+        if (_rpmSupportUnavailable)
+        {
+            return new AbiDiffResult(
+                Succeeded: false,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: _cachedRpmErrorMessage ?? "abipkgdiff binary lacks RPM package support.",
+                ErrorMessage: _cachedRpmErrorMessage ?? "abipkgdiff binary lacks RPM package support.",
+                ToolMissing: true);
+        }
+
         if (!File.Exists(oldRpmPath) || !File.Exists(newRpmPath))
         {
             return new AbiDiffResult(
@@ -73,7 +94,14 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
             var stderr = await stderrTask;
 
             var exitCode = process.ExitCode;
-            return InterpretExitCode(exitCode, stdout, stderr);
+            var result = InterpretExitCode(exitCode, stdout, stderr);
+            if (result.ToolMissing && result.ErrorMessage?.Contains("rpm", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _rpmSupportUnavailable = true;
+                _cachedRpmErrorMessage = result.ErrorMessage;
+                _logger?.LogError("abipkgdiff on host system lacks RPM support. Short-circuiting future diffs: {Error}", result.ErrorMessage);
+            }
+            return result;
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
@@ -89,13 +117,13 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 // Ignore kill errors
             }
 
-            _logger?.LogWarning("abidiff process timed out after {Timeout} seconds.", _options.TimeoutSeconds);
+            _logger?.LogWarning("abipkgdiff process timed out after {Timeout} seconds.", _options.TimeoutSeconds);
             return new AbiDiffResult(
                 Succeeded: false,
                 HasAbiChange: false,
                 IsBreakingChange: false,
                 Details: string.Empty,
-                ErrorMessage: $"abidiff process timed out after {_options.TimeoutSeconds} seconds.");
+                ErrorMessage: $"abipkgdiff process timed out after {_options.TimeoutSeconds} seconds.");
         }
         catch (OperationCanceledException)
         {
@@ -114,35 +142,35 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
-            _logger?.LogError(ex, "Libabigail abidiff executable '{Path}' not found on host system. ABI compliance checks cannot run.", _options.AbidiffExecutablePath);
+            _logger?.LogError(ex, "Libabigail abipkgdiff executable '{Path}' not found on host system. ABI compliance checks cannot run.", _options.AbipkgdiffExecutablePath);
             return new AbiDiffResult(
                 Succeeded: false,
                 HasAbiChange: false,
                 IsBreakingChange: false,
                 Details: string.Empty,
-                ErrorMessage: $"abidiff executable not found: {ex.Message}",
+                ErrorMessage: $"abipkgdiff executable not found: {ex.Message}",
                 ToolMissing: true);
         }
         catch (FileNotFoundException ex)
         {
-            _logger?.LogError(ex, "Libabigail abidiff executable '{Path}' not found on host system. ABI compliance checks cannot run.", _options.AbidiffExecutablePath);
+            _logger?.LogError(ex, "Libabigail abipkgdiff executable '{Path}' not found on host system. ABI compliance checks cannot run.", _options.AbipkgdiffExecutablePath);
             return new AbiDiffResult(
                 Succeeded: false,
                 HasAbiChange: false,
                 IsBreakingChange: false,
                 Details: string.Empty,
-                ErrorMessage: $"abidiff executable not found: {ex.Message}",
+                ErrorMessage: $"abipkgdiff executable not found: {ex.Message}",
                 ToolMissing: true);
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to run abidiff executable '{Path}'. Skipping ABI analysis.", _options.AbidiffExecutablePath);
+            _logger?.LogWarning(ex, "Failed to run abipkgdiff executable '{Path}'. Skipping ABI analysis.", _options.AbipkgdiffExecutablePath);
             return new AbiDiffResult(
                 Succeeded: false,
                 HasAbiChange: false,
                 IsBreakingChange: false,
                 Details: string.Empty,
-                ErrorMessage: $"abidiff execution failed: {ex.Message}");
+                ErrorMessage: $"abipkgdiff execution failed: {ex.Message}");
         }
         finally
         {
@@ -174,6 +202,31 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 IsBreakingChange: false,
                 Details: string.IsNullOrWhiteSpace(stdout) ? stderr : stdout,
                 ErrorMessage: $"abipkgdiff reported tool failure (exit code: {exitCode})");
+        }
+
+        if (exitCode == 0 && !string.IsNullOrWhiteSpace(stderr))
+        {
+            if (stderr.Contains("Support for rpm hasn't been enabled", StringComparison.OrdinalIgnoreCase))
+            {
+                return new AbiDiffResult(
+                    Succeeded: false,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: stderr.Trim(),
+                    ErrorMessage: "abipkgdiff reported missing RPM support: Support for rpm hasn't been enabled.",
+                    ToolMissing: true);
+            }
+
+            if (stderr.Contains("error:", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("fatal:", StringComparison.OrdinalIgnoreCase))
+            {
+                return new AbiDiffResult(
+                    Succeeded: false,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: stderr.Trim(),
+                    ErrorMessage: $"abipkgdiff reported error on stderr: {stderr.Trim()}");
+            }
         }
 
         var hasChange = (exitCode & (abidiffChange | abidiffIncompatible)) != 0;
