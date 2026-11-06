@@ -76,6 +76,8 @@ builder.Services.Configure<SpdxComplianceOptions>(config.GetSection("SpdxComplia
 builder.Services.Configure<CveSecurityOptions>(config.GetSection("CveSecurity"));
 builder.Services.Configure<RebuildImpactOptions>(config.GetSection("RebuildImpact"));
 builder.Services.Configure<AbiComplianceOptions>(config.GetSection("AbiCompliance"));
+builder.Services.Configure<FileCacheOptions>(config.GetSection("FileCache"));
+builder.Services.AddSingleton<IFileContentCache, FileContentCache>();
 
 // Register pipeline infrastructure and mutual-exclusion engine
 builder.Services.AddSingleton<PullRequestLockManager>();

@@ -32,8 +32,13 @@ public enum PullRequestEventType
 public class PullRequestContext
 {
     private readonly IGitHubService _gitHubService;
-    private readonly ConcurrentDictionary<string, Lazy<Task<string>>> _fileContentCache = new(StringComparer.Ordinal);
+    private readonly IFileContentCache _fileContentCache;
     private bool _isRefreshed;
+
+    /// <summary>
+    /// Thread-safe file content and Git blob cache shared across modules or pipeline events.
+    /// </summary>
+    public IFileContentCache FileContentCache => _fileContentCache;
 
     /// <summary>
     /// Cancellation token associated with the current pipeline execution.
@@ -284,9 +289,11 @@ public class PullRequestContext
         IssueCommentEvent? commentEvent = null,
         PullRequestReviewCommentAction? reviewCommentAction = null,
         PullRequestReviewCommentEvent? reviewCommentEvent = null,
+        IFileContentCache? fileContentCache = null,
         CancellationToken cancellationToken = default)
     {
         _gitHubService = gitHubService;
+        _fileContentCache = fileContentCache ?? new FileContentCache();
         CancellationToken = cancellationToken;
         Headers = headers;
         EventType = eventType;
@@ -364,6 +371,19 @@ public class PullRequestContext
         WebhookHeaders? headers,
         PullRequestEvent prEvent,
         PullRequestAction action,
+        CancellationToken cancellationToken = default) =>
+        FromPullRequestEvent(gitHub, teamName, headers, prEvent, action, fileContentCache: null, cancellationToken);
+
+    /// <summary>
+    /// Creates a PullRequestContext from a native GitHub pull request event with an explicit file content cache.
+    /// </summary>
+    public static PullRequestContext FromPullRequestEvent(
+        IGitHubService gitHub,
+        string teamName,
+        WebhookHeaders? headers,
+        PullRequestEvent prEvent,
+        PullRequestAction action,
+        IFileContentCache? fileContentCache,
         CancellationToken cancellationToken = default)
     {
         var owner = prEvent.Repository?.Owner?.Login ?? string.Empty;
@@ -392,6 +412,7 @@ public class PullRequestContext
             prAction: action,
             prEvent: prEvent,
             senderType: prEvent.Sender?.Type?.ToString(),
+            fileContentCache: fileContentCache,
             cancellationToken: cancellationToken);
     }
 
@@ -405,6 +426,20 @@ public class PullRequestContext
         string repo,
         PullRequest pullRequest,
         WebhookHeaders? headers = null,
+        CancellationToken cancellationToken = default) =>
+        FromPullRequest(gitHub, teamName, owner, repo, pullRequest, headers, fileContentCache: null, cancellationToken);
+
+    /// <summary>
+    /// Creates a PullRequestContext from an authoritative Octokit PullRequest model with an explicit file content cache.
+    /// </summary>
+    public static PullRequestContext FromPullRequest(
+        IGitHubService gitHub,
+        string teamName,
+        string owner,
+        string repo,
+        PullRequest pullRequest,
+        WebhookHeaders? headers,
+        IFileContentCache? fileContentCache,
         CancellationToken cancellationToken = default)
     {
         return FromPullRequestInternal(
@@ -417,6 +452,7 @@ public class PullRequestContext
             action: PullRequestAction.Synchronize.ToString(),
             prAction: PullRequestAction.Synchronize,
             headers: headers,
+            fileContentCache: fileContentCache,
             cancellationToken: cancellationToken);
     }
 
@@ -431,6 +467,21 @@ public class PullRequestContext
         PullRequest pullRequest,
         AbiDiffResult? abiResult = null,
         WebhookHeaders? headers = null,
+        CancellationToken cancellationToken = default) =>
+        FromWorkflowRun(gitHub, teamName, owner, repo, pullRequest, abiResult, headers, fileContentCache: null, cancellationToken);
+
+    /// <summary>
+    /// Creates a PullRequestContext from a GitHub workflow_run event associated with a pull request with an explicit file content cache.
+    /// </summary>
+    public static PullRequestContext FromWorkflowRun(
+        IGitHubService gitHub,
+        string teamName,
+        string owner,
+        string repo,
+        PullRequest pullRequest,
+        AbiDiffResult? abiResult,
+        WebhookHeaders? headers,
+        IFileContentCache? fileContentCache,
         CancellationToken cancellationToken = default)
     {
         var ctx = FromPullRequestInternal(
@@ -443,6 +494,7 @@ public class PullRequestContext
             action: "completed",
             prAction: null,
             headers: headers,
+            fileContentCache: fileContentCache,
             cancellationToken: cancellationToken);
 
         ctx.AbiResult = abiResult;
@@ -459,7 +511,8 @@ public class PullRequestContext
         string action,
         PullRequestAction? prAction,
         WebhookHeaders? headers,
-        CancellationToken cancellationToken)
+        IFileContentCache? fileContentCache = null,
+        CancellationToken cancellationToken = default)
     {
         var labels = pullRequest.Labels?
             .Select(l => l.Name)
@@ -486,6 +539,7 @@ public class PullRequestContext
             existingLabels: labels,
             prAction: prAction,
             senderType: pullRequest.User?.Type?.ToString(),
+            fileContentCache: fileContentCache,
             cancellationToken: cancellationToken);
     }
 
@@ -499,6 +553,19 @@ public class PullRequestContext
         WebhookHeaders? headers,
         WebhookPullRequestReviewEvent reviewEvent,
         PullRequestReviewAction action,
+        CancellationToken cancellationToken = default) =>
+        FromReviewEvent(gitHub, teamName, headers, reviewEvent, action, fileContentCache: null, cancellationToken);
+
+    /// <summary>
+    /// Creates a PullRequestContext from a native GitHub pull request review event with an explicit file content cache.
+    /// </summary>
+    public static PullRequestContext FromReviewEvent(
+        IGitHubService gitHub,
+        string teamName,
+        WebhookHeaders? headers,
+        WebhookPullRequestReviewEvent reviewEvent,
+        PullRequestReviewAction action,
+        IFileContentCache? fileContentCache,
         CancellationToken cancellationToken = default)
     {
         var owner = reviewEvent.Repository?.Owner?.Login ?? string.Empty;
@@ -527,6 +594,7 @@ public class PullRequestContext
             reviewAction: action,
             senderType: reviewEvent.Sender?.Type?.ToString(),
             reviewEvent: reviewEvent,
+            fileContentCache: fileContentCache,
             cancellationToken: cancellationToken);
     }
 
@@ -541,6 +609,19 @@ public class PullRequestContext
         WebhookHeaders? headers,
         IssueCommentEvent commentEvent,
         IssueCommentAction action,
+        CancellationToken cancellationToken = default) =>
+        FromIssueCommentEvent(gitHub, teamName, headers, commentEvent, action, fileContentCache: null, cancellationToken);
+
+    /// <summary>
+    /// Creates a PullRequestContext from an issue comment event on a pull request with an explicit file content cache.
+    /// </summary>
+    public static PullRequestContext FromIssueCommentEvent(
+        IGitHubService gitHub,
+        string teamName,
+        WebhookHeaders? headers,
+        IssueCommentEvent commentEvent,
+        IssueCommentAction action,
+        IFileContentCache? fileContentCache,
         CancellationToken cancellationToken = default)
     {
         var owner = commentEvent.Repository?.Owner?.Login ?? string.Empty;
@@ -570,6 +651,7 @@ public class PullRequestContext
             commentAction: action,
             senderType: commentEvent.Sender?.Type?.ToString(),
             commentEvent: commentEvent,
+            fileContentCache: fileContentCache,
             cancellationToken: cancellationToken);
     }
 
@@ -582,6 +664,19 @@ public class PullRequestContext
         WebhookHeaders? headers,
         PullRequestReviewCommentEvent reviewCommentEvent,
         PullRequestReviewCommentAction action,
+        CancellationToken cancellationToken = default) =>
+        FromReviewCommentEvent(gitHub, teamName, headers, reviewCommentEvent, action, fileContentCache: null, cancellationToken);
+
+    /// <summary>
+    /// Creates a PullRequestContext from a native GitHub pull request inline review comment event with an explicit file content cache.
+    /// </summary>
+    public static PullRequestContext FromReviewCommentEvent(
+        IGitHubService gitHub,
+        string teamName,
+        WebhookHeaders? headers,
+        PullRequestReviewCommentEvent reviewCommentEvent,
+        PullRequestReviewCommentAction action,
+        IFileContentCache? fileContentCache,
         CancellationToken cancellationToken = default)
     {
         var owner = reviewCommentEvent.Repository?.Owner?.Login ?? string.Empty;
@@ -610,6 +705,7 @@ public class PullRequestContext
             reviewCommentAction: action,
             reviewCommentEvent: reviewCommentEvent,
             senderType: reviewCommentEvent.Sender?.Type?.ToString(),
+            fileContentCache: fileContentCache,
             cancellationToken: cancellationToken);
     }
 
@@ -622,26 +718,46 @@ public class PullRequestContext
         WebhookHeaders? headers,
         IssueCommentEvent commentEvent,
         IssueCommentAction action,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(FromIssueCommentEvent(gitHub, teamName, headers, commentEvent, action, fileContentCache: null, cancellationToken));
+
+    /// <summary>
+    /// Asynchronous overload for backward compatibility with an explicit file content cache.
+    /// </summary>
+    public static Task<PullRequestContext> FromIssueCommentEventAsync(
+        IGitHubService gitHub,
+        string teamName,
+        WebhookHeaders? headers,
+        IssueCommentEvent commentEvent,
+        IssueCommentAction action,
+        IFileContentCache? fileContentCache,
         CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(FromIssueCommentEvent(gitHub, teamName, headers, commentEvent, action, cancellationToken));
+        return Task.FromResult(FromIssueCommentEvent(gitHub, teamName, headers, commentEvent, action, fileContentCache, cancellationToken));
     }
 
     /// <summary>
     /// Fetches file contents with thread-safe path-and-SHA caching.
-    /// Subsequent calls for the same path in the current context return the cached content without network I/O.
+    /// Subsequent calls for the same path and SHA return the cached content without network I/O.
     /// </summary>
-    public Task<string> GetFileContentAsync(string path, string? sha = null, CancellationToken cancellationToken = default)
+    public Task<string> GetFileContentAsync(string path, string? sha = null, CancellationToken cancellationToken = default) =>
+        GetFileContentAsync(path, sha, blobSha: null, cancellationToken);
+
+    /// <summary>
+    /// Fetches file contents with thread-safe path-and-SHA caching.
+    /// Subsequent calls for the same path and SHA/blobSha return the cached content without network I/O.
+    /// Supports cross-context caching by blobSha (when available) to avoid redundant requests on multi-commit PRs.
+    /// </summary>
+    public Task<string> GetFileContentAsync(string path, string? sha, string? blobSha, CancellationToken cancellationToken = default)
     {
         var targetSha = sha ?? HeadSha;
-        var key = $"{path}@{targetSha}";
+        var cacheRef = !string.IsNullOrWhiteSpace(blobSha) ? blobSha : targetSha;
+        var key = $"{Owner}/{Repo}:{path}@{cacheRef}";
         var token = cancellationToken != default ? cancellationToken : CancellationToken;
-        return _fileContentCache.GetOrAdd(
+
+        return _fileContentCache.GetOrCreateAsync(
             key,
-            _ => new Lazy<Task<string>>(
-                () => _gitHubService.GetFileContentAsync(Owner, Repo, path, targetSha, token),
-                LazyThreadSafetyMode.ExecutionAndPublication)
-        ).Value;
+            () => _gitHubService.GetFileContentAsync(Owner, Repo, path, targetSha, token));
     }
 
     /// <summary>

@@ -84,7 +84,7 @@ public partial class SpdxComplianceModule : IPullRequestModule
             string content;
             try
             {
-                content = await context.GetFileContentAsync(file.FileName, context.HeadSha, ct);
+                content = await context.GetFileContentAsync(file.FileName, context.HeadSha, file.Sha, ct);
             }
             catch (OperationCanceledException)
             {

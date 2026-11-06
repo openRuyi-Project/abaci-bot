@@ -31,6 +31,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     private readonly BotDetectionOptions _botOptions;
     private readonly IArtifactService? _artifactService;
     private readonly IAbiDiffService? _abiDiffService;
+    private readonly IFileContentCache? _fileCache;
 
     public GitHubWebhookProcessor(
         IGitHubService github,
@@ -41,7 +42,8 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         ILogger<GitHubWebhookProcessor>? logger = null,
         IOptions<BotDetectionOptions>? botOptions = null,
         IArtifactService? artifactService = null,
-        IAbiDiffService? abiDiffService = null)
+        IAbiDiffService? abiDiffService = null,
+        IFileContentCache? fileCache = null)
     {
         _github = github;
         _config = config;
@@ -54,6 +56,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             ?? new BotDetectionOptions();
         _artifactService = artifactService;
         _abiDiffService = abiDiffService;
+        _fileCache = fileCache;
     }
 
     /// <summary>
@@ -90,7 +93,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             return;
 
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromPullRequestEvent(_github, teamName, headers, pullRequestEvent, action, cancellationToken);
+        var context = PullRequestContext.FromPullRequestEvent(_github, teamName, headers, pullRequestEvent, action, _fileCache, cancellationToken);
 
         using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
         {
@@ -115,7 +118,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             return;
 
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromReviewEvent(_github, teamName, headers, pullRequestReviewEvent, action, cancellationToken);
+        var context = PullRequestContext.FromReviewEvent(_github, teamName, headers, pullRequestReviewEvent, action, _fileCache, cancellationToken);
 
         using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
         {
@@ -140,7 +143,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             return;
 
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromReviewCommentEvent(_github, teamName, headers, pullRequestReviewCommentEvent, action, cancellationToken);
+        var context = PullRequestContext.FromReviewCommentEvent(_github, teamName, headers, pullRequestReviewCommentEvent, action, _fileCache, cancellationToken);
 
         using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
         {
@@ -196,7 +199,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             return;
 
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromIssueCommentEvent(_github, teamName, headers, issueCommentEvent, action, cancellationToken);
+        var context = PullRequestContext.FromIssueCommentEvent(_github, teamName, headers, issueCommentEvent, action, _fileCache, cancellationToken);
 
         using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
         {
@@ -324,7 +327,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                         continue;
                     }
 
-                    var context = PullRequestContext.FromWorkflowRun(_github, teamName, owner, repo, fullPr, abiResult, headers, cancellationToken);
+                    var context = PullRequestContext.FromWorkflowRun(_github, teamName, owner, repo, fullPr, abiResult, headers, _fileCache, cancellationToken);
                     await _pipeline.ExecuteAsync(context, cancellationToken);
                 }
                 catch (Exception ex)

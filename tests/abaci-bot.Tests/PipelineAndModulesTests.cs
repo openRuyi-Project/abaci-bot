@@ -2390,6 +2390,48 @@ public class PipelineAndModulesTests
     }
 
     [Fact]
+    public async Task BuildSystemAnalysisModule_MultipleSpecFilesConcurrently_AssignsAllDeclaredBuildSystemsAndCi()
+    {
+        var module = new BuildSystemAnalysisModule();
+        var gitHub = Substitute.For<IGitHubService>();
+
+        var spec1 = (Octokit.PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequestFile));
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.FileName))?.SetValue(spec1, "SPECS/pkg1.spec");
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Status))?.SetValue(spec1, "added");
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Sha))?.SetValue(spec1, "sha_pkg1");
+
+        var spec2 = (Octokit.PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequestFile));
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.FileName))?.SetValue(spec2, "SPECS/pkg2.spec");
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Status))?.SetValue(spec2, "modified");
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Sha))?.SetValue(spec2, "sha_pkg2");
+
+        var ciFile = (Octokit.PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequestFile));
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.FileName))?.SetValue(ciFile, ".github/workflows/ci.yml");
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Status))?.SetValue(ciFile, "modified");
+
+        gitHub.GetPullRequestFilesAsync("owner", "repo", 1, Arg.Any<CancellationToken>())
+            .Returns(new[] { spec1, spec2, ciFile });
+
+        gitHub.GetFileContentAsync("owner", "repo", "SPECS/pkg1.spec", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns("Name: pkg1\nBuildSystem: autotools\n");
+
+        gitHub.GetFileContentAsync("owner", "repo", "SPECS/pkg2.spec", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns("Name: pkg2\nBuildSystem: meson\n");
+
+        var context = CreateMockContext(
+            gitHub,
+            prNumber: 1,
+            existingLabels: Array.Empty<string>(),
+            prAction: Octokit.Webhooks.Events.PullRequest.PullRequestAction.Opened);
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.Ci, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.BuildSystemAutotools, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.BuildSystemMeson, context.LabelsToAdd);
+    }
+
+    [Fact]
     public void UserContributionModule_ExposesInterfaceManagedLabels()
     {
         var module = new UserContributionModule();

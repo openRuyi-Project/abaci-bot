@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using abaci_bot.Contexts;
 using abaci_bot.Pipelines;
@@ -56,7 +57,7 @@ public partial class BuildSystemAnalysisModule : IPullRequestModule
     public async Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
         var files = await context.ChangedFiles.Value;
-        var desiredLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var desiredLabels = new ConcurrentBag<string>();
 
         foreach (var file in files)
         {
@@ -65,60 +66,72 @@ public partial class BuildSystemAnalysisModule : IPullRequestModule
             {
                 desiredLabels.Add(GitHubLabels.Ci);
             }
-
-            // Only inspect file contents if the file was not deleted in this PR
-            if (!string.Equals(file.Status, "removed", StringComparison.OrdinalIgnoreCase))
-            {
-                if (file.FileName.EndsWith(".spec", StringComparison.OrdinalIgnoreCase))
-                {
-                    var content = await context.GetFileContentAsync(file.FileName, context.HeadSha, cancellationToken);
-
-                    // Identify declared build systems in RPM spec files (flexible whitespace handling)
-                    var match = BuildSystemRegex().Match(content);
-
-                    if (match.Success)
-                    {
-                        var system = match.Groups[1].Value.ToLowerInvariant();
-                        switch (system)
-                        {
-                            case "autotools":
-                                desiredLabels.Add(GitHubLabels.BuildSystemAutotools);
-                                break;
-                            case "cmake":
-                                desiredLabels.Add(GitHubLabels.BuildSystemCmake);
-                                break;
-                            case "golangmodule":
-                                desiredLabels.Add(GitHubLabels.BuildSystemGolangModule);
-                                break;
-                            case "golang":
-                                desiredLabels.Add(GitHubLabels.BuildSystemGolang);
-                                break;
-                            case "rustcrate":
-                                desiredLabels.Add(GitHubLabels.BuildSystemRustCrate);
-                                break;
-                            case "rust":
-                                desiredLabels.Add(GitHubLabels.BuildSystemRust);
-                                break;
-                            case "meson":
-                                desiredLabels.Add(GitHubLabels.BuildSystemMeson);
-                                break;
-                            case "pyproject":
-                                desiredLabels.Add(GitHubLabels.BuildSystemPyproject);
-                                break;
-                            default:
-                                desiredLabels.Add(GitHubLabels.BuildSystemMisc);
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        desiredLabels.Add(GitHubLabels.BuildSystemMisc);
-                    }
-                }
-            }
         }
 
+        var specFiles = files
+            .Where(f => !string.Equals(f.Status, "removed", StringComparison.OrdinalIgnoreCase) &&
+                        f.FileName.EndsWith(".spec", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (specFiles.Count > 0)
+        {
+            var parallelOptions = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = 8,
+                CancellationToken = cancellationToken
+            };
+
+            await Parallel.ForEachAsync(specFiles, parallelOptions, async (file, ct) =>
+            {
+                var content = await context.GetFileContentAsync(file.FileName, context.HeadSha, file.Sha, ct);
+
+                // Identify declared build systems in RPM spec files (flexible whitespace handling)
+                var match = BuildSystemRegex().Match(content);
+
+                if (match.Success)
+                {
+                    var system = match.Groups[1].Value.ToLowerInvariant();
+                    switch (system)
+                    {
+                        case "autotools":
+                            desiredLabels.Add(GitHubLabels.BuildSystemAutotools);
+                            break;
+                        case "cmake":
+                            desiredLabels.Add(GitHubLabels.BuildSystemCmake);
+                            break;
+                        case "golangmodule":
+                            desiredLabels.Add(GitHubLabels.BuildSystemGolangModule);
+                            break;
+                        case "golang":
+                            desiredLabels.Add(GitHubLabels.BuildSystemGolang);
+                            break;
+                        case "rustcrate":
+                            desiredLabels.Add(GitHubLabels.BuildSystemRustCrate);
+                            break;
+                        case "rust":
+                            desiredLabels.Add(GitHubLabels.BuildSystemRust);
+                            break;
+                        case "meson":
+                            desiredLabels.Add(GitHubLabels.BuildSystemMeson);
+                            break;
+                        case "pyproject":
+                            desiredLabels.Add(GitHubLabels.BuildSystemPyproject);
+                            break;
+                        default:
+                            desiredLabels.Add(GitHubLabels.BuildSystemMisc);
+                            break;
+                    }
+                }
+                else
+                {
+                    desiredLabels.Add(GitHubLabels.BuildSystemMisc);
+                }
+            });
+        }
+
+        var uniqueLabels = new HashSet<string>(desiredLabels, StringComparer.OrdinalIgnoreCase);
+
         // Reconcile complete managed label set: add current desired labels, remove stale ones
-        context.ReconcileLabels(ManagedLabels, label => desiredLabels.Contains(label));
+        context.ReconcileLabels(ManagedLabels, label => uniqueLabels.Contains(label));
     }
 }

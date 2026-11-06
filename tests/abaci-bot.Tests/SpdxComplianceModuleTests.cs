@@ -30,7 +30,9 @@ public class SpdxComplianceModuleTests
     private PullRequestContext CreateContext(
         IReadOnlyList<PullRequestFile> files,
         PullRequestAction? action = null,
-        IEnumerable<string>? existingLabels = null)
+        IEnumerable<string>? existingLabels = null,
+        IFileContentCache? cache = null,
+        string headSha = "head123")
     {
         var effectiveAction = action ?? PullRequestAction.Opened;
         _gitHub.GetPullRequestFilesAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -44,7 +46,7 @@ public class SpdxComplianceModuleTests
             owner: "openRuyi-Project",
             repo: "openRuyi",
             prNumber: 42,
-            headSha: "head123",
+            headSha: headSha,
             baseBranch: "main",
             isDraft: false,
             isMerged: null,
@@ -54,14 +56,19 @@ public class SpdxComplianceModuleTests
             authorLogin: "contributor",
             action: effectiveAction.ToString(),
             existingLabels: existingLabels ?? Array.Empty<string>(),
-            prAction: effectiveAction);
+            prAction: effectiveAction,
+            fileContentCache: cache);
     }
 
-    private static PullRequestFile CreateFile(string filename, string status = "modified")
+    private static PullRequestFile CreateFile(string filename, string status = "modified", string? sha = null)
     {
         var file = (PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequestFile));
         typeof(PullRequestFile).GetProperty(nameof(PullRequestFile.FileName))?.SetValue(file, filename);
         typeof(PullRequestFile).GetProperty(nameof(PullRequestFile.Status))?.SetValue(file, status);
+        if (!string.IsNullOrEmpty(sha))
+        {
+            typeof(PullRequestFile).GetProperty(nameof(PullRequestFile.Sha))?.SetValue(file, sha);
+        }
         return file;
     }
 
@@ -688,17 +695,34 @@ public class SpdxComplianceModuleTests
 
         var context = CreateContext(files);
 
-        foreach (var file in files)
-        {
-            var fileName = file.FileName;
-            _gitHub.GetFileContentAsync(Arg.Any<string>(), Arg.Any<string>(), fileName, Arg.Any<string>(), Arg.Any<CancellationToken>())
-                .Returns(Task.FromResult($"Name: test\nVersion: 1.0\nLicense: NonStandard_{fileName}\n"));
-        }
+        var current = 0;
+        var peak = 0;
+
+        _gitHub.GetFileContentAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(async callInfo =>
+            {
+                var c = Interlocked.Increment(ref current);
+                int currentPeak, newPeak;
+                do
+                {
+                    currentPeak = peak;
+                    newPeak = Math.Max(currentPeak, c);
+                } while (Interlocked.CompareExchange(ref peak, newPeak, currentPeak) != currentPeak);
+
+                await Task.Delay(25);
+                Interlocked.Decrement(ref current);
+
+                var fileName = callInfo.ArgAt<string>(2);
+                return $"Name: test\nVersion: 1.0\nLicense: NonStandard_{fileName}\n";
+            });
 
         await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Contains(GitHubLabels.ComplianceLicenseIssue, context.LabelsToAdd);
         Assert.Single(context.PendingComments);
+
+        // P3 guardian: peak must be > 1 to prove concurrent execution
+        Assert.True(peak > 1, $"Expected concurrent fetches, observed peak was {peak}");
 
         var comment = context.PendingComments[0];
         // Ensure deterministic sorting: pkg01 appears before pkg02, pkg02 before pkg03, etc.
@@ -711,6 +735,76 @@ public class SpdxComplianceModuleTests
             Assert.True(index > lastIndex, $"Expected {expectedTag} (at {index}) to appear after previous issue (at {lastIndex})");
             lastIndex = index;
         }
+    }
+
+    [Fact]
+    public async Task ProcessAsync_BuildSystemAndSpdxModules_ShareCache_FetchesEachSpecOnce()
+    {
+        var service = CreateService();
+        var spdxOptions = Microsoft.Extensions.Options.Options.Create(new SpdxComplianceOptions());
+        var spdxModule = new SpdxComplianceModule(service, spdxOptions);
+        var buildSystemModule = new BuildSystemAnalysisModule();
+
+        var files = new List<PullRequestFile>();
+        for (var i = 1; i <= 5; i++)
+        {
+            files.Add(CreateFile($"SPECS/pkg{i:D2}/pkg{i:D2}.spec", sha: $"blob_sha_{i}"));
+        }
+
+        var sharedCache = new FileContentCache();
+        var context = CreateContext(files, cache: sharedCache);
+
+        _gitHub.GetFileContentAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var path = callInfo.ArgAt<string>(2);
+                return $"Name: test\nVersion: 1.0\nBuildSystem: cmake\nLicense: Apache-2.0\n# File: {path}\n";
+            });
+
+        // 1. Run BuildSystemAnalysisModule (Priority: 30)
+        await buildSystemModule.ProcessAsync(context, CancellationToken.None);
+        Assert.Contains(GitHubLabels.BuildSystemCmake, context.LabelsToAdd);
+
+        // 2. Run SpdxComplianceModule (Priority: 60)
+        await spdxModule.ProcessAsync(context, CancellationToken.None);
+        Assert.DoesNotContain(GitHubLabels.ComplianceLicenseIssue, context.LabelsToAdd);
+
+        // Each of the 5 spec files must only have been requested over the network EXACTLY ONCE
+        await _gitHub.Received(5).GetFileContentAsync(
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetFileContentAsync_AcrossContextsSharingFileContentCache_ReusesBlobContentAcrossCommits()
+    {
+        var sharedCache = new FileContentCache();
+        var file = CreateFile("SPECS/app/app.spec", sha: "immutable_blob_sha_123");
+
+        var contextCommit1 = CreateContext(new[] { file }, cache: sharedCache, headSha: "commit1_sha");
+        var contextCommit2 = CreateContext(new[] { file }, cache: sharedCache, headSha: "commit2_sha");
+
+        _gitHub.GetFileContentAsync(Arg.Any<string>(), Arg.Any<string>(), "SPECS/app/app.spec", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns("Name: app\nVersion: 1.0\nLicense: MIT\n");
+
+        // First context fetches content
+        var content1 = await contextCommit1.GetFileContentAsync(file.FileName, contextCommit1.HeadSha, file.Sha);
+        Assert.Contains("License: MIT", content1);
+
+        // Second context for next commit requests same file with same blob SHA -> must hit cache!
+        var content2 = await contextCommit2.GetFileContentAsync(file.FileName, contextCommit2.HeadSha, file.Sha);
+        Assert.Contains("License: MIT", content2);
+
+        // Network call must only have happened once
+        await _gitHub.Received(1).GetFileContentAsync(
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            "SPECS/app/app.spec",
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
     }
 
     private sealed class SimpleHttpHandler : HttpMessageHandler
