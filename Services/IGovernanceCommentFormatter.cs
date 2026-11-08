@@ -35,4 +35,9 @@ public interface IGovernanceCommentFormatter
     /// Formats an ABI breaking change warning using GFM [!CAUTION].
     /// </summary>
     string FormatAbiBreakingChange(string diffSnippet, string? locale = null);
+
+    /// <summary>
+    /// Formats an ABI compliance check incomplete / failed advisory using GFM [!WARNING].
+    /// </summary>
+    string FormatAbiCheckFailed(string reason, string? locale = null);
 }

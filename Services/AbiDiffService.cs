@@ -32,11 +32,13 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
         _logger = logger;
     }
 
+    private bool _privateDsoSupported = true;
+
     /// <summary>
     /// Builds the ProcessStartInfo configured to execute abipkgdiff.
     /// Exposes process construction for testing CLI contracts without starting external processes.
     /// </summary>
-    public static ProcessStartInfo BuildStartInfo(string executablePath, string oldRpmPath, string newRpmPath)
+    public static ProcessStartInfo BuildStartInfo(string executablePath, string oldRpmPath, string newRpmPath, bool privateDso = true)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -46,6 +48,10 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        if (privateDso)
+        {
+            startInfo.ArgumentList.Add("--private-dso");
+        }
         startInfo.ArgumentList.Add(oldRpmPath);
         startInfo.ArgumentList.Add(newRpmPath);
         return startInfo;
@@ -81,7 +87,8 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
         Process? process = null;
         try
         {
-            var startInfo = BuildStartInfo(_options.AbipkgdiffExecutablePath, oldRpmPath, newRpmPath);
+            var usePrivateDso = _privateDsoSupported;
+            var startInfo = BuildStartInfo(_options.AbipkgdiffExecutablePath, oldRpmPath, newRpmPath, usePrivateDso);
 
             process = new Process { StartInfo = startInfo };
             process.Start();
@@ -92,6 +99,25 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
             await process.WaitForExitAsync(effectiveCt);
             var stdout = await stdoutTask;
             var stderr = await stderrTask;
+
+            if (usePrivateDso && (process.ExitCode & 2) != 0 &&
+                (stderr.Contains("private-dso", StringComparison.OrdinalIgnoreCase) || stderr.Contains("unrecognized option", StringComparison.OrdinalIgnoreCase)))
+            {
+                _privateDsoSupported = false;
+                _logger?.LogWarning("abipkgdiff executable does not support --private-dso; retrying without this option");
+                process.Dispose();
+
+                startInfo = BuildStartInfo(_options.AbipkgdiffExecutablePath, oldRpmPath, newRpmPath, privateDso: false);
+                process = new Process { StartInfo = startInfo };
+                process.Start();
+
+                stdoutTask = process.StandardOutput.ReadToEndAsync(effectiveCt);
+                stderrTask = process.StandardError.ReadToEndAsync(effectiveCt);
+
+                await process.WaitForExitAsync(effectiveCt);
+                stdout = await stdoutTask;
+                stderr = await stderrTask;
+            }
 
             var exitCode = process.ExitCode;
             var result = InterpretExitCode(exitCode, stdout, stderr);
@@ -180,6 +206,8 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
 
     /// <summary>
     /// Interprets the bitmask return code from Libabigail abipkgdiff / abidiff.
+    /// Prioritizes stderr capability checks (e.g. missing RPM support) before bitmask evaluation
+    /// to accommodate differences across Linux distributions (such as exit code 1 on Ubuntu).
     /// </summary>
     public static AbiDiffResult InterpretExitCode(int exitCode, string stdout, string stderr = "")
     {
@@ -194,17 +222,12 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
         const int abidiffChange = 4;
         const int abidiffIncompatible = 8;
 
-        if ((exitCode & abidiffError) != 0 || (exitCode & abidiffUsage) != 0)
-        {
-            return new AbiDiffResult(
-                Succeeded: false,
-                HasAbiChange: false,
-                IsBreakingChange: false,
-                Details: string.IsNullOrWhiteSpace(stdout) ? stderr : stdout,
-                ErrorMessage: $"abipkgdiff reported tool failure (exit code: {exitCode})");
-        }
-
-        if (exitCode == 0 && !string.IsNullOrWhiteSpace(stderr))
+        // 1. Inspect stderr for missing tools / extraction failure first.
+        // Ubuntu 22.04 exits with code 1 when libabigail lacks RPM support.
+        // Ubuntu 24.04 exits with code 0 when rpm2cpio is missing, writing:
+        // "rpm2cpio: command not found", "cpio: premature end of archive", "abipkgdiff: Error while extracting package".
+        // Identifying these as tool/engine missing allows automatic fallback to the managed ELF runner.
+        if (!string.IsNullOrWhiteSpace(stderr))
         {
             if (stderr.Contains("Support for rpm hasn't been enabled", StringComparison.OrdinalIgnoreCase))
             {
@@ -217,20 +240,76 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                     ToolMissing: true);
             }
 
-            if (stderr.Contains("error:", StringComparison.OrdinalIgnoreCase) ||
-                stderr.Contains("fatal:", StringComparison.OrdinalIgnoreCase))
+            var isToolOrExtractionMissing =
+                stderr.Contains("rpm2cpio: command not found", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("command not found", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("Error while extracting package", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("premature end of archive", StringComparison.OrdinalIgnoreCase);
+
+            if (isToolOrExtractionMissing)
             {
                 return new AbiDiffResult(
                     Succeeded: false,
                     HasAbiChange: false,
                     IsBreakingChange: false,
                     Details: stderr.Trim(),
-                    ErrorMessage: $"abipkgdiff reported error on stderr: {stderr.Trim()}");
+                    ErrorMessage: $"abipkgdiff reported missing tool or package extraction failure: {stderr.Trim()}",
+                    ToolMissing: true);
+            }
+        }
+
+        // 2. Handle execution errors and usage errors
+        if ((exitCode & abidiffError) != 0 || (exitCode & abidiffUsage) != 0)
+        {
+            return new AbiDiffResult(
+                Succeeded: false,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: string.IsNullOrWhiteSpace(stdout) ? stderr : stdout,
+                ErrorMessage: $"abipkgdiff reported tool failure (exit code: {exitCode})");
+        }
+
+        // 3. Handle zero exit code with non-empty stderr
+        if (exitCode == 0 && !string.IsNullOrWhiteSpace(stderr))
+        {
+            var hasExplicitError =
+                stderr.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("fatal", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("fail", StringComparison.OrdinalIgnoreCase);
+
+            if (hasExplicitError)
+            {
+                var msg = string.IsNullOrWhiteSpace(stdout)
+                    ? $"abipkgdiff reported error on stderr: produced no comparison output ({stderr.Trim()})"
+                    : $"abipkgdiff reported error on stderr: {stderr.Trim()}";
+
+                return new AbiDiffResult(
+                    Succeeded: false,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: stderr.Trim(),
+                    ErrorMessage: msg);
             }
         }
 
         var hasChange = (exitCode & (abidiffChange | abidiffIncompatible)) != 0;
         var isBreaking = (exitCode & abidiffIncompatible) != 0;
+
+        // Inspect stdout for SONAME changes, removed binaries, and added binaries.
+        // Libabigail abipkgdiff exits with code 0 on removed or added binaries,
+        // but removes are breaking changes and additions are ABI changes.
+        if (!string.IsNullOrWhiteSpace(stdout))
+        {
+            if (stdout.Contains("Removed binaries:", StringComparison.OrdinalIgnoreCase))
+            {
+                isBreaking = true;
+                hasChange = true;
+            }
+            else if (stdout.Contains("Added binaries:", StringComparison.OrdinalIgnoreCase))
+            {
+                hasChange = true;
+            }
+        }
 
         return new AbiDiffResult(
             Succeeded: true,
@@ -242,10 +321,13 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
 
 /// <summary>
 /// Deep module coordinating binary ABI comparison and reporting.
+/// Transparently handles native abipkgdiff execution and falls back to
+/// managed ELF/RPM symbol analysis when native tools or RPM support are unavailable.
 /// </summary>
 public class AbiDiffService : IAbiDiffService
 {
     private readonly IAbiDiffRunner _runner;
+    private readonly IAbiDiffRunner? _fallbackRunner;
     private readonly AbiComplianceOptions _options;
     private readonly ILogger<AbiDiffService>? _logger;
 
@@ -253,8 +335,18 @@ public class AbiDiffService : IAbiDiffService
         IAbiDiffRunner runner,
         IOptions<AbiComplianceOptions> options,
         ILogger<AbiDiffService>? logger = null)
+        : this(runner, null, options, logger)
+    {
+    }
+
+    public AbiDiffService(
+        IAbiDiffRunner runner,
+        ManagedElfDiffRunner? fallbackRunner,
+        IOptions<AbiComplianceOptions> options,
+        ILogger<AbiDiffService>? logger = null)
     {
         _runner = runner;
+        _fallbackRunner = fallbackRunner;
         _options = options.Value;
         _logger = logger;
     }
@@ -270,6 +362,16 @@ public class AbiDiffService : IAbiDiffService
                 Details: "ABI compliance scanning is disabled in configuration.");
         }
 
-        return await _runner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
+        var result = await _runner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
+
+        // Fall back to managed ELF runner if primary runner lacks tool or RPM capability
+        if (_options.EnableFallback && _fallbackRunner != null && (!result.Succeeded && result.ToolMissing))
+        {
+            _logger?.LogInformation("Primary ABI runner unavailable ({Reason}). Falling back to managed ELF symbol diff runner.", result.ErrorMessage);
+            var fallbackResult = await _fallbackRunner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
+            return fallbackResult;
+        }
+
+        return result;
     }
 }

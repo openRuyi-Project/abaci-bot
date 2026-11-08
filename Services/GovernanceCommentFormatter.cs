@@ -169,4 +169,66 @@ public class GovernanceCommentFormatter : IGovernanceCommentFormatter
 
         return sb.ToString();
     }
+
+    public string FormatAbiCheckFailed(string reason, string? locale = null)
+    {
+        var isZh = IsChinese(locale);
+        var sanitizedReason = reason.Trim();
+        if (sanitizedReason.Length > 1000)
+        {
+            sanitizedReason = isZh
+                ? sanitizedReason[..1000] + "\n... (输出过长已截断)"
+                : sanitizedReason[..1000] + "\n... (output truncated)";
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("> [!WARNING]");
+
+        if (isZh)
+        {
+            sb.AppendLine("> **ABI 合规比对未能完成**");
+            sb.AppendLine("> 本 PR 的二进制 ABI 比对检查未能完整执行：");
+            if (sanitizedReason.Contains('\n'))
+            {
+                sb.AppendLine("> - 原因：");
+                sb.AppendLine(">");
+                sb.AppendLine("> ```");
+                foreach (var line in sanitizedReason.Split('\n'))
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"> {line.TrimEnd('\r')}");
+                }
+                sb.AppendLine("> ```");
+            }
+            else
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"> - 原因：{sanitizedReason}");
+            }
+            sb.AppendLine(">");
+            sb.Append("> PR 已标记 `Impact: ABI Check Failed`，请维护者检查构建产物或依赖 baseline。");
+        }
+        else
+        {
+            sb.AppendLine("> **ABI Compliance Check Incomplete**");
+            sb.AppendLine("> Binary ABI comparison could not be completed for this pull request:");
+            if (sanitizedReason.Contains('\n'))
+            {
+                sb.AppendLine("> - Reason:");
+                sb.AppendLine(">");
+                sb.AppendLine("> ```");
+                foreach (var line in sanitizedReason.Split('\n'))
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"> {line.TrimEnd('\r')}");
+                }
+                sb.AppendLine("> ```");
+            }
+            else
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"> - Reason: {sanitizedReason}");
+            }
+            sb.AppendLine(">");
+            sb.Append("> The pull request has been tagged with `Impact: ABI Check Failed`. Please verify RPM artifacts or baseline packages.");
+        }
+
+        return sb.ToString();
+    }
 }

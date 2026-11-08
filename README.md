@@ -111,7 +111,9 @@ The ABI compliance module and its runner are configured in `appsettings.json` un
 |---|---|---|---|
 | `Enabled` | `bool` | `true` | Master toggle for the ABI compliance module. |
 | `AbipkgdiffExecutablePath` | `string` | `"abipkgdiff"` | Path or command name of the Libabigail package-level comparison binary. Must be an RPM-enabled build. |
-| `AbidiffExecutablePath` | `string` | – | Deprecated backward-compatible alias for `AbipkgdiffExecutablePath`. Do not set it to `abidiff`: that tool compares unpacked ELF files, not RPM archives. |
+| `EnableFallback` | `bool` | `true` | Enables automatic fallback to pure managed C# ELF/RPM symbol diff engine when native `abipkgdiff` is unavailable or lacks RPM support. |
+| `StrictEngine` | `bool` | `false` | When true, aborts startup if native `abipkgdiff` with RPM support is not found on the host system. |
+| `WorkflowNames` | `List<string>` | `["build", "package", "rpm"]` | Whitelist of workflow name or path substrings authorized to trigger ABI analysis on `workflow_run` events. Non-matching workflows skip ABI analysis without modifying ABI labels. |
 | `StableRpmBaseUrl` | `string?` | `null` | Base URL used to download the baseline/stable RPM for each built package. When unset, no baseline is available and the module reports `Impact: ABI Check Failed`. |
 | `TempExtractionDirectory` | `string?` | `null` | Working directory for artifact extraction and temporary RPM files. Defaults to the system temp directory. |
 | `TimeoutSeconds` | `int` | `300` | Timeout for a single `abipkgdiff` invocation, in seconds. |

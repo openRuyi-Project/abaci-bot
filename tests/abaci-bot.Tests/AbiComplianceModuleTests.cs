@@ -103,6 +103,47 @@ public class AbiComplianceModuleTests
         Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.ImpactAbi, context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
+        Assert.NotEmpty(context.PendingComments);
+        Assert.Contains("ABI Compliance Check Incomplete", context.PendingComments[0]);
+        Assert.Contains("abidiff binary not available", context.PendingComments[0]);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_AbidiffFailedWithExistingLabel_DoesNotAddDuplicateComment()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(_abiService, options);
+
+        var context = new PullRequestContext(
+            gitHubService: _gitHub,
+            teamName: "captains",
+            headers: null,
+            eventType: PullRequestEventType.PullRequest,
+            owner: "openRuyi-Project",
+            repo: "openRuyi",
+            prNumber: 88,
+            headSha: "head123",
+            baseBranch: "main",
+            isDraft: false,
+            isMerged: null,
+            title: "Update libfoo",
+            body: "PR body",
+            senderLogin: "contributor",
+            authorLogin: "contributor",
+            action: "synchronize",
+            existingLabels: new[] { GitHubLabels.ImpactAbiCheckFailed },
+            prAction: PullRequestAction.Synchronize);
+
+        var diffResult = new AbiDiffResult(
+            Succeeded: false,
+            HasAbiChange: false,
+            IsBreakingChange: false,
+            Details: string.Empty,
+            ErrorMessage: "abidiff binary not available");
+        context.AbiResult = diffResult;
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
         Assert.Empty(context.PendingComments);
     }
 

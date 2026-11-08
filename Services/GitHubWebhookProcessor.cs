@@ -29,6 +29,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     private readonly LabelMutexEngine _mutexEngine;
     private readonly ILogger<GitHubWebhookProcessor>? _logger;
     private readonly BotDetectionOptions _botOptions;
+    private readonly AbiComplianceOptions _abiOptions;
     private readonly IArtifactService? _artifactService;
     private readonly IAbiDiffService? _abiDiffService;
     private readonly IFileContentCache? _fileCache;
@@ -43,7 +44,8 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         IOptions<BotDetectionOptions>? botOptions = null,
         IArtifactService? artifactService = null,
         IAbiDiffService? abiDiffService = null,
-        IFileContentCache? fileCache = null)
+        IFileContentCache? fileCache = null,
+        IOptions<AbiComplianceOptions>? abiOptions = null)
     {
         _github = github;
         _config = config;
@@ -54,6 +56,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         _botOptions = botOptions?.Value
             ?? config.GetSection("BotDetection").Get<BotDetectionOptions>()
             ?? new BotDetectionOptions();
+        _abiOptions = abiOptions?.Value
+            ?? config.GetSection("AbiCompliance").Get<AbiComplianceOptions>()
+            ?? new AbiComplianceOptions();
         _artifactService = artifactService;
         _abiDiffService = abiDiffService;
         _fileCache = fileCache;
@@ -225,11 +230,58 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
 
         var runId = workflowRunEvent.WorkflowRun?.Id ?? 0;
         var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
+        var runHeadSha = workflowRunEvent.WorkflowRun?.HeadSha;
 
-        // Perform ABI diff analysis if artifact & abiDiff services are available and run succeeded
+        // Pre-fetch PRs and guard against outdated runs before performing heavy artifact downloads
+        var validPrs = new List<Octokit.PullRequest>();
+        foreach (var pr in pullRequests)
+        {
+            var prNumber = (int)pr.Number;
+            var fullPr = await _github.GetPullRequestAsync(owner, repo, prNumber, cancellationToken);
+            if (fullPr == null)
+            {
+                _logger?.LogWarning("PR #{PrNumber} not found in {Owner}/{Repo} during workflow_run processing; skipping", prNumber, owner, repo);
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(runHeadSha) &&
+                !string.IsNullOrWhiteSpace(fullPr.Head?.Sha) &&
+                !string.Equals(runHeadSha, fullPr.Head.Sha, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger?.LogInformation(
+                    "Workflow run {RunId} head SHA '{RunHeadSha}' does not match PR #{PrNumber} current HEAD '{PrHeadSha}'; skipping outdated run to prevent stale overwrite",
+                    runId, runHeadSha, prNumber, fullPr.Head.Sha);
+                continue;
+            }
+
+            validPrs.Add(fullPr);
+        }
+
+        if (validPrs.Count == 0)
+            return;
+
+        // Determine if this workflow is authorized for ABI compliance checks
+        var workflowName = workflowRunEvent.WorkflowRun?.Name;
+        var workflowPath = workflowRunEvent.WorkflowRun?.Path;
+        var workflowNames = _abiOptions.WorkflowNames != null && _abiOptions.WorkflowNames.Count > 0
+            ? _abiOptions.WorkflowNames
+            : new List<string> { "build", "package", "rpm" };
+
+        var isAbiWorkflow = IsAuthorizedWorkflow(workflowName, workflowPath, workflowNames);
+
+        if (!isAbiWorkflow)
+        {
+            _logger?.LogInformation(
+                "Workflow '{WorkflowName}' (path: '{WorkflowPath}') is not in authorized AbiCompliance:WorkflowNames [{ConfiguredNames}]; skipping ABI diff analysis",
+                workflowName, workflowPath, string.Join(", ", workflowNames));
+        }
+
+        // Perform ABI diff analysis if artifact & abiDiff services are available, run succeeded, and workflow matches
         AbiDiffResult? abiResult = null;
-        if (_artifactService != null && _abiDiffService != null && runId > 0 &&
-            string.Equals(workflowRunEvent.WorkflowRun?.Conclusion?.StringValue, "success", StringComparison.OrdinalIgnoreCase))
+        var conclusion = workflowRunEvent.WorkflowRun?.Conclusion?.StringValue;
+        var isSuccess = string.Equals(conclusion, "success", StringComparison.OrdinalIgnoreCase);
+
+        if (isAbiWorkflow && _artifactService != null && _abiDiffService != null && runId > 0 && isSuccess)
         {
             try
             {
@@ -253,11 +305,15 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                             var diff = await _abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, cancellationToken);
                             diffResults.Add(diff);
                         }
+                        else
+                        {
+                            diffResults.Add(AbiDiffResult.NotPerformed($"Baseline RPM package not available for package '{pkgName}'"));
+                        }
                     }
 
                     if (diffResults.Count > 0)
                     {
-                        // Worst-case aggregation: BreakingChange > AbiChange > Failure > Succeeded
+                        // Priority hierarchy: Breaking > Failure / Incomplete > AbiChange > Clean
                         var breaking = diffResults.FirstOrDefault(d => d.Succeeded && d.IsBreakingChange);
                         if (breaking != null)
                         {
@@ -265,15 +321,15 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                         }
                         else
                         {
-                            var abiChange = diffResults.FirstOrDefault(d => d.Succeeded && d.HasAbiChange);
-                            if (abiChange != null)
+                            var failure = diffResults.FirstOrDefault(d => !d.Succeeded);
+                            if (failure != null)
                             {
-                                abiResult = abiChange;
+                                abiResult = failure;
                             }
                             else
                             {
-                                var failure = diffResults.FirstOrDefault(d => !d.Succeeded);
-                                abiResult = failure ?? diffResults[0];
+                                var abiChange = diffResults.FirstOrDefault(d => d.Succeeded && d.HasAbiChange);
+                                abiResult = abiChange ?? diffResults[0];
                             }
                         }
                     }
@@ -300,34 +356,32 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             }
         }
 
-        foreach (var pr in pullRequests)
+        foreach (var pr in validPrs)
         {
-            var prNumber = (int)pr.Number;
+            var prNumber = pr.Number;
             using (await _lockManager.AcquireLockAsync(owner, repo, prNumber, cancellationToken))
             {
                 try
                 {
-                    var fullPr = await _github.GetPullRequestAsync(owner, repo, prNumber, cancellationToken);
-                    if (fullPr == null)
+                    // Re-fetch current PR under the lock to verify the commit hasn't advanced during heavy artifact downloading / diffing
+                    var currentPr = await _github.GetPullRequestAsync(owner, repo, prNumber, cancellationToken);
+                    if (currentPr == null)
                     {
-                        _logger?.LogWarning("PR #{PrNumber} not found in {Owner}/{Repo} during workflow_run processing; skipping", prNumber, owner, repo);
+                        _logger?.LogWarning("PR #{PrNumber} not found under lock in {Owner}/{Repo}; skipping", prNumber, owner, repo);
                         continue;
                     }
 
-                    // Prevent stale workflow runs from overwriting newer commits:
-                    // Check if the workflow run's HeadSha matches the current PR Head.Sha
-                    var runHeadSha = workflowRunEvent.WorkflowRun?.HeadSha;
                     if (!string.IsNullOrWhiteSpace(runHeadSha) &&
-                        !string.IsNullOrWhiteSpace(fullPr.Head?.Sha) &&
-                        !string.Equals(runHeadSha, fullPr.Head.Sha, StringComparison.OrdinalIgnoreCase))
+                        !string.IsNullOrWhiteSpace(currentPr.Head?.Sha) &&
+                        !string.Equals(runHeadSha, currentPr.Head.Sha, StringComparison.OrdinalIgnoreCase))
                     {
                         _logger?.LogInformation(
-                            "Workflow run {RunId} head SHA '{RunHeadSha}' does not match PR #{PrNumber} current HEAD '{PrHeadSha}'; skipping outdated run to prevent stale overwrite",
-                            runId, runHeadSha, prNumber, fullPr.Head.Sha);
+                            "PR #{PrNumber} head advanced from '{RunHeadSha}' to '{CurrentHeadSha}' during workflow processing; discarding outdated run result",
+                            prNumber, runHeadSha, currentPr.Head.Sha);
                         continue;
                     }
 
-                    var context = PullRequestContext.FromWorkflowRun(_github, teamName, owner, repo, fullPr, abiResult, headers, _fileCache, cancellationToken);
+                    var context = PullRequestContext.FromWorkflowRun(_github, teamName, owner, repo, currentPr, abiResult, headers, _fileCache, cancellationToken);
                     await _pipeline.ExecuteAsync(context, cancellationToken);
                 }
                 catch (Exception ex)
@@ -371,6 +425,57 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     /// </summary>
     public static bool HasSender(Octokit.Webhooks.Models.User? sender) =>
         !string.IsNullOrWhiteSpace(sender?.Login);
+
+    /// <summary>
+    /// Evaluates whether a workflow name or workflow file path matches any of the configured patterns.
+    /// Supports exact matching, filename matching without extension, and glob wildcards (e.g. "*", "build*").
+    /// Prevents substring false positives (e.g. pattern "build" will not match "Build documentation").
+    /// </summary>
+    internal static bool IsAuthorizedWorkflow(string? workflowName, string? workflowPath, IReadOnlyList<string> configuredNames)
+    {
+        if (string.IsNullOrEmpty(workflowName) && string.IsNullOrEmpty(workflowPath))
+            return true;
+
+        if (configuredNames.Contains("*"))
+            return true;
+
+        var pathFileName = !string.IsNullOrEmpty(workflowPath) ? Path.GetFileName(workflowPath) : null;
+        var pathFileNameWithoutExt = !string.IsNullOrEmpty(workflowPath) ? Path.GetFileNameWithoutExtension(workflowPath) : null;
+
+        foreach (var pattern in configuredNames)
+        {
+            if (string.IsNullOrWhiteSpace(pattern))
+                continue;
+
+            var trimmedPattern = pattern.Trim();
+
+            // Glob pattern with wildcards, e.g. "build*", "*rpm*"
+            if (trimmedPattern.Contains('*'))
+            {
+                var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(trimmedPattern).Replace("\\*", ".*") + "$";
+                var regex = new System.Text.RegularExpressions.Regex(regexPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                if (!string.IsNullOrEmpty(workflowName) && regex.IsMatch(workflowName))
+                    return true;
+                if (!string.IsNullOrEmpty(pathFileName) && regex.IsMatch(pathFileName))
+                    return true;
+                if (!string.IsNullOrEmpty(pathFileNameWithoutExt) && regex.IsMatch(pathFileNameWithoutExt))
+                    return true;
+            }
+            else
+            {
+                // Exact match (case-insensitive) against workflow name, filename, or filename without extension
+                if (!string.IsNullOrEmpty(workflowName) && string.Equals(workflowName, trimmedPattern, StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (!string.IsNullOrEmpty(pathFileName) && string.Equals(pathFileName, trimmedPattern, StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (!string.IsNullOrEmpty(pathFileNameWithoutExt) && string.Equals(pathFileNameWithoutExt, trimmedPattern, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+
+        return false;
+    }
 
     #endregion
 }

@@ -70,6 +70,15 @@ public class AbiComplianceModule : IPullRequestModule
 
             // Reconcile managed labels: assign ImpactAbiCheckFailed and strip any obsolete Impact: ABI / Breaking Change labels
             context.ReconcileLabels(ManagedLabels, GitHubLabels.ImpactAbiCheckFailed);
+
+            if (!context.ExistingLabels.Contains(GitHubLabels.ImpactAbiCheckFailed))
+            {
+                var reason = !string.IsNullOrWhiteSpace(result.ErrorMessage)
+                    ? result.ErrorMessage
+                    : (!string.IsNullOrWhiteSpace(result.Details) ? result.Details : "Unknown engine error");
+                var comment = _formatter.FormatAbiCheckFailed(reason);
+                context.PendingComments.Add(comment);
+            }
             return;
         }
 

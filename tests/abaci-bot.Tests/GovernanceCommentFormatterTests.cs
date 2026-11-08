@@ -123,4 +123,52 @@ public class GovernanceCommentFormatterTests
         AssertNoEmojis(output);
         AssertNoInternalTaskCodes(output);
     }
+
+    [Fact]
+    public void FormatAbiCheckFailed_EnglishDefault_UsesGfmWarning()
+    {
+        var output = _formatter.FormatAbiCheckFailed("Baseline RPM package not available for package 'glibc'");
+
+        Assert.StartsWith("> [!WARNING]", output);
+        Assert.Contains("ABI Compliance Check Incomplete", output);
+        Assert.Contains("Baseline RPM package not available", output);
+        Assert.Contains("Impact: ABI Check Failed", output);
+        AssertNoEmojis(output);
+        AssertNoInternalTaskCodes(output);
+    }
+
+    [Fact]
+    public void FormatAbiCheckFailed_Chinese_UsesGfmWarning()
+    {
+        var output = _formatter.FormatAbiCheckFailed("未找到依赖 baseline", "zh-CN");
+
+        Assert.StartsWith("> [!WARNING]", output);
+        Assert.Contains("ABI 合规比对未能完成", output);
+        Assert.Contains("未找到依赖 baseline", output);
+        Assert.Contains("Impact: ABI Check Failed", output);
+        AssertNoEmojis(output);
+    }
+
+    [Fact]
+    public void FormatAbiCheckFailed_MultilineReason_FormatsInCodeBlock()
+    {
+        var multiline = "rpm2cpio: command not found\ncpio: premature end of archive\nabipkgdiff: Error while extracting package";
+        var output = _formatter.FormatAbiCheckFailed(multiline);
+
+        Assert.StartsWith("> [!WARNING]", output);
+        Assert.Contains("> ```", output);
+        Assert.Contains("> rpm2cpio: command not found", output);
+        Assert.Contains("> abipkgdiff: Error while extracting package", output);
+        AssertNoEmojis(output);
+    }
+
+    [Fact]
+    public void FormatAbiCheckFailed_LongReason_TruncatesTo1000Chars()
+    {
+        var longReason = new string('A', 2000);
+        var output = _formatter.FormatAbiCheckFailed(longReason);
+
+        Assert.Contains("(output truncated)", output);
+        AssertNoEmojis(output);
+    }
 }

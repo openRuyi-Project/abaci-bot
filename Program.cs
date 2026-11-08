@@ -92,6 +92,7 @@ builder.Services.AddSingleton<IChangeTypeStrategy, DefaultChangeTypeStrategy>();
 builder.Services.AddSingleton<ISpdxLicenseService, SpdxLicenseService>();
 builder.Services.AddSingleton<ICveSecurityService, CveSecurityService>();
 builder.Services.AddSingleton<IRpmDependencyService, RpmDependencyService>();
+builder.Services.AddSingleton<ManagedElfDiffRunner>();
 builder.Services.AddSingleton<IAbiDiffRunner, ProcessAbiDiffRunner>();
 builder.Services.AddSingleton<IAbiDiffService, AbiDiffService>();
 builder.Services.AddSingleton<IArtifactService, ArtifactService>();
@@ -112,6 +113,7 @@ builder.Services.AddSingleton<IPullRequestModule, RebuildImpactModule>();
 builder.Services.AddSingleton<IPullRequestModule, AbiComplianceModule>();
 
 // Register background lifecycle services
+builder.Services.AddHostedService<AbiEngineProbe>();
 builder.Services.AddHostedService<StaleLifecycleService>();
 builder.Services.AddHostedService<RebuildMetadataRefreshService>();
 builder.Services.AddHostedService<SpdxMetadataRefreshService>();

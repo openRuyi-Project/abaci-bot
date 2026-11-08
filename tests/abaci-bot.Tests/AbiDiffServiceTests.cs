@@ -17,7 +17,7 @@ public class AbiDiffServiceTests
     {
         var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
         {
-            AbidiffExecutablePath = "nonexistent-abidiff-bin"
+            AbipkgdiffExecutablePath = "nonexistent-abidiff-bin"
         });
         var runner = new ProcessAbiDiffRunner(options);
 
@@ -38,7 +38,7 @@ public class AbiDiffServiceTests
         {
             var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
             {
-                AbidiffExecutablePath = "nonexistent-abidiff-tool-12345XYZ"
+                AbipkgdiffExecutablePath = "nonexistent-abidiff-tool-12345XYZ"
             });
             var runner = new ProcessAbiDiffRunner(options);
 
@@ -106,9 +106,10 @@ public class AbiDiffServiceTests
         Assert.True(startInfo.RedirectStandardOutput);
         Assert.True(startInfo.RedirectStandardError);
         Assert.True(startInfo.CreateNoWindow);
-        Assert.Equal(2, startInfo.ArgumentList.Count);
-        Assert.Equal("/tmp/old.rpm", startInfo.ArgumentList[0]);
-        Assert.Equal("/tmp/new.rpm", startInfo.ArgumentList[1]);
+        Assert.Equal(3, startInfo.ArgumentList.Count);
+        Assert.Equal("--private-dso", startInfo.ArgumentList[0]);
+        Assert.Equal("/tmp/old.rpm", startInfo.ArgumentList[1]);
+        Assert.Equal("/tmp/new.rpm", startInfo.ArgumentList[2]);
     }
 
     [Fact]
@@ -153,6 +154,37 @@ public class AbiDiffServiceTests
     }
 
     [Fact]
+    public void InterpretExitCode_Ubuntu2404MissingRpm2cpio_ReturnsToolMissingFailure()
+    {
+        // Real-world Ubuntu 24.04 WSL output when abipkgdiff is present but rpm2cpio is missing:
+        const string ubuntu2404Stderr =
+            "rpm2cpio: command not found\n" +
+            "cpio: premature end of archive\n" +
+            "abipkgdiff: Error while extracting package .../demo-lib-2.0-1.x86_64.rpm\n" +
+            "rpm2cpio: command not found\n" +
+            "cpio: premature end of archive\n" +
+            "abipkgdiff: Error while extracting package .../demo-lib-1.0-1.x86_64.rpm";
+
+        var result = ProcessAbiDiffRunner.InterpretExitCode(0, "", ubuntu2404Stderr);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ToolMissing);
+        Assert.False(result.HasAbiChange);
+        Assert.False(result.IsBreakingChange);
+        Assert.Contains("missing tool or package extraction failure", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void InterpretExitCode_ExitCodeZeroWithEmptyStdoutAndNonEmptyStderr_ReturnsFailure()
+    {
+        const string unknownStderr = "some internal extraction failure occurred";
+        var result = ProcessAbiDiffRunner.InterpretExitCode(0, "", unknownStderr);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("produced no comparison output", result.ErrorMessage);
+    }
+
+    [Fact]
     public void InterpretExitCode_ExitCodeZeroWithGenericErrorStderr_ReturnsFailureWithoutToolMissing()
     {
         const string errorStderr = "abipkgdiff: error: failed to open archive file";
@@ -180,5 +212,242 @@ public class AbiDiffServiceTests
         Assert.False(result.Succeeded);
         Assert.True(result.ToolMissing);
         Assert.Contains("Support for rpm hasn't been enabled", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void InterpretExitCode_ExitCodeOneWithMissingRpmSupportStderr_ReturnsToolMissingFailure()
+    {
+        // Ubuntu 22.04 exits with code 1 when libabigail lacks RPM support
+        const string missingRpmStderr = "abipkgdiff: Support for rpm hasn't been enabled.  Please consider enabling it at package configure time";
+        var result = ProcessAbiDiffRunner.InterpretExitCode(1, "", missingRpmStderr);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ToolMissing);
+        Assert.False(result.HasAbiChange);
+        Assert.False(result.IsBreakingChange);
+        Assert.Contains("Support for rpm hasn't been enabled", result.ErrorMessage);
+        Assert.Contains("missing RPM support", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task AbiDiffService_PrimaryRunnerToolMissing_FallsBackToManagedRunnerWhenEnabled()
+    {
+        var primaryRunner = Substitute.For<IAbiDiffRunner>();
+        primaryRunner.RunDiffAsync("old.rpm", "new.rpm", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new AbiDiffResult(
+                Succeeded: false,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: "Missing tool",
+                ErrorMessage: "abipkgdiff executable not found",
+                ToolMissing: true)));
+
+        var fallbackRunner = new ManagedElfDiffRunner();
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            EnableFallback = true
+        });
+
+        var service = new AbiDiffService(primaryRunner, fallbackRunner, options);
+
+        var result = await service.CompareRpmsAsync("old.rpm", "new.rpm");
+
+        // Fallback was invoked (it fails on nonexistent files, not on missing tool)
+        Assert.False(result.Succeeded);
+        Assert.False(result.ToolMissing);
+        Assert.Contains("Target RPM file not found", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task AbiDiffService_PrimaryRunnerToolMissing_DoesNotFallBackWhenDisabled()
+    {
+        var primaryRunner = Substitute.For<IAbiDiffRunner>();
+        primaryRunner.RunDiffAsync("old.rpm", "new.rpm", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new AbiDiffResult(
+                Succeeded: false,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: "Missing tool",
+                ErrorMessage: "abipkgdiff executable not found",
+                ToolMissing: true)));
+
+        var fallbackRunner = new ManagedElfDiffRunner();
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            EnableFallback = false
+        });
+
+        var service = new AbiDiffService(primaryRunner, fallbackRunner, options);
+
+        var result = await service.CompareRpmsAsync("old.rpm", "new.rpm");
+
+        // Returns primary result without fallback
+        Assert.False(result.Succeeded);
+        Assert.True(result.ToolMissing);
+        Assert.Contains("abipkgdiff executable not found", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_StrictEngineWithUnavailableTool_ThrowsInvalidOperationException()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            StrictEngine = true,
+            AbipkgdiffExecutablePath = "nonexistent-tool-strictly-required-999"
+        });
+
+        var logger = Substitute.For<ILogger<AbiEngineProbe>>();
+        var probe = new AbiEngineProbe(options, logger);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => probe.StartAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_StandardModeWithUnavailableTool_DoesNotThrow()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            StrictEngine = false,
+            AbipkgdiffExecutablePath = "nonexistent-tool-strictly-required-999"
+        });
+
+        var logger = Substitute.For<ILogger<AbiEngineProbe>>();
+        var probe = new AbiEngineProbe(options, logger);
+
+        await probe.StartAsync(CancellationToken.None);
+        await probe.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_StandardModeWithFallbackDisabled_LogsErrorAndDoesNotThrow()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            StrictEngine = false,
+            EnableFallback = false,
+            AbipkgdiffExecutablePath = "nonexistent-tool-strictly-required-999"
+        });
+
+        var logger = Substitute.For<ILogger<AbiEngineProbe>>();
+        var probe = new AbiEngineProbe(options, logger);
+
+        await probe.StartAsync(CancellationToken.None);
+        await probe.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_Disabled_DoesNotProbe()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = false,
+            StrictEngine = true,
+            AbipkgdiffExecutablePath = "nonexistent-tool-strictly-required-999"
+        });
+
+        var logger = Substitute.For<ILogger<AbiEngineProbe>>();
+        var probe = new AbiEngineProbe(options, logger);
+
+        await probe.StartAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public void InterpretExitCode_ExitCodeZeroWithRemovedBinariesInStdout_ReturnsBreakingChange()
+    {
+        const string stdout =
+            "Removed binaries:\n" +
+            "  [D] /usr/lib64/libdemo.so.1.0, SONAME: libdemo.so.1\n" +
+            "Added binaries:\n" +
+            "  [A] /usr/lib64/libdemo.so.2.0, SONAME: libdemo.so.2\n";
+
+        var result = ProcessAbiDiffRunner.InterpretExitCode(0, stdout, string.Empty);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.HasAbiChange);
+        Assert.True(result.IsBreakingChange);
+        Assert.Equal(stdout, result.Details);
+    }
+
+    [Fact]
+    public void InterpretExitCode_ExitCodeZeroWithAddedBinariesInStdout_ReturnsAbiChange()
+    {
+        const string stdout =
+            "Added binaries:\n" +
+            "  [A] /usr/lib64/libplugin.so.1.0, SONAME: libplugin.so.1\n";
+
+        var result = ProcessAbiDiffRunner.InterpretExitCode(0, stdout, string.Empty);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.HasAbiChange);
+        Assert.False(result.IsBreakingChange);
+    }
+
+    [Fact]
+    public void InterpretExitCode_ExitCodeZeroWithBenignWarningStderr_ReturnsCleanSuccess()
+    {
+        const string warningStderr = "abipkgdiff: warning: could not find debug info file for /usr/lib64/libfoo.so.1";
+        var result = ProcessAbiDiffRunner.InterpretExitCode(0, string.Empty, warningStderr);
+
+        Assert.True(result.Succeeded);
+        Assert.False(result.HasAbiChange);
+        Assert.False(result.IsBreakingChange);
+        Assert.Equal(warningStderr, result.Details);
+    }
+
+    [Fact]
+    public void BuildStartInfo_IncludesPrivateDsoOption()
+    {
+        var startInfoWithDso = ProcessAbiDiffRunner.BuildStartInfo("abipkgdiff", "old.rpm", "new.rpm", privateDso: true);
+        Assert.Contains("--private-dso", startInfoWithDso.ArgumentList);
+
+        var startInfoWithoutDso = ProcessAbiDiffRunner.BuildStartInfo("abipkgdiff", "old.rpm", "new.rpm", privateDso: false);
+        Assert.DoesNotContain("--private-dso", startInfoWithoutDso.ArgumentList);
+    }
+
+    [Fact]
+    public void AbiEngineProbe_CreateMinimalProbeRpm_GeneratesValidRpmBytes()
+    {
+        var probeRpm = AbiEngineProbe.CreateMinimalProbeRpm();
+        Assert.NotNull(probeRpm);
+        Assert.True(probeRpm.Length > 96);
+        // Verify RPM Lead Magic: 0xED 0xAB 0xEE 0xDB
+        Assert.Equal(0xED, probeRpm[0]);
+        Assert.Equal(0xAB, probeRpm[1]);
+        Assert.Equal(0xEE, probeRpm[2]);
+        Assert.Equal(0xDB, probeRpm[3]);
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_ProbeNativeToolAsync_Cancelled_ReturnsFailure()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var (available, rpm, diagnostic) = await AbiEngineProbe.ProbeNativeToolAsync("dotnet", cts.Token);
+        Assert.False(available);
+        Assert.False(rpm);
+        Assert.Contains("timed out", diagnostic);
+    }
+
+    [Fact]
+    public void AbiEngineProbe_ProbeNativeTool_SynchronousWrapper_Works()
+    {
+        var (available, rpm, diagnostic) = AbiEngineProbe.ProbeNativeTool("nonexistent-tool-xyz-123");
+        Assert.False(available);
+        Assert.False(rpm);
+        Assert.Contains("cannot be started", diagnostic);
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_ProbeNativeToolAsync_WithValidHostBinary_ExecutesFullProbe()
+    {
+        var (available, rpm, diagnostic) = await AbiEngineProbe.ProbeNativeToolAsync("dotnet");
+        Assert.True(available);
+        Assert.True(rpm);
+        Assert.Contains("abipkgdiff available", diagnostic);
     }
 }
