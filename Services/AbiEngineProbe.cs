@@ -15,6 +15,7 @@ namespace abaci_bot.Services;
 /// </summary>
 public class AbiEngineProbe : IHostedService
 {
+    private static readonly char[] NewLineSeparators = ['\r', '\n'];
     private readonly AbiComplianceOptions _options;
     private readonly ILogger<AbiEngineProbe> _logger;
 
@@ -128,8 +129,22 @@ public class AbiEngineProbe : IHostedService
                 dryRunProc.Start();
 
                 var dryStderrTask = dryRunProc.StandardError.ReadToEndAsync(ct);
+                var dryStdoutTask = dryRunProc.StandardOutput.ReadToEndAsync(ct);
                 await dryRunProc.WaitForExitAsync(ct);
                 var dryStderr = await dryStderrTask;
+                var dryStdout = await dryStdoutTask;
+
+                var hasExplicitError =
+                    dryStderr.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                    dryStderr.Contains("Support for rpm hasn't been enabled", StringComparison.OrdinalIgnoreCase) ||
+                    dryStderr.Contains("rpm2cpio: command not found", StringComparison.OrdinalIgnoreCase) ||
+                    dryStderr.Contains("command not found", StringComparison.OrdinalIgnoreCase) ||
+                    dryStderr.Contains("Error while extracting package", StringComparison.OrdinalIgnoreCase);
+
+                if (dryRunProc.ExitCode == 0 && !hasExplicitError)
+                {
+                    return (true, true, $"abipkgdiff available with RPM support ({stdout.Trim()})");
+                }
 
                 if (dryStderr.Contains("Support for rpm hasn't been enabled", StringComparison.OrdinalIgnoreCase))
                 {
@@ -142,10 +157,13 @@ public class AbiEngineProbe : IHostedService
                 {
                     return (true, false, "abipkgdiff exists but host lacks rpm2cpio extraction tool");
                 }
+
+                var firstErrLine = dryStderr.Split(NewLineSeparators, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "unknown error";
+                return (true, false, $"abipkgdiff execution probe failed (exit code: {dryRunProc.ExitCode}): {firstErrLine}");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Probe self-diff error
+                return (true, false, $"abipkgdiff dry-run probe failed: {ex.Message}");
             }
             finally
             {
@@ -154,8 +172,6 @@ public class AbiEngineProbe : IHostedService
                     try { File.Delete(tempRpmPath); } catch { }
                 }
             }
-
-            return (true, true, $"abipkgdiff available ({stdout.Trim()})");
         }
         catch (OperationCanceledException)
         {

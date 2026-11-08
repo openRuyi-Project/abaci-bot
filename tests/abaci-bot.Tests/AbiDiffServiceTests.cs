@@ -230,6 +230,33 @@ public class AbiDiffServiceTests
     }
 
     [Fact]
+    public void InterpretExitCode_ExitCode134AbortCrash_ReturnsToolMissingFailure()
+    {
+        const string abortStderr =
+            "mkdir: cannot create directory '/home/abaci': Permission denied\n" +
+            "abipkgdiff: ../../tools/abipkgdiff.cc:811: package::extracted_packages_parent_dir(): Assertion `__abg_cond__' failed.\n" +
+            "Aborted (core dumped)";
+
+        var result = ProcessAbiDiffRunner.InterpretExitCode(134, "", abortStderr);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ToolMissing);
+        Assert.Contains("crashed or aborted", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void InterpretExitCode_ExitCode3InputError_ReturnsFailureWithoutToolMissing()
+    {
+        const string inputErrorStderr = "abipkgdiff: Catch2-3.14.0-999.or.src.rpm should be an RPM file";
+
+        var result = ProcessAbiDiffRunner.InterpretExitCode(3, "", inputErrorStderr);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ToolMissing); // Must NOT trigger fallback on invalid input
+        Assert.Contains("input error", result.ErrorMessage);
+    }
+
+    [Fact]
     public async Task AbiDiffService_PrimaryRunnerToolMissing_FallsBackToManagedRunnerWhenEnabled()
     {
         var primaryRunner = Substitute.For<IAbiDiffRunner>();
@@ -443,11 +470,11 @@ public class AbiDiffServiceTests
     }
 
     [Fact]
-    public async Task AbiEngineProbe_ProbeNativeToolAsync_WithValidHostBinary_ExecutesFullProbe()
+    public async Task AbiEngineProbe_ProbeNativeToolAsync_WithNonAbipkgdiffBinary_ReportsRpmSupportUnavailable()
     {
         var (available, rpm, diagnostic) = await AbiEngineProbe.ProbeNativeToolAsync("dotnet");
         Assert.True(available);
-        Assert.True(rpm);
-        Assert.Contains("abipkgdiff available", diagnostic);
+        Assert.False(rpm); // dotnet does not support abipkgdiff RPM self-diff!
+        Assert.Contains("probe failed", diagnostic);
     }
 }

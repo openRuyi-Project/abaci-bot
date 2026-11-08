@@ -160,6 +160,26 @@ public class ArtifactServiceTests
     }
 
     [Theory]
+    [InlineData("Catch2-3.14.0-999.or.x86_64.rpm", true)]
+    [InlineData("libdemo-1.0.0-1.el9.aarch64.rpm", true)]
+    [InlineData("Catch2-3.14.0-999.or.src.rpm", false)]
+    [InlineData("Catch2-3.14.0-999.or.nosrc.rpm", false)]
+    [InlineData("Catch2-debuginfo-3.14.0-999.or.x86_64.rpm", false)]
+    [InlineData("Catch2-debugsource-3.14.0-999.or.x86_64.rpm", false)]
+    [InlineData("readme.txt", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsEligibleBinaryRpm_CorrectlyDifferentiatesBinaryAndAuxiliaryPackages(string? fileName, bool expected)
+    {
+        var actual = ArtifactService.IsEligibleBinaryRpm(fileName!);
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData("Catch2-3.14.0-999.or.src.rpm", "Catch2")]
+    [InlineData("Catch2-3.14.0-999.or.x86_64.rpm", "Catch2")]
+    [InlineData("Catch2-debuginfo-3.14.0-999.or.x86_64.rpm", "Catch2-debuginfo")]
+    [InlineData("Catch2-devel-3.14.0-999.or.x86_64.rpm", "Catch2-devel")]
     [InlineData("libgpg-error-1.61-999.or.x86_64.rpm", "libgpg-error")]
     [InlineData("python3-dnf-4.18-999.or.noarch.rpm", "python3-dnf")]
     [InlineData("dirmngr-2.5.24-999.or.x86_64.rpm", "dirmngr")]

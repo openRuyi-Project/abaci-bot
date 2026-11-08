@@ -117,6 +117,9 @@ The ABI compliance module and its runner are configured in `appsettings.json` un
 | `StableRpmBaseUrl` | `string?` | `null` | Base URL used to download the baseline/stable RPM for each built package. When unset, no baseline is available and the module reports `Impact: ABI Check Failed`. |
 | `TempExtractionDirectory` | `string?` | `null` | Working directory for artifact extraction and temporary RPM files. Defaults to the system temp directory. |
 | `TimeoutSeconds` | `int` | `300` | Timeout for a single `abipkgdiff` invocation, in seconds. |
+| `MaxTotalPayloadBytes` | `long` | `1073741824` (1 GB) | Maximum cumulative uncompressed payload size processed by the managed ELF/RPM engine before aborting for DoS safety. |
+
+> **Deployment Note on Native Engine Permissions**: When running the bot under a dedicated non-root service account (e.g., systemd `User=abaci` or restricted container user), ensure the account has a valid and writable `$HOME` directory (or configure `$XDG_CACHE_HOME`). Native `abipkgdiff` creates temporary extraction directories under the user's home path; if the home directory does not exist or is unwritable, `abipkgdiff` aborts. When native extraction is unavailable, the service automatically falls back to the pure managed C# engine.
 
 #### File Content Cache Configuration (`FileCache`)
 

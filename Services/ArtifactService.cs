@@ -74,6 +74,12 @@ public class ArtifactService : IArtifactService
 
                 if (entry.FullName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (!IsEligibleBinaryRpm(entry.FullName))
+                    {
+                        _logger?.LogDebug("Skipping non-binary or auxiliary RPM entry in artifact {ArtifactId}: {EntryName}", artifactId, entry.FullName);
+                        continue;
+                    }
+
                     var targetPath = Path.GetFullPath(Path.Combine(destinationRoot, entry.FullName));
                     if (!targetPath.StartsWith(destinationRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                     {
@@ -125,6 +131,34 @@ public class ArtifactService : IArtifactService
         }
 
         return allRpms;
+    }
+
+    /// <summary>
+    /// Determines whether an RPM filename corresponds to a binary package eligible for ABI comparison.
+    /// Excludes source packages (.src.rpm, .nosrc.rpm) and debug packages (-debuginfo, -debugsource).
+    /// </summary>
+    public static bool IsEligibleBinaryRpm(string filename)
+    {
+        if (string.IsNullOrWhiteSpace(filename))
+            return false;
+
+        var cleanName = Path.GetFileName(filename);
+
+        // Exclude source RPMs
+        if (cleanName.EndsWith(".src.rpm", StringComparison.OrdinalIgnoreCase) ||
+            cleanName.EndsWith(".nosrc.rpm", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // Exclude debuginfo and debugsource packages
+        if (cleanName.Contains("-debuginfo", StringComparison.OrdinalIgnoreCase) ||
+            cleanName.Contains("-debugsource", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return cleanName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

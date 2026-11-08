@@ -222,10 +222,11 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
         const int abidiffChange = 4;
         const int abidiffIncompatible = 8;
 
-        // 1. Inspect stderr for missing tools / extraction failure first.
+        // 1. Inspect stderr for missing tools / extraction failure / crashes first.
         // Ubuntu 22.04 exits with code 1 when libabigail lacks RPM support.
         // Ubuntu 24.04 exits with code 0 when rpm2cpio is missing, writing:
         // "rpm2cpio: command not found", "cpio: premature end of archive", "abipkgdiff: Error while extracting package".
+        // Fatal aborts (e.g. exit code 134 SIGABRT when $HOME is missing) are also classified as tool/environment unavailable.
         // Identifying these as tool/engine missing allows automatic fallback to the managed ELF runner.
         if (!string.IsNullOrWhiteSpace(stderr))
         {
@@ -256,6 +257,51 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                     ErrorMessage: $"abipkgdiff reported missing tool or package extraction failure: {stderr.Trim()}",
                     ToolMissing: true);
             }
+
+            // Fatal process crashes or environment errors (e.g. missing home directory causing mkdir failure and abort)
+            var isCrashOrEnvironmentFailure =
+                exitCode >= 128 ||
+                stderr.Contains("Aborted", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("cannot create directory", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("Assertion `__abg_cond__'", StringComparison.OrdinalIgnoreCase);
+
+            if (isCrashOrEnvironmentFailure)
+            {
+                return new AbiDiffResult(
+                    Succeeded: false,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: stderr.Trim(),
+                    ErrorMessage: $"abipkgdiff process crashed or aborted (exit code: {exitCode}): {stderr.Trim()}",
+                    ToolMissing: true);
+            }
+
+            // Explicit input file error (e.g. source RPM or missing file); must NOT fallback to avoid false-breaking reports
+            var isInputError =
+                stderr.Contains("should be an RPM file", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("doesn't exist", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("The input file", StringComparison.OrdinalIgnoreCase);
+
+            if (isInputError)
+            {
+                return new AbiDiffResult(
+                    Succeeded: false,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: stderr.Trim(),
+                    ErrorMessage: $"abipkgdiff reported input error (exit code: {exitCode}): {stderr.Trim()}",
+                    ToolMissing: false);
+            }
+        }
+        else if (exitCode >= 128)
+        {
+            return new AbiDiffResult(
+                Succeeded: false,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: string.Empty,
+                ErrorMessage: $"abipkgdiff process terminated by signal (exit code: {exitCode})",
+                ToolMissing: true);
         }
 
         // 2. Handle execution errors and usage errors

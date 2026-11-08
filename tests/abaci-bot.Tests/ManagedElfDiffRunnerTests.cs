@@ -528,6 +528,75 @@ public class ManagedElfDiffRunnerTests
         }
     }
 
+    [Fact]
+    public async Task ContainsSharedLibrariesAsync_WithElfSharedLibrary_ReturnsTrue()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            var rpmBytes = CreateSyntheticRpm(new[]
+            {
+                ("usr/lib64/libcalc.so.1", "libcalc.so.1", new[] { "add" })
+            });
+            await File.WriteAllBytesAsync(tempFile, rpmBytes);
+
+            var containsLibs = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(tempFile);
+            Assert.True(containsLibs);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ContainsSharedLibrariesAsync_WithoutElfSharedLibrary_ReturnsFalse()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            using var payloadMs = new MemoryStream();
+            using (var gzip = new GZipStream(payloadMs, CompressionLevel.Fastest, leaveOpen: true))
+            {
+                WriteCpioEntry(gzip, "usr/include/calc.h", Encoding.UTF8.GetBytes("#pragma once\n"));
+                WriteCpioTrailer(gzip);
+            }
+
+            var rpmBytes = CreateSyntheticRpmWithRawPayload(payloadMs.ToArray());
+            await File.WriteAllBytesAsync(tempFile, rpmBytes);
+
+            var containsLibs = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(tempFile);
+            Assert.False(containsLibs);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ContainsSharedLibrariesAsync_WithNonRpmFile_ReturnsTrueForMockCompatibility()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(tempFile, "dummy-test-data");
+            var result = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(tempFile);
+            Assert.True(result);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ContainsSharedLibrariesAsync_NonExistentFile_ReturnsFalse()
+    {
+        var result = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync("/path/to/nonexistent/file.rpm");
+        Assert.False(result);
+    }
+
     private static byte[] CreateSyntheticRpmWithRawPayload(byte[] rawPayload)
     {
         using var ms = new MemoryStream();

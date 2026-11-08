@@ -1423,6 +1423,60 @@ public class GitHubWebhookProcessorTests
     }
 
     [Fact]
+    public async Task ProcessWorkflowRun_ArtifactsWithSourceRpmAndBinaryRpm_IgnoresSourceRpmAndProcessesBinaryRpm()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_abi_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var srcRpm = Path.Combine(tempDir, "Catch2-3.14.0-999.or.src.rpm");
+        var binRpm = Path.Combine(tempDir, "Catch2-3.14.0-999.or.x86_64.rpm");
+        var baselineRpm = Path.Combine(tempDir, "Catch2-baseline.rpm");
+
+        await File.WriteAllTextAsync(srcRpm, "dummy-src-data");
+        await File.WriteAllTextAsync(binRpm, "dummy-bin-data");
+        await File.WriteAllTextAsync(baselineRpm, "dummy-baseline-data");
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { srcRpm, binRpm }));
+
+            artifactService.DownloadBaselineRpmAsync("Catch2", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baselineRpm));
+
+            abiDiffService.CompareRpmsAsync(baselineRpm, binRpm, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(
+                    Succeeded: true,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: "No ABI changes detected")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(888L, "success", 42);
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            // Verify src.rpm was NEVER compared
+            await abiDiffService.DidNotReceive().CompareRpmsAsync(Arg.Any<string>(), srcRpm, Arg.Any<CancellationToken>());
+            // Verify binary RPM was compared exactly once
+            await abiDiffService.Received(1).CompareRpmsAsync(baselineRpm, binRpm, Arg.Any<CancellationToken>());
+
+            // Must NOT fail or add ImpactAbiCheckFailed
+            Assert.DoesNotContain($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task ProcessWorkflowRun_WhenPullRequestNotFound_LogsWarningAndSkips()
     {
         var github = new FakeGitHubService { ReturnNullPullRequest = true };

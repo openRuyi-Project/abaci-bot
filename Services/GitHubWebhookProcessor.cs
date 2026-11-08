@@ -298,6 +298,21 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                     foreach (var prRpm in prRpms)
                     {
                         var fileName = Path.GetFileName(prRpm);
+
+                        // 1. Filter out source packages (.src.rpm) and debug packages (-debuginfo, -debugsource)
+                        if (!ArtifactService.IsEligibleBinaryRpm(fileName))
+                        {
+                            _logger?.LogInformation("Skipping non-binary or auxiliary RPM package '{FileName}' from ABI comparison", fileName);
+                            continue;
+                        }
+
+                        // 2. Pre-scan: if package contains no shared library binaries, skip ABI comparison
+                        if (!await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(prRpm, cancellationToken))
+                        {
+                            _logger?.LogInformation("Skipping RPM package '{FileName}' from ABI comparison: contains no shared library binaries", fileName);
+                            continue;
+                        }
+
                         var pkgName = ArtifactService.ExtractPackageName(fileName);
                         var baselineRpm = await _artifactService.DownloadBaselineRpmAsync(pkgName, tempDir, cancellationToken);
                         if (!string.IsNullOrEmpty(baselineRpm) && File.Exists(baselineRpm))
