@@ -81,7 +81,7 @@ Your GitHub App must also subscribe to these webhook events:
 `abaci-bot` includes distribution-grade automated compliance, security, and gating checks:
 
 - **SPDX License Compliance (`SpdxCompliance`)**: Inspects RPM spec files modified in pull requests, parses compound license expressions (`OR`, `AND`, `WITH`), normalizes legacy RPM aliases, and flags non-compliant or unknown licenses with `Compliance: License Issue` and GFM warning notices. Includes a background periodic synchronization service (`SpdxMetadataRefreshService`) that hot-reloads license and exception definitions from official indices.
-- **Vulnerability Tracking (`CveSecurity`)**: Detects CVE identifiers (`CVE-YYYY-NNNNN`) in pull request titles and descriptions. Queries OSV.dev with NIST NVD CVE 2.0 fallback to assign CVSS severity levels (`Severity: 1` through `Severity: 4`) and track vulnerability resolution lifecycle.
+- **Vulnerability Tracking (`CveSecurity`)**: Detects CVE identifiers (`CVE-YYYY-NNNN` or longer sequence numbers, e.g. `CVE-2024-12345678`) in pull request titles and descriptions. Queries OSV.dev with NIST NVD CVE 2.0 fallback to assign CVSS severity levels (`Severity: 1` through `Severity: 4`) and track vulnerability resolution lifecycle.
 - **Cascading Rebuild Impact Gate (`RebuildImpact`)**: Downloads and parses repository metadata (`primary.xml.gz`, `primary.xml.zst`, or `repomd.xml`) to build a full reverse dependency DAG. Computes affected downstream packages (`Rebuild: 0` to `Rebuild: 5001+`) and automatically enforces admission gating (`Workflow: Blocked`) when rebuild impact on the `Rolling` branch exceeds the configured threshold.
 - **Binary ABI Compliance (`AbiCompliance`)**: Listens for GitHub `workflow_run.completed` events, downloads CI-built RPM artifacts, fetches baseline stable packages, and executes Libabigail's package comparison tool (`abipkgdiff`) to detect binary shared library incompatibilities (`Impact: ABI`, `Impact: Breaking Change`, `Impact: ABI Check Failed`).
   > [!IMPORTANT]
@@ -101,6 +101,20 @@ The SPDX license compliance module and its periodic background synchronization s
 | `UpdateExceptionsRemoteUrl` | `string` | `"https://spdx.org/licenses/exceptions.json"` | Remote URL for official SPDX exceptions JSON index. |
 | `AutoUpdateIntervalHours` | `double` | `24` | Background synchronization interval in hours. Set to `0` to disable remote network polling (offline embedded baseline only). |
 | `AllowLegacyAliases` | `bool` | `true` | Whether to accept legacy RPM license identifiers (e.g., `GPLv2+`, `LGPLv2+`). |
+| `MaxDegreeOfParallelism` | `int` | `8` | Maximum number of concurrent GitHub API requests when fetching spec file contents for a pull request. |
+
+#### Binary ABI Compliance Configuration (`AbiCompliance`)
+
+The ABI compliance module and its runner are configured in `appsettings.json` under the `AbiCompliance` section:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `Enabled` | `bool` | `true` | Master toggle for the ABI compliance module. |
+| `AbipkgdiffExecutablePath` | `string` | `"abipkgdiff"` | Path or command name of the Libabigail package-level comparison binary. Must be an RPM-enabled build. |
+| `AbidiffExecutablePath` | `string` | – | Deprecated backward-compatible alias for `AbipkgdiffExecutablePath`. Do not set it to `abidiff`: that tool compares unpacked ELF files, not RPM archives. |
+| `StableRpmBaseUrl` | `string?` | `null` | Base URL used to download the baseline/stable RPM for each built package. When unset, no baseline is available and the module reports `Impact: ABI Check Failed`. |
+| `TempExtractionDirectory` | `string?` | `null` | Working directory for artifact extraction and temporary RPM files. Defaults to the system temp directory. |
+| `TimeoutSeconds` | `int` | `300` | Timeout for a single `abipkgdiff` invocation, in seconds. |
 
 #### File Content Cache Configuration (`FileCache`)
 
