@@ -2405,18 +2405,50 @@ public class PipelineAndModulesTests
         typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Status))?.SetValue(spec2, "modified");
         typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Sha))?.SetValue(spec2, "sha_pkg2");
 
+        var spec3 = (Octokit.PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequestFile));
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.FileName))?.SetValue(spec3, "SPECS/pkg3.spec");
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Status))?.SetValue(spec3, "modified");
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Sha))?.SetValue(spec3, "sha_pkg3");
+
+        var spec4 = (Octokit.PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequestFile));
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.FileName))?.SetValue(spec4, "SPECS/pkg4.spec");
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Status))?.SetValue(spec4, "modified");
+        typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Sha))?.SetValue(spec4, "sha_pkg4");
+
         var ciFile = (Octokit.PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.PullRequestFile));
         typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.FileName))?.SetValue(ciFile, ".github/workflows/ci.yml");
         typeof(Octokit.PullRequestFile).GetProperty(nameof(Octokit.PullRequestFile.Status))?.SetValue(ciFile, "modified");
 
         gitHub.GetPullRequestFilesAsync("owner", "repo", 1, Arg.Any<CancellationToken>())
-            .Returns(new[] { spec1, spec2, ciFile });
+            .Returns(new[] { spec1, spec2, spec3, spec4, ciFile });
 
-        gitHub.GetFileContentAsync("owner", "repo", "SPECS/pkg1.spec", Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns("Name: pkg1\nBuildSystem: autotools\n");
+        var current = 0;
+        var peak = 0;
 
-        gitHub.GetFileContentAsync("owner", "repo", "SPECS/pkg2.spec", Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns("Name: pkg2\nBuildSystem: meson\n");
+        gitHub.GetFileContentAsync("owner", "repo", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(async callInfo =>
+            {
+                var c = Interlocked.Increment(ref current);
+                int currentPeak, newPeak;
+                do
+                {
+                    currentPeak = peak;
+                    newPeak = Math.Max(currentPeak, c);
+                } while (Interlocked.CompareExchange(ref peak, newPeak, currentPeak) != currentPeak);
+
+                await Task.Delay(25);
+                Interlocked.Decrement(ref current);
+
+                var path = callInfo.ArgAt<string>(2);
+                return path switch
+                {
+                    "SPECS/pkg1.spec" => "Name: pkg1\nBuildSystem: autotools\n",
+                    "SPECS/pkg2.spec" => "Name: pkg2\nBuildSystem: meson\n",
+                    "SPECS/pkg3.spec" => "Name: pkg3\nBuildSystem: cmake\n",
+                    "SPECS/pkg4.spec" => "Name: pkg4\nBuildSystem: golang\n",
+                    _ => "Name: unknown\n"
+                };
+            });
 
         var context = CreateMockContext(
             gitHub,
@@ -2429,6 +2461,11 @@ public class PipelineAndModulesTests
         Assert.Contains(GitHubLabels.Ci, context.LabelsToAdd);
         Assert.Contains(GitHubLabels.BuildSystemAutotools, context.LabelsToAdd);
         Assert.Contains(GitHubLabels.BuildSystemMeson, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.BuildSystemCmake, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.BuildSystemGolang, context.LabelsToAdd);
+
+        // Concurrency peak guardian: peak must be > 1 to prove parallel processing
+        Assert.True(peak > 1, $"Expected concurrent fetches, observed peak was {peak}");
     }
 
     [Fact]

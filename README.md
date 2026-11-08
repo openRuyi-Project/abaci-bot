@@ -88,6 +88,7 @@ Your GitHub App must also subscribe to these webhook events:
   > **Host System Dependency Requirement**: `abipkgdiff` requires `libabigail` to be built with RPM package support enabled (`--enable-rpm` at configure time).
   > - Fedora, RHEL, and openEuler distributions provide RPM-enabled builds by default in their package repositories.
   > - Debian and Ubuntu distributions (`abigail-tools`) often omit RPM support by default; running in these environments will be detected at runtime and flagged with `Impact: ABI Check Failed`. For production deployments on Debian/Ubuntu, compile `libabigail` from source with `--enable-rpm` or run within an RPM-enabled container image.
+- **Git Blob & File Content Cache (`FileCache`)**: Thread-safe in-memory cache for fetched Git file contents and blobs. Employs Git blob SHA content-addressing to eliminate redundant API calls across modules and across multi-commit pull request deliveries. Enforces bounded byte memory limits with least-recently-used (LRU) automatic eviction and anti-poisoning fault isolation.
 
 #### SPDX Compliance & Periodic Refresh Configuration (`SpdxCompliance`)
 
@@ -100,6 +101,14 @@ The SPDX license compliance module and its periodic background synchronization s
 | `UpdateExceptionsRemoteUrl` | `string` | `"https://spdx.org/licenses/exceptions.json"` | Remote URL for official SPDX exceptions JSON index. |
 | `AutoUpdateIntervalHours` | `double` | `24` | Background synchronization interval in hours. Set to `0` to disable remote network polling (offline embedded baseline only). |
 | `AllowLegacyAliases` | `bool` | `true` | Whether to accept legacy RPM license identifiers (e.g., `GPLv2+`, `LGPLv2+`). |
+
+#### File Content Cache Configuration (`FileCache`)
+
+The in-memory file content and Git blob cache service is configured in `appsettings.json` under the `FileCache` section:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `MaxSizeBytes` | `long` | `52428800` (50 MB) | Maximum total estimated bytes allowed in the in-memory cache before least-recently-used (LRU) eviction occurs. |
 
 ### 5. Repository Labels Prerequisite
 
