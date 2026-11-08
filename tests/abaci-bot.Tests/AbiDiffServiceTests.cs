@@ -245,6 +245,18 @@ public class AbiDiffServiceTests
     }
 
     [Fact]
+    public void InterpretExitCode_ExitCode137OomKilledWithoutAbortKeyword_ReturnsToolMissingFailure()
+    {
+        // Tests pure exitCode >= 128 branch without any "Aborted" or "Assertion" keywords in stderr
+        const string killedStderr = "Killed\n";
+        var result = ProcessAbiDiffRunner.InterpretExitCode(137, "", killedStderr);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ToolMissing);
+        Assert.Contains("crashed or aborted (exit code: 137)", result.ErrorMessage);
+    }
+
+    [Fact]
     public void InterpretExitCode_ExitCode3InputError_ReturnsFailureWithoutToolMissing()
     {
         const string inputErrorStderr = "abipkgdiff: Catch2-3.14.0-999.or.src.rpm should be an RPM file";

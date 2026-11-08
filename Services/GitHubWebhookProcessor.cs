@@ -306,8 +306,21 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                             continue;
                         }
 
-                        // 2. Pre-scan: if package contains no shared library binaries, skip ABI comparison
-                        if (!await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(prRpm, cancellationToken))
+                        // 2. Pre-scan: if package contains no shared library binaries, skip ABI comparison.
+                        // Fail-closed: unparseable/corrupted RPMs must not be silently skipped as "no libraries".
+                        bool hasSharedLibs;
+                        try
+                        {
+                            hasSharedLibs = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(prRpm, cancellationToken);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger?.LogWarning(ex, "Failed to inspect RPM package '{FileName}' for shared libraries; recording incomplete analysis", fileName);
+                            diffResults.Add(AbiDiffResult.NotPerformed($"RPM package '{fileName}' could not be parsed: {ex.Message}"));
+                            continue;
+                        }
+
+                        if (!hasSharedLibs)
                         {
                             _logger?.LogInformation("Skipping RPM package '{FileName}' from ABI comparison: contains no shared library binaries", fileName);
                             continue;
@@ -354,7 +367,11 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                     }
                     else
                     {
-                        abiResult = AbiDiffResult.NotPerformed("No baseline RPM packages available for comparison");
+                        abiResult = new AbiDiffResult(
+                            Succeeded: true,
+                            HasAbiChange: false,
+                            IsBreakingChange: false,
+                            Details: "RPM packages contain no shared library binaries");
                     }
                 }
                 finally

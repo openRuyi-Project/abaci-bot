@@ -212,33 +212,15 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
     /// <summary>
     /// Checks whether an RPM package contains at least one parseable 64-bit ELF shared library binary.
     /// Useful for quickly filtering out auxiliary packages (e.g. docs, headers, tools) from ABI diff pipelines.
-    /// Returns true for non-RPM synthetic test files to ensure compatibility with unit test mocks.
+    /// Throws InvalidDataException or NotSupportedException if the RPM package cannot be parsed.
     /// </summary>
     public static async Task<bool> ContainsSharedLibrariesAsync(string rpmPath, CancellationToken ct = default)
     {
         if (!File.Exists(rpmPath))
             return false;
 
-        try
-        {
-            var header = new byte[4];
-            await using (var fs = new FileStream(rpmPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4, useAsync: true))
-            {
-                var read = await fs.ReadAsync(header.AsMemory(0, 4), ct);
-                if (read < 4 || header[0] != 0xED || header[1] != 0xAB || header[2] != 0xEE || header[3] != 0xDB)
-                {
-                    // Non-RPM test dummy payload (e.g. mock test file)
-                    return true;
-                }
-            }
-
-            var libs = await ExtractSharedLibrariesAsync(rpmPath, ct);
-            return libs.Count > 0;
-        }
-        catch
-        {
-            return false;
-        }
+        var libs = await ExtractSharedLibrariesAsync(rpmPath, ct);
+        return libs.Count > 0;
     }
 
     private static async Task SkipHeaderStructureAsync(Stream stream, bool alignTo8Bytes, CancellationToken ct)

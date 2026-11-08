@@ -575,14 +575,31 @@ public class ManagedElfDiffRunnerTests
     }
 
     [Fact]
-    public async Task ContainsSharedLibrariesAsync_WithNonRpmFile_ReturnsTrueForMockCompatibility()
+    public async Task ContainsSharedLibrariesAsync_WithCorruptOrNonRpmFile_ThrowsInvalidDataException()
     {
         var tempFile = Path.GetTempFileName();
         try
         {
-            await File.WriteAllTextAsync(tempFile, "dummy-test-data");
-            var result = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(tempFile);
-            Assert.True(result);
+            await File.WriteAllTextAsync(tempFile, "corrupted-rpm-data");
+            await Assert.ThrowsAsync<InvalidDataException>(() => ManagedElfDiffRunner.ContainsSharedLibrariesAsync(tempFile));
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ContainsSharedLibrariesAsync_WithXzCompressedPayload_ThrowsNotSupportedException()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            var xzPayload = new byte[] { 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 0x00, 0x00 };
+            var xzRpm = CreateSyntheticRpmWithRawPayload(xzPayload);
+            await File.WriteAllBytesAsync(tempFile, xzRpm);
+
+            await Assert.ThrowsAsync<NotSupportedException>(() => ManagedElfDiffRunner.ContainsSharedLibrariesAsync(tempFile));
         }
         finally
         {
@@ -597,7 +614,7 @@ public class ManagedElfDiffRunnerTests
         Assert.False(result);
     }
 
-    private static byte[] CreateSyntheticRpmWithRawPayload(byte[] rawPayload)
+    internal static byte[] CreateSyntheticRpmWithRawPayload(byte[] rawPayload)
     {
         using var ms = new MemoryStream();
         var lead = new byte[96];
@@ -616,7 +633,7 @@ public class ManagedElfDiffRunnerTests
         return ms.ToArray();
     }
 
-    private static byte[] CreateSyntheticRpm(IEnumerable<(string Path, string Soname, string[] Symbols)> libraries)
+    internal static byte[] CreateSyntheticRpm(IEnumerable<(string Path, string Soname, string[] Symbols)> libraries)
     {
         using var ms = new MemoryStream();
 

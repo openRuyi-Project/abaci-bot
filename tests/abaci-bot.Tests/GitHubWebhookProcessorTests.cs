@@ -28,6 +28,15 @@ namespace abaci_bot.Tests;
 
 public class GitHubWebhookProcessorTests
 {
+    private static readonly byte[] SyntheticRpmBytesWithSharedLib = ManagedElfDiffRunnerTests.CreateSyntheticRpm(new[]
+    {
+        ("usr/lib64/libtest.so.1", "libtest.so.1", new[] { "test_symbol" })
+    });
+
+    private static readonly byte[] SyntheticRpmBytesWithoutSharedLib = ManagedElfDiffRunnerTests.CreateSyntheticRpm(
+        Array.Empty<(string, string, string[])>()
+    );
+
     private const string AiCheckboxLineChecked = "- [x] I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.";
     private const string AiCheckboxLineUnchecked = "- [ ] I have read the [AI-Assisted Contribution Policy], and this Pull Request includes non-trivial AI-assisted content.";
 
@@ -1265,7 +1274,7 @@ public class GitHubWebhookProcessorTests
         Directory.CreateDirectory(tempDir);
         var prRpm = Path.Combine(tempDir, "libgpg-error-1.61-999.or.x86_64.rpm");
         var baselineRpm = Path.Combine(tempDir, "libgpg-error-baseline.rpm");
-        await File.WriteAllTextAsync(prRpm, "dummy-rpm-data");
+        await File.WriteAllBytesAsync(prRpm, SyntheticRpmBytesWithSharedLib);
         await File.WriteAllTextAsync(baselineRpm, "dummy-baseline-data");
 
         try
@@ -1333,7 +1342,7 @@ public class GitHubWebhookProcessorTests
         Directory.CreateDirectory(tempDir);
         var prRpm = Path.Combine(tempDir, "libgpg-error-1.61-999.or.x86_64.rpm");
         var baselineRpm = Path.Combine(tempDir, "libgpg-error-baseline.rpm");
-        await File.WriteAllTextAsync(prRpm, "dummy-rpm-data");
+        await File.WriteAllBytesAsync(prRpm, SyntheticRpmBytesWithSharedLib);
         await File.WriteAllTextAsync(baselineRpm, "dummy-baseline-data");
 
         try
@@ -1385,7 +1394,7 @@ public class GitHubWebhookProcessorTests
         Directory.CreateDirectory(tempDir);
         var prRpm = Path.Combine(tempDir, "libgpg-error-1.61-999.or.x86_64.rpm");
         var baselineRpm = Path.Combine(tempDir, "libgpg-error-baseline.rpm");
-        await File.WriteAllTextAsync(prRpm, "dummy-rpm-data");
+        await File.WriteAllBytesAsync(prRpm, SyntheticRpmBytesWithSharedLib);
         await File.WriteAllTextAsync(baselineRpm, "dummy-baseline-data");
 
         try
@@ -1436,7 +1445,7 @@ public class GitHubWebhookProcessorTests
         var baselineRpm = Path.Combine(tempDir, "Catch2-baseline.rpm");
 
         await File.WriteAllTextAsync(srcRpm, "dummy-src-data");
-        await File.WriteAllTextAsync(binRpm, "dummy-bin-data");
+        await File.WriteAllBytesAsync(binRpm, SyntheticRpmBytesWithSharedLib);
         await File.WriteAllTextAsync(baselineRpm, "dummy-baseline-data");
 
         try
@@ -1473,6 +1482,78 @@ public class GitHubWebhookProcessorTests
             {
                 Directory.Delete(tempDir, recursive: true);
             }
+        }
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRun_UnparseableRpm_RecordsIncompleteAnalysisAndAddsFailedLabel()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_unparseable_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpm = Path.Combine(tempDir, "corrupted-1.0.0.x86_64.rpm");
+        await File.WriteAllTextAsync(prRpm, "corrupted-non-rpm-data");
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(888L, "success", 42);
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            // Baseline download and ABI diff must NOT be attempted for unparseable package
+            await artifactService.DidNotReceive().DownloadBaselineRpmAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+            await abiDiffService.DidNotReceive().CompareRpmsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+
+            // Fail-closed: Must add Impact: ABI Check Failed
+            Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+            Assert.Contains(github.CreatedComments, c => c.IssueNumber == 42 && c.Comment.Contains("could not be parsed"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRun_RpmWithoutSharedLibraries_SkippedWithoutBaselineDownload()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_nosolib_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpm = Path.Combine(tempDir, "doc-only-1.0.0.x86_64.rpm");
+        await File.WriteAllBytesAsync(prRpm, SyntheticRpmBytesWithoutSharedLib);
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(888L, "success", 42);
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            // Pre-scan skips the package: no baseline download or comparison is invoked
+            await artifactService.DidNotReceive().DownloadBaselineRpmAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+            await abiDiffService.DidNotReceive().CompareRpmsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+
+            // No impact labels should be added
+            Assert.Empty(github.LabelOperations);
+            Assert.Empty(github.CreatedComments);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
         }
     }
 
@@ -2034,7 +2115,7 @@ public class GitHubWebhookProcessorTests
         Directory.CreateDirectory(tempDir);
         var prRpm = Path.Combine(tempDir, "pkg-1.0.rpm");
         var baseRpm = Path.Combine(tempDir, "pkg-base.rpm");
-        await File.WriteAllTextAsync(prRpm, "rpm");
+        await File.WriteAllBytesAsync(prRpm, SyntheticRpmBytesWithSharedLib);
         await File.WriteAllTextAsync(baseRpm, "base");
 
         try
@@ -2109,7 +2190,7 @@ public class GitHubWebhookProcessorTests
         Directory.CreateDirectory(tempDir);
         var prRpm = Path.Combine(tempDir, "pkg-1.0.rpm");
         var baseRpm = Path.Combine(tempDir, "pkg-base.rpm");
-        await File.WriteAllTextAsync(prRpm, "rpm");
+        await File.WriteAllBytesAsync(prRpm, SyntheticRpmBytesWithSharedLib);
         await File.WriteAllTextAsync(baseRpm, "base");
 
         try
@@ -2158,8 +2239,8 @@ public class GitHubWebhookProcessorTests
         var baseRpmClean = Path.Combine(tempDir, "pkg-clean-base.rpm");
         var baseRpmBreak = Path.Combine(tempDir, "pkg-breaking-base.rpm");
 
-        await File.WriteAllTextAsync(prRpmClean, "clean");
-        await File.WriteAllTextAsync(prRpmBreak, "break");
+        await File.WriteAllBytesAsync(prRpmClean, SyntheticRpmBytesWithSharedLib);
+        await File.WriteAllBytesAsync(prRpmBreak, SyntheticRpmBytesWithSharedLib);
         await File.WriteAllTextAsync(baseRpmClean, "base-clean");
         await File.WriteAllTextAsync(baseRpmBreak, "base-break");
 
@@ -2205,8 +2286,8 @@ public class GitHubWebhookProcessorTests
         var prRpmMissing = Path.Combine(tempDir, "pkg-nobase-1.0.rpm");
         var baseRpmClean = Path.Combine(tempDir, "pkg-clean-base.rpm");
 
-        await File.WriteAllTextAsync(prRpmClean, "clean");
-        await File.WriteAllTextAsync(prRpmMissing, "nobase");
+        await File.WriteAllBytesAsync(prRpmClean, SyntheticRpmBytesWithSharedLib);
+        await File.WriteAllBytesAsync(prRpmMissing, SyntheticRpmBytesWithSharedLib);
         await File.WriteAllTextAsync(baseRpmClean, "base-clean");
 
         try
@@ -2251,8 +2332,8 @@ public class GitHubWebhookProcessorTests
         var baseRpmChange = Path.Combine(tempDir, "pkg-change-base.rpm");
         var baseRpmFail = Path.Combine(tempDir, "pkg-fail-base.rpm");
 
-        await File.WriteAllTextAsync(prRpmChange, "change");
-        await File.WriteAllTextAsync(prRpmFail, "fail");
+        await File.WriteAllBytesAsync(prRpmChange, SyntheticRpmBytesWithSharedLib);
+        await File.WriteAllBytesAsync(prRpmFail, SyntheticRpmBytesWithSharedLib);
         await File.WriteAllTextAsync(baseRpmChange, "base-change");
         await File.WriteAllTextAsync(baseRpmFail, "base-fail");
 
