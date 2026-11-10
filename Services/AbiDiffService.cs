@@ -245,7 +245,9 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 stderr.Contains("rpm2cpio: command not found", StringComparison.OrdinalIgnoreCase) ||
                 stderr.Contains("command not found", StringComparison.OrdinalIgnoreCase) ||
                 stderr.Contains("Error while extracting package", StringComparison.OrdinalIgnoreCase) ||
-                stderr.Contains("premature end of archive", StringComparison.OrdinalIgnoreCase);
+                stderr.Contains("premature end of archive", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("Malformed number", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("07070X", StringComparison.OrdinalIgnoreCase);
 
             if (isToolOrExtractionMissing)
             {
@@ -408,6 +410,14 @@ public class AbiDiffService : IAbiDiffService
                 Details: "ABI compliance scanning is disabled in configuration.");
         }
 
+        // Check if either RPM is v6 (lead major version >= 4) and native engine is not verified for v6 support
+        var isV6Package = IsRpmV6(oldRpmPath) || IsRpmV6(newRpmPath);
+        if (isV6Package && !AbiEngineProbe.NativeSupportsV6 && _options.EnableFallback && _fallbackRunner != null)
+        {
+            _logger?.LogInformation("Package is RPM v6 and native runner lacks v6 support. Falling back to managed ELF symbol diff runner directly.");
+            return await _fallbackRunner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
+        }
+
         var result = await _runner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
 
         // Fall back to managed ELF runner if primary runner lacks tool or RPM capability
@@ -419,5 +429,26 @@ public class AbiDiffService : IAbiDiffService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Inspects the RPM package lead to determine if it is formatted according to RPM v6 specifications (lead major >= 4).
+    /// Returns false if the file is missing, inaccessible, or not a verified RPM v6 package, delegating comprehensive
+    /// file validation and I/O error logging to the downstream diff pipeline.
+    /// </summary>
+    private static bool IsRpmV6(string rpmPath)
+    {
+        try
+        {
+            if (!File.Exists(rpmPath)) return false;
+            using var fs = new FileStream(rpmPath, FileMode.Open, FileAccess.Read, FileShare.Read, 16);
+            var header = new byte[5];
+            var read = fs.Read(header, 0, 5);
+            return read >= 5 && header[0] == 0xED && header[1] == 0xAB && header[2] == 0xEE && header[3] == 0xDB && header[4] >= 4;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

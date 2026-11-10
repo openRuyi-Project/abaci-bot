@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO.Compression;
 using System.Text.Json;
 using abaci_bot.Options;
@@ -31,76 +32,78 @@ public class ArtifactService : IArtifactService
         _logger = logger;
     }
 
-    public async Task<IReadOnlyList<string>> DownloadAndExtractRpmArtifactAsync(
+    internal sealed class CumulativeArtifactLimits
+    {
+        public const int MaxEntryCount = 1000;
+        public const long MaxSingleFileSize = 500L * 1024 * 1024; // 500 MB
+        public const long MaxTotalUncompressedSize = 2L * 1024 * 1024 * 1024; // 2 GB
+
+        public int ProcessedEntries { get; set; }
+        public long TotalUncompressedBytes { get; set; }
+    }
+
+    public Task<IReadOnlyList<string>> DownloadAndExtractRpmArtifactAsync(
         string owner, string repo, long artifactId, string destinationDirectory, CancellationToken ct = default)
+    {
+        return DownloadAndExtractRpmArtifactAsync(owner, repo, artifactId, destinationDirectory, new CumulativeArtifactLimits(), ct);
+    }
+
+    internal async Task<IReadOnlyList<string>> DownloadAndExtractRpmArtifactAsync(
+        string owner, string repo, long artifactId, string destinationDirectory, CumulativeArtifactLimits limits, CancellationToken ct = default)
     {
         var extractedRpms = new List<string>();
         var destinationRoot = Path.GetFullPath(destinationDirectory);
         Directory.CreateDirectory(destinationRoot);
 
-        // Defense against zip bombs: enforce entry count, max single file size, and total uncompressed size limits
-        const int maxEntryCount = 1000;
-        const long maxSingleFileSize = 500L * 1024 * 1024; // 500 MB
-        const long maxTotalUncompressedSize = 2L * 1024 * 1024 * 1024; // 2 GB
-
-        long totalUncompressedBytes = 0;
-        int processedEntries = 0;
-
-        try
+        await using var zipStream = await _gitHubService.DownloadArtifactZipStreamAsync(owner, repo, artifactId, ct);
+        using var archive = new ZipArchive(zipStream, ZipArchiveMode.Read);
+        foreach (var entry in archive.Entries)
         {
-            await using var zipStream = await _gitHubService.DownloadArtifactZipStreamAsync(owner, repo, artifactId, ct);
-            using var archive = new ZipArchive(zipStream, ZipArchiveMode.Read);
-            foreach (var entry in archive.Entries)
+            limits.ProcessedEntries++;
+            if (limits.ProcessedEntries > CumulativeArtifactLimits.MaxEntryCount)
             {
-                processedEntries++;
-                if (processedEntries > maxEntryCount)
-                {
-                    _logger?.LogWarning("Zip archive for artifact {ArtifactId} exceeds max entry count ({Max})", artifactId, maxEntryCount);
-                    break;
-                }
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture,
+                    "Cumulative zip archive entry count exceeded safety limit of {0}.", CumulativeArtifactLimits.MaxEntryCount));
+            }
 
-                if (entry.Length > maxSingleFileSize)
+            if (entry.Length > CumulativeArtifactLimits.MaxSingleFileSize)
+            {
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture,
+                    "Zip entry '{0}' size {1} bytes exceeded maximum single file size limit of {2} bytes.",
+                    entry.FullName, entry.Length, CumulativeArtifactLimits.MaxSingleFileSize));
+            }
+
+            limits.TotalUncompressedBytes += entry.Length;
+            if (limits.TotalUncompressedBytes > CumulativeArtifactLimits.MaxTotalUncompressedSize)
+            {
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture,
+                    "Cumulative uncompressed artifact size exceeded safety limit of {0} bytes.", CumulativeArtifactLimits.MaxTotalUncompressedSize));
+            }
+
+            if (entry.FullName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!IsEligibleBinaryRpm(entry.FullName))
                 {
-                    _logger?.LogWarning("Zip entry {EntryName} exceeds max single file size ({Size} > {Max})", entry.FullName, entry.Length, maxSingleFileSize);
+                    _logger?.LogDebug("Skipping non-binary or auxiliary RPM entry in artifact {ArtifactId}: {EntryName}", artifactId, entry.FullName);
                     continue;
                 }
 
-                totalUncompressedBytes += entry.Length;
-                if (totalUncompressedBytes > maxTotalUncompressedSize)
+                var targetPath = Path.GetFullPath(Path.Combine(destinationRoot, entry.FullName));
+                if (!targetPath.StartsWith(destinationRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                 {
-                    _logger?.LogWarning("Zip archive for artifact {ArtifactId} exceeds cumulative uncompressed size ({Total} > {Max})", artifactId, totalUncompressedBytes, maxTotalUncompressedSize);
-                    break;
+                    _logger?.LogWarning("Skipping zip entry with path traversal: {EntryName}", entry.FullName);
+                    continue;
                 }
 
-                if (entry.FullName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
+                var parentDir = Path.GetDirectoryName(targetPath);
+                if (!string.IsNullOrEmpty(parentDir))
                 {
-                    if (!IsEligibleBinaryRpm(entry.FullName))
-                    {
-                        _logger?.LogDebug("Skipping non-binary or auxiliary RPM entry in artifact {ArtifactId}: {EntryName}", artifactId, entry.FullName);
-                        continue;
-                    }
-
-                    var targetPath = Path.GetFullPath(Path.Combine(destinationRoot, entry.FullName));
-                    if (!targetPath.StartsWith(destinationRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-                    {
-                        _logger?.LogWarning("Skipping zip entry with path traversal: {EntryName}", entry.FullName);
-                        continue;
-                    }
-
-                    var parentDir = Path.GetDirectoryName(targetPath);
-                    if (!string.IsNullOrEmpty(parentDir))
-                    {
-                        Directory.CreateDirectory(parentDir);
-                    }
-
-                    entry.ExtractToFile(targetPath, overwrite: true);
-                    extractedRpms.Add(targetPath);
+                    Directory.CreateDirectory(parentDir);
                 }
+
+                entry.ExtractToFile(targetPath, overwrite: true);
+                extractedRpms.Add(targetPath);
             }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger?.LogWarning(ex, "Error occurred while extracting artifact {ArtifactId}", artifactId);
         }
 
         return extractedRpms;
@@ -110,24 +113,28 @@ public class ArtifactService : IArtifactService
         string owner, string repo, long runId, string destinationDirectory, CancellationToken ct = default)
     {
         var allRpms = new List<string>();
+        IReadOnlyList<(long Id, string Name, long SizeInBytes)> artifacts;
         try
         {
-            var artifacts = await _gitHubService.ListWorkflowRunArtifactsAsync(owner, repo, runId, ct);
-            if (artifacts.Count == 0)
-            {
-                _logger?.LogInformation("No workflow run artifacts found for run {RunId} in {Owner}/{Repo}", runId, owner, repo);
-                return allRpms;
-            }
-
-            foreach (var (artifactId, _, _) in artifacts)
-            {
-                var rpms = await DownloadAndExtractRpmArtifactAsync(owner, repo, artifactId, destinationDirectory, ct);
-                allRpms.AddRange(rpms);
-            }
+            artifacts = await _gitHubService.ListWorkflowRunArtifactsAsync(owner, repo, runId, ct);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (HttpRequestException ex)
         {
-            _logger?.LogWarning(ex, "Failed to fetch artifacts for workflow run {RunId}", runId);
+            _logger?.LogWarning(ex, "Failed to list artifacts for workflow run {RunId} in {Owner}/{Repo}", runId, owner, repo);
+            return allRpms;
+        }
+
+        if (artifacts.Count == 0)
+        {
+            _logger?.LogInformation("No workflow run artifacts found for run {RunId} in {Owner}/{Repo}", runId, owner, repo);
+            return allRpms;
+        }
+
+        var limits = new CumulativeArtifactLimits();
+        foreach (var (artifactId, _, _) in artifacts)
+        {
+            var rpms = await DownloadAndExtractRpmArtifactAsync(owner, repo, artifactId, destinationDirectory, limits, ct);
+            allRpms.AddRange(rpms);
         }
 
         return allRpms;

@@ -19,6 +19,8 @@ public class AbiEngineProbe : IHostedService
     private readonly AbiComplianceOptions _options;
     private readonly ILogger<AbiEngineProbe> _logger;
 
+    public static bool NativeSupportsV6 { get; internal set; }
+
     public AbiEngineProbe(
         IOptions<AbiComplianceOptions> options,
         ILogger<AbiEngineProbe> logger)
@@ -106,12 +108,13 @@ public class AbiEngineProbe : IHostedService
                 return (true, false, "abipkgdiff exists but was compiled without RPM support");
             }
 
-            // Probe package extraction capability using minimal synthetic RPM self-diff
-            string? tempRpmPath = null;
+            // Probe package extraction capability using real RPM fixtures
+            string? tempRpmPathV4 = null;
+            string? tempRpmPathV6 = null;
             try
             {
-                tempRpmPath = Path.Combine(Path.GetTempPath(), $"probe_{Guid.NewGuid():N}.rpm");
-                await File.WriteAllBytesAsync(tempRpmPath, CreateMinimalProbeRpm(), ct);
+                tempRpmPathV4 = Path.Combine(Path.GetTempPath(), $"probe_v4_{Guid.NewGuid():N}.rpm");
+                await File.WriteAllBytesAsync(tempRpmPathV4, GetProbeRpmV4(), ct);
 
                 using var dryRunProc = new Process
                 {
@@ -124,8 +127,8 @@ public class AbiEngineProbe : IHostedService
                         CreateNoWindow = true
                     }
                 };
-                dryRunProc.StartInfo.ArgumentList.Add(tempRpmPath);
-                dryRunProc.StartInfo.ArgumentList.Add(tempRpmPath);
+                dryRunProc.StartInfo.ArgumentList.Add(tempRpmPathV4);
+                dryRunProc.StartInfo.ArgumentList.Add(tempRpmPathV4);
                 dryRunProc.Start();
 
                 var dryStderrTask = dryRunProc.StandardError.ReadToEndAsync(ct);
@@ -139,37 +142,92 @@ public class AbiEngineProbe : IHostedService
                     dryStderr.Contains("Support for rpm hasn't been enabled", StringComparison.OrdinalIgnoreCase) ||
                     dryStderr.Contains("rpm2cpio: command not found", StringComparison.OrdinalIgnoreCase) ||
                     dryStderr.Contains("command not found", StringComparison.OrdinalIgnoreCase) ||
-                    dryStderr.Contains("Error while extracting package", StringComparison.OrdinalIgnoreCase);
-
-                if (dryRunProc.ExitCode == 0 && !hasExplicitError)
-                {
-                    return (true, true, $"abipkgdiff available with RPM support ({stdout.Trim()})");
-                }
-
-                if (dryStderr.Contains("Support for rpm hasn't been enabled", StringComparison.OrdinalIgnoreCase))
-                {
-                    return (true, false, "abipkgdiff exists but was compiled without RPM support");
-                }
-
-                if (dryStderr.Contains("rpm2cpio: command not found", StringComparison.OrdinalIgnoreCase) ||
                     dryStderr.Contains("Error while extracting package", StringComparison.OrdinalIgnoreCase) ||
-                    dryStderr.Contains("command not found", StringComparison.OrdinalIgnoreCase))
+                    dryStderr.Contains("premature end of archive", StringComparison.OrdinalIgnoreCase);
+
+                if (dryRunProc.ExitCode != 0 || hasExplicitError)
                 {
-                    return (true, false, "abipkgdiff exists but host lacks rpm2cpio extraction tool");
+                    NativeSupportsV6 = false;
+                    if (dryStderr.Contains("Support for rpm hasn't been enabled", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return (true, false, "abipkgdiff exists but was compiled without RPM support");
+                    }
+
+                    if (dryStderr.Contains("rpm2cpio: command not found", StringComparison.OrdinalIgnoreCase) ||
+                        dryStderr.Contains("Error while extracting package", StringComparison.OrdinalIgnoreCase) ||
+                        dryStderr.Contains("command not found", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return (true, false, "abipkgdiff exists but host lacks rpm2cpio extraction tool");
+                    }
+
+                    var firstErrLine = dryStderr.Split(NewLineSeparators, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "unknown error";
+                    return (true, false, $"abipkgdiff execution probe failed (exit code: {dryRunProc.ExitCode}): {firstErrLine}");
                 }
 
-                var firstErrLine = dryStderr.Split(NewLineSeparators, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "unknown error";
-                return (true, false, $"abipkgdiff execution probe failed (exit code: {dryRunProc.ExitCode}): {firstErrLine}");
+                // Native v4 diff succeeded; now probe v6 capability
+                try
+                {
+                    tempRpmPathV6 = Path.Combine(Path.GetTempPath(), $"probe_v6_{Guid.NewGuid():N}.rpm");
+                    await File.WriteAllBytesAsync(tempRpmPathV6, GetProbeRpmV6(), ct);
+
+                    using var v6Proc = new Process
+                    {
+                        StartInfo = new ProcessStartInfo
+                        {
+                            FileName = executablePath,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        }
+                    };
+                    v6Proc.StartInfo.ArgumentList.Add(tempRpmPathV6);
+                    v6Proc.StartInfo.ArgumentList.Add(tempRpmPathV6);
+                    v6Proc.Start();
+
+                    var v6StderrTask = v6Proc.StandardError.ReadToEndAsync(ct);
+                    var v6StdoutTask = v6Proc.StandardOutput.ReadToEndAsync(ct);
+                    await v6Proc.WaitForExitAsync(ct);
+                    var v6Stderr = await v6StderrTask;
+                    var v6Stdout = await v6StdoutTask;
+
+                    var hasV6Error =
+                        v6Stderr.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                        v6Stderr.Contains("Malformed number", StringComparison.OrdinalIgnoreCase) ||
+                        v6Stderr.Contains("07070X", StringComparison.OrdinalIgnoreCase) ||
+                        v6Stderr.Contains("Error while extracting package", StringComparison.OrdinalIgnoreCase);
+
+                    if (v6Proc.ExitCode == 0 && !hasV6Error)
+                    {
+                        NativeSupportsV6 = true;
+                        return (true, true, $"abipkgdiff available with RPM v4 and v6 support ({stdout.Trim()})");
+                    }
+                    else
+                    {
+                        NativeSupportsV6 = false;
+                        return (true, true, $"abipkgdiff available with RPM v4 support (RPM v6 native extraction unsupported, managed fallback active)");
+                    }
+                }
+                catch
+                {
+                    NativeSupportsV6 = false;
+                    return (true, true, $"abipkgdiff available with RPM v4 support (RPM v6 probe skipped, managed fallback active)");
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                NativeSupportsV6 = false;
                 return (true, false, $"abipkgdiff dry-run probe failed: {ex.Message}");
             }
             finally
             {
-                if (tempRpmPath != null)
+                if (tempRpmPathV4 != null)
                 {
-                    try { File.Delete(tempRpmPath); } catch { }
+                    try { File.Delete(tempRpmPathV4); } catch { }
+                }
+                if (tempRpmPathV6 != null)
+                {
+                    try { File.Delete(tempRpmPathV6); } catch { }
                 }
             }
         }
@@ -183,56 +241,23 @@ public class AbiEngineProbe : IHostedService
         }
     }
 
-    internal static byte[] CreateMinimalProbeRpm()
+    internal static byte[] GetProbeRpmV4()
     {
+        var asm = typeof(AbiEngineProbe).Assembly;
+        using var stream = asm.GetManifestResourceStream("abaci_bot.Resources.fixtures.demo-lib-1.0-1.x86_64.rpm")
+            ?? throw new InvalidOperationException("Embedded fixture demo-lib-1.0-1.x86_64.rpm not found");
         using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        return ms.ToArray();
+    }
 
-        // 1. Lead: 96 bytes
-        var lead = new byte[96];
-        lead[0] = 0xED; lead[1] = 0xAB; lead[2] = 0xEE; lead[3] = 0xDB;
-        ms.Write(lead);
-
-        // 2. Signature Header: 16 bytes intro + 0 entries
-        var sigIntro = new byte[16];
-        sigIntro[0] = 0x8E; sigIntro[1] = 0xAD; sigIntro[2] = 0xE8; sigIntro[3] = 0x01;
-        ms.Write(sigIntro);
-
-        // 3. Main Header: 16 bytes intro + 0 entries
-        var mainIntro = new byte[16];
-        mainIntro[0] = 0x8E; mainIntro[1] = 0xAD; mainIntro[2] = 0xE8; mainIntro[3] = 0x01;
-        ms.Write(mainIntro);
-
-        // 4. Payload: GZip with empty CPIO archive (only TRAILER!!!)
-        using var payloadMs = new MemoryStream();
-        using (var gzip = new System.IO.Compression.GZipStream(payloadMs, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
-        {
-            var trailerName = "TRAILER!!!\0";
-            var trailerNameBytes = Encoding.ASCII.GetBytes(trailerName);
-            var header = new StringBuilder();
-            header.Append("070701");
-            header.Append("00000000"); // ino
-            header.Append("00000000"); // mode
-            header.Append("00000000"); // uid
-            header.Append("00000000"); // gid
-            header.Append("00000001"); // nlink
-            header.Append("00000000"); // mtime
-            header.Append("00000000"); // filesize
-            header.Append("00000000"); // maj
-            header.Append("00000000"); // min
-            header.Append("00000000"); // rmaj
-            header.Append("00000000"); // rmin
-            header.Append(trailerNameBytes.Length.ToString("X8", CultureInfo.InvariantCulture));
-            header.Append("00000000"); // chksum
-
-            var headerBytes = Encoding.ASCII.GetBytes(header.ToString());
-            gzip.Write(headerBytes);
-            gzip.Write(trailerNameBytes);
-
-            var namePad = (4 - ((110 + trailerNameBytes.Length) % 4)) % 4;
-            if (namePad > 0) gzip.Write(new byte[namePad]);
-        }
-
-        ms.Write(payloadMs.ToArray());
+    internal static byte[] GetProbeRpmV6()
+    {
+        var asm = typeof(AbiEngineProbe).Assembly;
+        using var stream = asm.GetManifestResourceStream("abaci_bot.Resources.fixtures.v6demo-1.0-1.x86_64.rpm")
+            ?? throw new InvalidOperationException("Embedded fixture v6demo-1.0-1.x86_64.rpm not found");
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
         return ms.ToArray();
     }
 }

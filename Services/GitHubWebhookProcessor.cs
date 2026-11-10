@@ -292,86 +292,100 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                 var tempDir = Path.Combine(baseTemp, "abaci_abi_" + Guid.NewGuid().ToString("N"));
                 try
                 {
-                    var prRpms = await _artifactService.DownloadRunRpmArtifactsAsync(owner, repo, runId, tempDir, cancellationToken);
-                    var diffResults = new List<AbiDiffResult>();
-
-                    foreach (var prRpm in prRpms)
+                    IReadOnlyList<string> prRpms;
+                    try
                     {
-                        var fileName = Path.GetFileName(prRpm);
-
-                        // 1. Filter out source packages (.src.rpm) and debug packages (-debuginfo, -debugsource)
-                        if (!ArtifactService.IsEligibleBinaryRpm(fileName))
-                        {
-                            _logger?.LogInformation("Skipping non-binary or auxiliary RPM package '{FileName}' from ABI comparison", fileName);
-                            continue;
-                        }
-
-                        // 2. Pre-scan: if package contains no shared library binaries, skip ABI comparison.
-                        // Fail-closed: unparseable/corrupted RPMs must not be silently skipped as "no libraries".
-                        bool hasSharedLibs;
-                        try
-                        {
-                            hasSharedLibs = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(prRpm, cancellationToken);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger?.LogWarning(ex, "Failed to inspect RPM package '{FileName}' for shared libraries; recording incomplete analysis", fileName);
-                            diffResults.Add(AbiDiffResult.NotPerformed($"RPM package '{fileName}' could not be parsed: {ex.Message}"));
-                            continue;
-                        }
-
-                        if (!hasSharedLibs)
-                        {
-                            _logger?.LogInformation("Skipping RPM package '{FileName}' from ABI comparison: contains no shared library binaries", fileName);
-                            continue;
-                        }
-
-                        var pkgName = ArtifactService.ExtractPackageName(fileName);
-                        var baselineRpm = await _artifactService.DownloadBaselineRpmAsync(pkgName, tempDir, cancellationToken);
-                        if (!string.IsNullOrEmpty(baselineRpm) && File.Exists(baselineRpm))
-                        {
-                            var diff = await _abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, cancellationToken);
-                            diffResults.Add(diff);
-                        }
-                        else
-                        {
-                            diffResults.Add(AbiDiffResult.NotPerformed($"Baseline RPM package not available for package '{pkgName}'"));
-                        }
+                        prRpms = await _artifactService.DownloadRunRpmArtifactsAsync(owner, repo, runId, tempDir, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex, "Failed to download or extract RPM artifacts for workflow run {RunId}", runId);
+                        abiResult = AbiDiffResult.NotPerformed($"Failed to download or extract RPM artifacts: {ex.Message}");
+                        prRpms = Array.Empty<string>();
                     }
 
-                    if (diffResults.Count > 0)
+                    if (abiResult == null)
                     {
-                        // Priority hierarchy: Breaking > Failure / Incomplete > AbiChange > Clean
-                        var breaking = diffResults.FirstOrDefault(d => d.Succeeded && d.IsBreakingChange);
-                        if (breaking != null)
+                        var diffResults = new List<AbiDiffResult>();
+
+                        foreach (var prRpm in prRpms)
                         {
-                            abiResult = breaking;
-                        }
-                        else
-                        {
-                            var failure = diffResults.FirstOrDefault(d => !d.Succeeded);
-                            if (failure != null)
+                            var fileName = Path.GetFileName(prRpm);
+
+                            // 1. Filter out source packages (.src.rpm) and debug packages (-debuginfo, -debugsource)
+                            if (!ArtifactService.IsEligibleBinaryRpm(fileName))
                             {
-                                abiResult = failure;
+                                _logger?.LogInformation("Skipping non-binary or auxiliary RPM package '{FileName}' from ABI comparison", fileName);
+                                continue;
+                            }
+
+                            // 2. Pre-scan: if package contains no shared library binaries, skip ABI comparison.
+                            // Fail-closed: unparseable/corrupted RPMs must not be silently skipped as "no libraries".
+                            bool hasSharedLibs;
+                            try
+                            {
+                                hasSharedLibs = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(prRpm, cancellationToken);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger?.LogWarning(ex, "Failed to inspect RPM package '{FileName}' for shared libraries; recording incomplete analysis", fileName);
+                                diffResults.Add(AbiDiffResult.NotPerformed($"RPM package '{fileName}' could not be parsed: {ex.Message}"));
+                                continue;
+                            }
+
+                            if (!hasSharedLibs)
+                            {
+                                _logger?.LogInformation("Skipping RPM package '{FileName}' from ABI comparison: contains no shared library binaries", fileName);
+                                continue;
+                            }
+
+                            var pkgName = ArtifactService.ExtractPackageName(fileName);
+                            var baselineRpm = await _artifactService.DownloadBaselineRpmAsync(pkgName, tempDir, cancellationToken);
+                            if (!string.IsNullOrEmpty(baselineRpm) && File.Exists(baselineRpm))
+                            {
+                                var diff = await _abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, cancellationToken);
+                                diffResults.Add(diff);
                             }
                             else
                             {
-                                var abiChange = diffResults.FirstOrDefault(d => d.Succeeded && d.HasAbiChange);
-                                abiResult = abiChange ?? diffResults[0];
+                                diffResults.Add(AbiDiffResult.NotPerformed($"Baseline RPM package not available for package '{pkgName}'"));
                             }
                         }
-                    }
-                    else if (prRpms.Count == 0)
-                    {
-                        abiResult = AbiDiffResult.NotPerformed("No RPM artifacts found for workflow run");
-                    }
-                    else
-                    {
-                        abiResult = new AbiDiffResult(
-                            Succeeded: true,
-                            HasAbiChange: false,
-                            IsBreakingChange: false,
-                            Details: "RPM packages contain no shared library binaries");
+
+                        if (diffResults.Count > 0)
+                        {
+                            // Priority hierarchy: Breaking > Failure / Incomplete > AbiChange > Clean
+                            var breaking = diffResults.FirstOrDefault(d => d.Succeeded && d.IsBreakingChange);
+                            if (breaking != null)
+                            {
+                                abiResult = breaking;
+                            }
+                            else
+                            {
+                                var failure = diffResults.FirstOrDefault(d => !d.Succeeded);
+                                if (failure != null)
+                                {
+                                    abiResult = failure;
+                                }
+                                else
+                                {
+                                    var abiChange = diffResults.FirstOrDefault(d => d.Succeeded && d.HasAbiChange);
+                                    abiResult = abiChange ?? diffResults[0];
+                                }
+                            }
+                        }
+                        else if (prRpms.Count == 0)
+                        {
+                            abiResult = AbiDiffResult.NotPerformed("No RPM artifacts found for workflow run");
+                        }
+                        else
+                        {
+                            abiResult = new AbiDiffResult(
+                                Succeeded: true,
+                                HasAbiChange: false,
+                                IsBreakingChange: false,
+                                Details: "RPM packages contain no shared library binaries");
+                        }
                     }
                 }
                 finally
@@ -460,16 +474,19 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
 
     /// <summary>
     /// Evaluates whether a workflow name or workflow file path matches any of the configured patterns.
-    /// Supports exact matching, filename matching without extension, and glob wildcards (e.g. "*", "build*").
-    /// Prevents substring false positives (e.g. pattern "build" will not match "Build documentation").
+    /// Supports substring matching (as documented in README and configuration), filename matching, and glob wildcards (e.g. "*", "build*").
+    /// Rejects unverified workflow identities (both name and path missing) unless wildcard "*" is configured.
     /// </summary>
     internal static bool IsAuthorizedWorkflow(string? workflowName, string? workflowPath, IReadOnlyList<string> configuredNames)
     {
-        if (string.IsNullOrEmpty(workflowName) && string.IsNullOrEmpty(workflowPath))
-            return true;
+        if (configuredNames == null || configuredNames.Count == 0)
+            return false;
 
         if (configuredNames.Contains("*"))
             return true;
+
+        if (string.IsNullOrWhiteSpace(workflowName) && string.IsNullOrWhiteSpace(workflowPath))
+            return false; // Reject unverified workflow identities
 
         var pathFileName = !string.IsNullOrEmpty(workflowPath) ? Path.GetFileName(workflowPath) : null;
         var pathFileNameWithoutExt = !string.IsNullOrEmpty(workflowPath) ? Path.GetFileNameWithoutExtension(workflowPath) : null;
@@ -496,12 +513,12 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
             }
             else
             {
-                // Exact match (case-insensitive) against workflow name, filename, or filename without extension
-                if (!string.IsNullOrEmpty(workflowName) && string.Equals(workflowName, trimmedPattern, StringComparison.OrdinalIgnoreCase))
+                // Substring match (case-insensitive) against workflow name, filename, or filename without extension
+                if (!string.IsNullOrEmpty(workflowName) && workflowName.Contains(trimmedPattern, StringComparison.OrdinalIgnoreCase))
                     return true;
-                if (!string.IsNullOrEmpty(pathFileName) && string.Equals(pathFileName, trimmedPattern, StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrEmpty(pathFileName) && pathFileName.Contains(trimmedPattern, StringComparison.OrdinalIgnoreCase))
                     return true;
-                if (!string.IsNullOrEmpty(pathFileNameWithoutExt) && string.Equals(pathFileNameWithoutExt, trimmedPattern, StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrEmpty(pathFileNameWithoutExt) && pathFileNameWithoutExt.Contains(trimmedPattern, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
         }

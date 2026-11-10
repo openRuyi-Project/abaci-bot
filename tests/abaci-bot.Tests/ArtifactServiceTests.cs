@@ -354,7 +354,7 @@ public class ArtifactServiceTests
     }
 
     [Fact]
-    public async Task DownloadAndExtractRpmArtifactAsync_ExcessiveZipEntries_StopsProcessingToPreventZipBomb()
+    public async Task DownloadAndExtractRpmArtifactAsync_ExcessiveZipEntries_ThrowsInvalidDataExceptionToPreventZipBomb()
     {
         // Construct a zip file containing 1005 entries
         using var ms = new MemoryStream();
@@ -378,10 +378,8 @@ public class ArtifactServiceTests
         var tempDir = Path.Combine(Path.GetTempPath(), "abaci_zipbomb_" + Guid.NewGuid().ToString("N"));
         try
         {
-            var rpms = await service.DownloadAndExtractRpmArtifactAsync("owner", "repo", 999, tempDir);
-
-            // Should have stopped extracting after reaching 1000 entries ceiling
-            Assert.True(rpms.Count <= 1000);
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                service.DownloadAndExtractRpmArtifactAsync("owner", "repo", 999, tempDir));
         }
         finally
         {

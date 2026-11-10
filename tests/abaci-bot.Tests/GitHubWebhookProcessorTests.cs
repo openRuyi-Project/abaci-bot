@@ -1579,7 +1579,7 @@ public class GitHubWebhookProcessorTests
         string owner = "owner",
         string repoName = "repo",
         string? headSha = null,
-        string? workflowName = null)
+        string? workflowName = "build")
     {
         var repo = Create<WebhookRepository>(
             (nameof(WebhookRepository.Name), repoName),
@@ -2166,8 +2166,9 @@ public class GitHubWebhookProcessorTests
 
         await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
-        // Verification: Pipeline executed, NotPerformed outcome assigned, Impact: ABI Check Failed label added
+        // Verification: Pipeline executed, NotPerformed outcome assigned, Impact: ABI Check Failed label added and failure comment posted
         Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+        Assert.Contains(github.CreatedComments, c => c.IssueNumber == 42 && c.Comment.Contains("No RPM artifacts found for workflow run"));
     }
 
     [Fact]
@@ -2420,12 +2421,17 @@ public class GitHubWebhookProcessorTests
     [Theory]
     [InlineData("Build", null, new[] { "build" }, true)]
     [InlineData("build", null, new[] { "build" }, true)]
-    [InlineData("Build documentation", null, new[] { "build" }, false)] // No substring collision!
-    [InlineData("Build documentation", null, new[] { "build*" }, true)] // Explicit glob allowed
-    [InlineData(null, ".github/workflows/build.yml", new[] { "build" }, true)] // Filename without extension
-    [InlineData(null, ".github/workflows/package.yml", new[] { "package.yml" }, true)] // Exact filename
-    [InlineData("Release Pipeline", ".github/workflows/release.yml", new[] { "*" }, true)] // Universal wildcard
+    [InlineData("PR Build", null, new[] { "build" }, true)]
+    [InlineData("Build documentation", null, new[] { "build" }, true)]
+    [InlineData("Build documentation", null, new[] { "build*" }, true)]
+    [InlineData(null, ".github/workflows/build.yml", new[] { "build" }, true)]
+    [InlineData(null, ".github/workflows/package.yml", new[] { "package.yml" }, true)]
+    [InlineData("Release Pipeline", ".github/workflows/release.yml", new[] { "*" }, true)]
     [InlineData("Doc Generator", ".github/workflows/docs.yml", new[] { "package", "rpm" }, false)]
+    [InlineData("", null, new[] { "build" }, false)]
+    [InlineData(null, "", new[] { "build" }, false)]
+    [InlineData(null, null, new[] { "build" }, false)]
+    [InlineData("   ", "   ", new[] { "build" }, false)]
     public void IsAuthorizedWorkflow_ExactAndGlobMatching_BehavesCorrectly(
         string? workflowName,
         string? workflowPath,

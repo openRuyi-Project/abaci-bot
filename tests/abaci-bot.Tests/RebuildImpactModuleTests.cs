@@ -701,6 +701,54 @@ public class RebuildImpactModuleTests
     }
 
     [Fact]
+    public async Task LoadMetadataAsync_EmptyXmlNoPackages_ThrowsInvalidDataException()
+    {
+        var emptyXml = """
+        <metadata xmlns="http://linux.duke.edu/metadata/common" xmlns:rpm="http://linux.duke.edu/metadata/rpm" packages="0">
+        </metadata>
+        """;
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions());
+        var service = new RpmDependencyService(_httpClientFactory, options);
+
+        using var ms = new MemoryStream(Encoding.UTF8.GetBytes(emptyXml));
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.LoadMetadataAsync(ms, isGzipped: false));
+    }
+
+    [Fact]
+    public async Task RefreshMetadataAsync_EmptyPackagesLocalCache_ReturnsFalseAndMetadataNotLoaded()
+    {
+        var emptyXml = """
+        <metadata xmlns="http://linux.duke.edu/metadata/common" xmlns:rpm="http://linux.duke.edu/metadata/rpm" packages="0">
+        </metadata>
+        """;
+
+        var tempEmpty = Path.Combine(Path.GetTempPath(), $"test-empty-{Guid.NewGuid():N}.xml");
+        try
+        {
+            await File.WriteAllTextAsync(tempEmpty, emptyXml);
+
+            var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions
+            {
+                LocalCachePath = tempEmpty,
+                PrimaryXmlUrl = null
+            });
+            var service = new RpmDependencyService(_httpClientFactory, options);
+
+            var success = await service.RefreshMetadataAsync(CancellationToken.None);
+            Assert.False(success);
+
+            // Metadata must NOT be marked as loaded
+            Assert.False(service.IsMetadataLoaded);
+            Assert.Null(service.GetPackageLocation("pkg-a"));
+        }
+        finally
+        {
+            if (File.Exists(tempEmpty)) File.Delete(tempEmpty);
+        }
+    }
+
+    [Fact]
     public async Task RefreshMetadataAsync_WithRemoteUrl_SuccessLoadsMetadata()
     {
         var xml = """

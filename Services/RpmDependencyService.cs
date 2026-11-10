@@ -358,6 +358,12 @@ public class RpmDependencyService : IRpmDependencyService
             }
         }
 
+        if (packageRequirements.Count == 0 && packageLocations.Count == 0)
+        {
+            _logger?.LogWarning("Attempted to load empty RPM repository metadata; metadata not marked as loaded.");
+            throw new InvalidDataException("RPM repository metadata contains no package entries.");
+        }
+
         lock (_graphLock)
         {
             _reverseGraph = newReverseGraph;

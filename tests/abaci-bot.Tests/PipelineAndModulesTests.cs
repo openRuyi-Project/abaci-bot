@@ -1170,6 +1170,40 @@ public class PipelineAndModulesTests
     }
 
     [Fact]
+    public async Task PullRequestContext_GetFileContentAsync_WhenOneCallerCancels_DoesNotCancelSharedTaskForOtherCallers()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var tcs = new TaskCompletionSource<string>();
+
+        gitHub.GetFileContentAsync("owner", "repo", "SPECS/IsolatedCancel.spec", "sha123", Arg.Any<CancellationToken>())
+            .Returns(_ => tcs.Task);
+
+        var context = CreateMockContext(gitHub, headSha: "sha123");
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel(); // Immediately cancelled token for caller 1
+
+        // Caller 1 should be cancelled via token without cancelling shared task
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            context.GetFileContentAsync("SPECS/IsolatedCancel.spec", cancellationToken: cts.Token));
+
+        // Caller 2 initiates or waits on the same shared task with CancellationToken.None
+        var caller2Task = context.GetFileContentAsync("SPECS/IsolatedCancel.spec", cancellationToken: CancellationToken.None);
+
+        // Complete the underlying network task
+        tcs.SetResult("content of isolated cancel spec");
+
+        var caller2Result = await caller2Task;
+        Assert.Equal("content of isolated cancel spec", caller2Result);
+
+        // Caller 3 fetches from cache immediately
+        var caller3Result = await context.GetFileContentAsync("SPECS/IsolatedCancel.spec");
+        Assert.Equal("content of isolated cancel spec", caller3Result);
+
+        await gitHub.Received(1).GetFileContentAsync("owner", "repo", "SPECS/IsolatedCancel.spec", "sha123", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task PullRequestContext_RefreshAsync_UpdatesAllPropertiesAndRefreshesExistingLabels()
     {
         var gitHub = Substitute.For<IGitHubService>();

@@ -449,16 +449,25 @@ public class AbiDiffServiceTests
     }
 
     [Fact]
-    public void AbiEngineProbe_CreateMinimalProbeRpm_GeneratesValidRpmBytes()
+    public void AbiEngineProbe_GetProbeRpmV4AndV6_ReturnsValidRpmBytes()
     {
-        var probeRpm = AbiEngineProbe.CreateMinimalProbeRpm();
-        Assert.NotNull(probeRpm);
-        Assert.True(probeRpm.Length > 96);
-        // Verify RPM Lead Magic: 0xED 0xAB 0xEE 0xDB
-        Assert.Equal(0xED, probeRpm[0]);
-        Assert.Equal(0xAB, probeRpm[1]);
-        Assert.Equal(0xEE, probeRpm[2]);
-        Assert.Equal(0xDB, probeRpm[3]);
+        var probeRpmV4 = AbiEngineProbe.GetProbeRpmV4();
+        Assert.NotNull(probeRpmV4);
+        Assert.True(probeRpmV4.Length > 96);
+        Assert.Equal(0xED, probeRpmV4[0]);
+        Assert.Equal(0xAB, probeRpmV4[1]);
+        Assert.Equal(0xEE, probeRpmV4[2]);
+        Assert.Equal(0xDB, probeRpmV4[3]);
+        Assert.Equal(3, probeRpmV4[4]); // RPM v4 major version in lead is 3
+
+        var probeRpmV6 = AbiEngineProbe.GetProbeRpmV6();
+        Assert.NotNull(probeRpmV6);
+        Assert.True(probeRpmV6.Length > 96);
+        Assert.Equal(0xED, probeRpmV6[0]);
+        Assert.Equal(0xAB, probeRpmV6[1]);
+        Assert.Equal(0xEE, probeRpmV6[2]);
+        Assert.Equal(0xDB, probeRpmV6[3]);
+        Assert.Equal(4, probeRpmV6[4]); // RPM v6 major version in lead is 4
     }
 
     [Fact]
@@ -488,5 +497,96 @@ public class AbiDiffServiceTests
         Assert.True(available);
         Assert.False(rpm); // dotnet does not support abipkgdiff RPM self-diff!
         Assert.Contains("probe failed", diagnostic);
+    }
+
+    private static string CreateFakeExecutableScript(string windowsBatchContent, string unixShellContent)
+    {
+        var isWindows = OperatingSystem.IsWindows();
+        var scriptPath = Path.Combine(Path.GetTempPath(), $"fake_tool_{Guid.NewGuid():N}" + (isWindows ? ".cmd" : ".sh"));
+        if (isWindows)
+        {
+            File.WriteAllText(scriptPath, windowsBatchContent);
+        }
+        else
+        {
+            File.WriteAllText(scriptPath, unixShellContent);
+            File.SetUnixFileMode(scriptPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        }
+        return scriptPath;
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_NativeToolWithV6Support_DetectsSuccessfully()
+    {
+        var originalV6 = AbiEngineProbe.NativeSupportsV6;
+        var scriptPath = CreateFakeExecutableScript(
+            "@echo off\r\nif \"%1\"==\"--version\" (echo abipkgdiff 2.4 & exit /b 0)\r\nexit /b 0\r\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"abipkgdiff 2.4\"\n  exit 0\nfi\nexit 0\n");
+
+        try
+        {
+            var (available, rpm, diagnostic) = await AbiEngineProbe.ProbeNativeToolAsync(scriptPath);
+            Assert.True(available);
+            Assert.True(rpm);
+            Assert.True(AbiEngineProbe.NativeSupportsV6);
+            Assert.Contains("v4 and v6 support", diagnostic);
+
+            var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+            {
+                Enabled = true,
+                AbipkgdiffExecutablePath = scriptPath
+            });
+            var logger = Substitute.For<ILogger<AbiEngineProbe>>();
+            var probe = new AbiEngineProbe(options, logger);
+            await probe.StartAsync(CancellationToken.None);
+        }
+        finally
+        {
+            AbiEngineProbe.NativeSupportsV6 = originalV6;
+            if (File.Exists(scriptPath)) File.Delete(scriptPath);
+        }
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_NativeToolWithoutRpmSupport_DetectsDisabledRpm()
+    {
+        var scriptPath = CreateFakeExecutableScript(
+            "@echo off\r\necho Support for rpm hasn't been enabled 1>&2\r\nexit /b 1\r\n",
+            "#!/bin/sh\necho \"Support for rpm hasn't been enabled\" >&2\nexit 1\n");
+
+        try
+        {
+            var (available, rpm, diagnostic) = await AbiEngineProbe.ProbeNativeToolAsync(scriptPath);
+            Assert.True(available);
+            Assert.False(rpm);
+            Assert.Contains("without RPM support", diagnostic);
+        }
+        finally
+        {
+            if (File.Exists(scriptPath)) File.Delete(scriptPath);
+        }
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_NativeToolMissingRpm2Cpio_DetectsMissingExtractionTool()
+    {
+        var scriptPath = CreateFakeExecutableScript(
+            "@echo off\r\nif \"%1\"==\"--version\" (echo abipkgdiff 2.4 & exit /b 0)\r\necho rpm2cpio: command not found 1>&2\r\nexit /b 127\r\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"abipkgdiff 2.4\"\n  exit 0\nfi\necho \"rpm2cpio: command not found\" >&2\nexit 127\n");
+
+        try
+        {
+            var (available, rpm, diagnostic) = await AbiEngineProbe.ProbeNativeToolAsync(scriptPath);
+            Assert.True(available);
+            Assert.False(rpm);
+            Assert.Contains("lacks rpm2cpio extraction tool", diagnostic);
+        }
+        finally
+        {
+            if (File.Exists(scriptPath)) File.Delete(scriptPath);
+        }
     }
 }

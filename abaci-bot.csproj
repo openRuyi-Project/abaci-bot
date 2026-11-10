@@ -28,6 +28,8 @@
       <None Remove="tests\**" />
       <EmbeddedResource Include="Resources\spdx-licenses.json" />
       <EmbeddedResource Include="Resources\spdx-exceptions.json" />
+      <EmbeddedResource Include="Resources\fixtures\demo-lib-1.0-1.x86_64.rpm" />
+      <EmbeddedResource Include="Resources\fixtures\v6demo-1.0-1.x86_64.rpm" />
     </ItemGroup>
 
     <ItemGroup>

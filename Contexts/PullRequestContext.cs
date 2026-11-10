@@ -755,9 +755,11 @@ public class PullRequestContext
         var key = $"{Owner}/{Repo}:{path}@{cacheRef}";
         var token = cancellationToken != default ? cancellationToken : CancellationToken;
 
-        return _fileContentCache.GetOrCreateAsync(
+        var sharedTask = _fileContentCache.GetOrCreateAsync(
             key,
-            () => _gitHubService.GetFileContentAsync(Owner, Repo, path, targetSha, token));
+            () => _gitHubService.GetFileContentAsync(Owner, Repo, path, targetSha, CancellationToken.None));
+
+        return token.CanBeCanceled ? sharedTask.WaitAsync(token) : sharedTask;
     }
 
     /// <summary>

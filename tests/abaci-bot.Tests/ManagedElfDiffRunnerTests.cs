@@ -844,4 +844,171 @@ public class ManagedElfDiffRunnerTests
 
         return ms.ToArray();
     }
+
+    [Fact]
+    public async Task ExtractLibrariesAsync_RpmV6RealFixture_ExtractsSharedLibraries()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", "v6demo-1.0-1.x86_64.rpm");
+        Assert.True(File.Exists(fixturePath), $"Fixture file missing at {fixturePath}");
+
+        var libraries = await ManagedElfDiffRunner.ExtractSharedLibrariesAsync(fixturePath, 0, CancellationToken.None);
+
+        Assert.NotEmpty(libraries);
+        var libKey = libraries.Keys.FirstOrDefault(k => k.Contains("libv6demo"));
+        Assert.NotNull(libKey);
+        var lib = libraries[libKey!];
+        Assert.NotEmpty(lib.ExportedSymbols);
+    }
+
+    [Fact]
+    public async Task ContainsSharedLibrariesAsync_RpmV6RealFixture_ReturnsTrue()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", "v6demo-1.0-1.x86_64.rpm");
+        Assert.True(File.Exists(fixturePath));
+
+        var hasLibs = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(fixturePath);
+
+        Assert.True(hasLibs);
+    }
+
+    [Fact]
+    public async Task RunDiffAsync_RpmV6RealFixtures_DetectsSymbolChangesAndIncludesManagedPrefix()
+    {
+        var v1Path = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", "v6demo-1.0-1.x86_64.rpm");
+        var v2Path = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", "v6demo-2.0-1.x86_64.rpm");
+        Assert.True(File.Exists(v1Path));
+        Assert.True(File.Exists(v2Path));
+
+        var runner = new ManagedElfDiffRunner(Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions()));
+        var result = await runner.RunDiffAsync(v1Path, v2Path);
+
+        Assert.True(result.Succeeded);
+        Assert.StartsWith("[Symbol-Only Managed Analysis]", result.Details);
+        Assert.True(result.HasAbiChange);
+    }
+
+    [Fact]
+    public async Task ExtractLibrariesAsync_NewcCpioMissingTrailer_ThrowsInvalidDataException()
+    {
+        // Construct newc CPIO payload without TRAILER!!!
+        // 110-byte header + 2-byte name ("a\0") = 112 bytes (4-byte aligned, namesize = 2, filesize = 0)
+        using var cpioMs = new MemoryStream();
+        var header = Encoding.ASCII.GetBytes("07070100000000000081A40000000000000000000000010000000000000000000000000000000000000000000000000000000200000000a\0");
+        cpioMs.Write(header);
+
+        using var gzipMs = new MemoryStream();
+        using (var gz = new GZipStream(gzipMs, CompressionMode.Compress, leaveOpen: true))
+        {
+            gz.Write(cpioMs.ToArray());
+        }
+
+        var rpmBytes = CreateSyntheticRpmWithRawPayload(gzipMs.ToArray());
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(tempFile, rpmBytes);
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(() => ManagedElfDiffRunner.ExtractSharedLibrariesAsync(tempFile, 0, CancellationToken.None));
+            Assert.Contains("TRAILER", ex.Message);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ExtractStrippedCpioLibrariesAsync_TruncatedFirstHeader_ThrowsInvalidDataException()
+    {
+        using var ms = new MemoryStream(new byte[5]);
+        var magic = Encoding.ASCII.GetBytes("07070X");
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            ManagedElfDiffRunner.ExtractStrippedCpioLibrariesAsync(ms, magic, Array.Empty<ManagedElfDiffRunner.RpmFileEntry>(), new(), 0, CancellationToken.None));
+        Assert.Contains("first entry header", ex.Message);
+    }
+
+    [Fact]
+    public async Task ExtractStrippedCpioLibrariesAsync_TruncatedEntryHeader_ThrowsInvalidDataException()
+    {
+        using var ms = new MemoryStream();
+        ms.Write(Encoding.ASCII.GetBytes("0000000000")); // first entry 10 bytes (fileIdx 0)
+        ms.Write(new byte[] { 1, 2, 3, 4, 5 }); // truncated second entry (< 16 bytes)
+        ms.Position = 0;
+
+        var magic = Encoding.ASCII.GetBytes("07070X");
+        var files = new[] { new ManagedElfDiffRunner.RpmFileEntry("/usr/lib64/libempty.so.1", 0x81A4, 0, "") };
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            ManagedElfDiffRunner.ExtractStrippedCpioLibrariesAsync(ms, magic, files, new(), 0, CancellationToken.None));
+        Assert.Contains("entry header", ex.Message);
+    }
+
+    [Fact]
+    public async Task ExtractStrippedCpioLibrariesAsync_TruncatedPayload_ThrowsInvalidDataException()
+    {
+        using var ms = new MemoryStream();
+        // 10 bytes: fileIdx 0 -> "0000000000"
+        ms.Write(Encoding.ASCII.GetBytes("0000000000"));
+        ms.Write(new byte[10]); // only 10 bytes written, but 100 expected
+        ms.Position = 0;
+
+        var magic = Encoding.ASCII.GetBytes("07070X");
+        var files = new[] { new ManagedElfDiffRunner.RpmFileEntry("/usr/lib64/libtest.so.1", 0x81A4, 100, "digest1") };
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            ManagedElfDiffRunner.ExtractStrippedCpioLibrariesAsync(ms, magic, files, new(), 0, CancellationToken.None));
+        Assert.Contains("payload", ex.Message);
+    }
+
+    [Fact]
+    public async Task ExtractStrippedCpioLibrariesAsync_Trailer070701_TerminatesSuccessfully()
+    {
+        using var ms = new MemoryStream();
+        // Entry 1: 10 bytes (fileIdx 0, size 0)
+        ms.Write(Encoding.ASCII.GetBytes("0000000000"));
+        // Entry 2: Magic "070701" + 104 bytes header + "TRAILER!!!\0"
+        var trailer = "070701" + new string('0', 88) + "0000000B" + "00000000" + "TRAILER!!!\0";
+        ms.Write(Encoding.ASCII.GetBytes(trailer));
+        ms.Position = 0;
+
+        var magic = Encoding.ASCII.GetBytes("07070X");
+        var files = new[] { new ManagedElfDiffRunner.RpmFileEntry("/usr/lib64/libempty.so.1", 0x81A4, 0, "") };
+        var result = new Dictionary<string, ParsedSharedLibrary>();
+        await ManagedElfDiffRunner.ExtractStrippedCpioLibrariesAsync(ms, magic, files, result, 0, CancellationToken.None);
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task ExtractStrippedCpioLibrariesAsync_HardlinkWithSameDigest_ReusesParsedLibrary()
+    {
+        var dummyElf = CreateSyntheticElf64("libfoo.so.1", new[] { "foo_init" });
+        using var ms = new MemoryStream();
+
+        // Entry 1: fileIdx 0 ("0000000000")
+        ms.Write(Encoding.ASCII.GetBytes("0000000000"));
+        ms.Write(dummyElf);
+        // Pad entry 1 payload to 4 bytes if needed
+        var rem = dummyElf.Length % 4;
+        if (rem != 0) ms.Write(new byte[4 - rem]);
+
+        // Entry 2 (Hardlink): fileIdx 1 ("0000000100")
+        ms.Write(Encoding.ASCII.GetBytes("07070X0000000100"));
+
+        // Entry 3: Trailer 070701
+        var trailer = "070701" + new string('0', 88) + "0000000B" + "00000000" + "TRAILER!!!\0";
+        ms.Write(Encoding.ASCII.GetBytes(trailer));
+        ms.Position = 0;
+
+        var files = new[]
+        {
+            new ManagedElfDiffRunner.RpmFileEntry("/usr/lib64/libfoo.so.1", 0x81A4, dummyElf.Length, "same-digest-123"),
+            new ManagedElfDiffRunner.RpmFileEntry("/usr/lib64/libfoo.so.1.0.0", 0x81A4, 0, "same-digest-123")
+        };
+
+        var magic = Encoding.ASCII.GetBytes("07070X");
+        var result = new Dictionary<string, ParsedSharedLibrary>();
+        await ManagedElfDiffRunner.ExtractStrippedCpioLibrariesAsync(ms, magic, files, result, 0, CancellationToken.None);
+
+        Assert.Equal(2, result.Count);
+        Assert.True(result.ContainsKey("libfoo.so.1"));
+        Assert.True(result.ContainsKey("libfoo.so.1.0.0"));
+        Assert.Equal(result["libfoo.so.1"].ExportedSymbols, result["libfoo.so.1.0.0"].ExportedSymbols);
+    }
 }

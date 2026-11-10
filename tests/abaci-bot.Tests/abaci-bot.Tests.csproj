@@ -27,4 +27,10 @@
     <ProjectReference Include="..\..\abaci-bot.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="fixtures\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
