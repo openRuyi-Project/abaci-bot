@@ -55,7 +55,7 @@ public class AbiEngineProbe : IHostedService
 
         if (_options.EnableFallback)
         {
-            _logger.LogWarning("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}). Active engine: Tier 3 Pure Managed C# Fallback (RPM/Cpio/Zstd/GZip/ELF64).",
+            _logger.LogWarning("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}). Active engine: Tier 3 Pure Managed C# Fallback (RPM/Cpio/Zstd/GZip/XZ/BZip2/LZMA/ELF64).",
                 diagnostic);
         }
         else

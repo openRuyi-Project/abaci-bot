@@ -9,7 +9,7 @@ using Microsoft.Extensions.Options;
 namespace abaci_bot.Services;
 
 /// <summary>
-/// Pure managed C# runner that performs binary ABI analysis by extracting RPM payloads (cpio/gzip/zstd)
+/// Pure managed C# runner that performs binary ABI analysis by extracting RPM payloads (RPM/cpio container; gzip/zstd/xz/bzip2/lzma payload)
 /// and inspecting ELF64 shared object (.so) dynamic symbols (.dynsym) and sonames (.dynamic).
 /// Serves as a robust cross-platform fallback when native abipkgdiff is unavailable or lacks RPM support.
 /// </summary>
@@ -320,7 +320,7 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
         long maxTotalBytes,
         CancellationToken ct)
     {
-        var result = new Dictionary<string, ParsedSharedLibrary>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, ParsedSharedLibrary>(StringComparer.Ordinal);
 
         await using var rpmFileStream = new FileStream(rpmPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
 
@@ -340,26 +340,33 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
         var metadata = await ReadMainHeaderMetadataAsync(rpmFileStream, ct);
 
         // Current stream position is now at the beginning of payload
-        await using var decompressedStream = CreateDecompressionStream(rpmFileStream);
+        try
+        {
+            await using var decompressedStream = CreateDecompressionStream(rpmFileStream);
 
-        // Probe CPIO magic (first 6 bytes)
-        var initialMagic = new byte[6];
-        var readMagic = await ReadExactAsync(decompressedStream, initialMagic, 6, ct);
-        if (readMagic < 6)
-            throw new InvalidDataException("CPIO payload archive is empty or truncated.");
+            // Probe CPIO magic (first 6 bytes)
+            var initialMagic = new byte[6];
+            var readMagic = await ReadExactAsync(decompressedStream, initialMagic, 6, ct);
+            if (readMagic < 6)
+                throw new InvalidDataException("CPIO payload archive is empty or truncated.");
 
-        var magicStr = Encoding.ASCII.GetString(initialMagic);
-        if (magicStr == "070701" || magicStr == "070702")
-        {
-            await ExtractNewcCpioLibrariesAsync(decompressedStream, initialMagic, result, maxTotalBytes, ct);
+            var magicStr = Encoding.ASCII.GetString(initialMagic);
+            if (magicStr == "070701" || magicStr == "070702")
+            {
+                await ExtractNewcCpioLibrariesAsync(decompressedStream, initialMagic, result, maxTotalBytes, ct);
+            }
+            else if (magicStr == "07070X")
+            {
+                await ExtractStrippedCpioLibrariesAsync(decompressedStream, initialMagic, metadata.Files, result, maxTotalBytes, ct);
+            }
+            else
+            {
+                throw new InvalidDataException($"Unsupported or unrecognized CPIO payload header magic: '{magicStr}'.");
+            }
         }
-        else if (magicStr == "07070X")
+        catch (SharpCompress.Common.ArchiveException ex)
         {
-            await ExtractStrippedCpioLibrariesAsync(decompressedStream, initialMagic, metadata.Files, result, maxTotalBytes, ct);
-        }
-        else
-        {
-            throw new InvalidDataException($"Unsupported or unrecognized CPIO payload header magic: '{magicStr}'.");
+            throw new InvalidDataException($"Corrupted or truncated RPM payload stream: {ex.Message}", ex);
         }
 
         return result;
@@ -461,11 +468,12 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
         if (read < 4)
             throw new InvalidDataException("Payload stream truncated before compression header.");
 
-        // Rewind 4 bytes
-        if (stream.CanSeek)
+        if (!stream.CanSeek)
         {
-            stream.Seek(-read, SeekOrigin.Current);
+            throw new NotSupportedException("Payload decompression requires a seekable stream.");
         }
+
+        stream.Seek(-read, SeekOrigin.Current);
 
         // GZip: 1F 8B
         if (magic[0] == 0x1F && magic[1] == 0x8B)
@@ -479,16 +487,46 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             return new ZstdSharp.DecompressionStream(stream, leaveOpen: true);
         }
 
-        // Uncompressed cpio: magic "070701" or "070702"
+        // Uncompressed cpio: magic "070701" or "070702" or "07070X"
         if (magic[0] == (byte)'0' && magic[1] == (byte)'7' && magic[2] == (byte)'0' && magic[3] == (byte)'7')
         {
             return stream;
         }
 
-        // xz magic: FD 37 7A 58 5A 00
+        // XZ: FD 37 7A 58
         if (magic[0] == 0xFD && magic[1] == 0x37 && magic[2] == 0x7A && magic[3] == 0x58)
         {
-            throw new NotSupportedException("Unsupported RPM payload compression format: xz. Managed engine currently supports gzip and zstd payloads.");
+            return new SharpCompress.Compressors.Xz.XZStream(stream);
+        }
+
+        // BZip2: 42 5A 68 ("BZh")
+        if (magic[0] == 0x42 && magic[1] == 0x5A && magic[2] == 0x68)
+        {
+            return SharpCompress.Compressors.BZip2.BZip2Stream.Create(
+                stream,
+                SharpCompress.Compressors.CompressionMode.Decompress,
+                decompressConcatenated: false,
+                leaveOpen: true,
+                tolerateTruncatedStream: false);
+        }
+
+        // LZMA: 5D ...
+        if (magic[0] == 0x5D)
+        {
+            var props = new byte[5];
+            var sizeBuf = new byte[8];
+            try
+            {
+                stream.ReadExactly(props);
+                stream.ReadExactly(sizeBuf);
+            }
+            catch (EndOfStreamException)
+            {
+                throw new InvalidDataException("LZMA payload header truncated.");
+            }
+
+            long uncompressedSize = BinaryPrimitives.ReadInt64LittleEndian(sizeBuf);
+            return SharpCompress.Compressors.LZMA.LzmaStream.Create(props, stream, -1, uncompressedSize, leaveOpen: true);
         }
 
         throw new NotSupportedException(
@@ -837,9 +875,17 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
         }
     }
 
+    /// <summary>
+    /// Parses a 64-bit little-endian ELF binary (ELFCLASS64, ELFDATA2LSB) from raw bytes and extracts its exported symbols and SONAME.
+    /// Returns <c>null</c> if the input is not a recognized ELF file (e.g. non-ELF script, symlink target, or truncated buffer &lt; 6 bytes)
+    /// or if ELF section headers are malformed.
+    /// Throws <see cref="NotSupportedException"/> if the binary is identified as an unsupported architecture
+    /// (such as 32-bit ELF or big-endian ELF) to guarantee fail-closed visibility and prevent silent omissions.
+    /// Throws <see cref="InvalidDataException"/> if ELF class or data encoding fields contain unrecognized values.
+    /// </summary>
     internal static ParsedSharedLibrary? ParseElf64(byte[] elf, string filename)
     {
-        if (elf.Length < 64)
+        if (elf.Length < 6)
             return null;
 
         // Check magic: \x7fELF
@@ -847,11 +893,36 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             return null;
 
         var elfClass = elf[4]; // 1 = 32-bit, 2 = 64-bit
-        if (elfClass != 2) // Support 64-bit ELF
-            return null;
+        if (elfClass == 1)
+        {
+            throw new NotSupportedException(
+                string.Format(CultureInfo.InvariantCulture,
+                    "32-bit ELF binary '{0}' is not supported. Only 64-bit ELF (ELFCLASS64) binaries are supported.", filename));
+        }
+
+        if (elfClass != 2)
+        {
+            throw new InvalidDataException(
+                string.Format(CultureInfo.InvariantCulture,
+                    "Unrecognized ELF class '{0}' in '{1}'.", elfClass, filename));
+        }
 
         var isLittleEndian = elf[5] == 1;
+        if (elf[5] == 2)
+        {
+            throw new NotSupportedException(
+                string.Format(CultureInfo.InvariantCulture,
+                    "Big-endian ELF binary '{0}' is not supported. Only little-endian ELF binaries are supported.", filename));
+        }
+
         if (!isLittleEndian)
+        {
+            throw new InvalidDataException(
+                string.Format(CultureInfo.InvariantCulture,
+                    "Unrecognized ELF data encoding '{0}' in '{1}'.", elf[5], filename));
+        }
+
+        if (elf.Length < 64)
             return null;
 
         var shoff = BinaryPrimitives.ReadInt64LittleEndian(elf.AsSpan(40, 8));

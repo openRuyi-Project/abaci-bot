@@ -242,7 +242,7 @@ public class ManagedElfDiffRunnerTests
     }
 
     [Fact]
-    public void ParseElf64_InvalidOrUnsupportedInputs_ReturnsNull()
+    public void ParseElf64_InvalidOrUnsupportedInputs_HandlesCorrectly()
     {
         // Truncated buffer
         Assert.Null(ManagedElfDiffRunner.ParseElf64(new byte[20], "short.so"));
@@ -250,16 +250,33 @@ public class ManagedElfDiffRunnerTests
         // Invalid ELF magic
         Assert.Null(ManagedElfDiffRunner.ParseElf64(new byte[64], "nomagic.so"));
 
-        // 32-bit ELF (EI_CLASS = 1)
+        // 32-bit ELF (EI_CLASS = 1) -> throws explicit NotSupportedException
         var elf32 = new byte[64];
         elf32[0] = 0x7F; elf32[1] = 0x45; elf32[2] = 0x4C; elf32[3] = 0x46; elf32[4] = 1;
-        Assert.Null(ManagedElfDiffRunner.ParseElf64(elf32, "elf32.so"));
+        var ex32 = Assert.Throws<NotSupportedException>(() => ManagedElfDiffRunner.ParseElf64(elf32, "elf32.so"));
+        Assert.Contains("32-bit ELF binary 'elf32.so' is not supported", ex32.Message);
+        Assert.Contains("Only 64-bit ELF (ELFCLASS64) binaries are supported", ex32.Message);
 
-        // Big-endian ELF (EI_DATA = 2)
+        // Unrecognized ELF class (EI_CLASS = 3) -> throws explicit InvalidDataException
+        var elfBadClass = new byte[64];
+        elfBadClass[0] = 0x7F; elfBadClass[1] = 0x45; elfBadClass[2] = 0x4C; elfBadClass[3] = 0x46; elfBadClass[4] = 3;
+        var exBadClass = Assert.Throws<InvalidDataException>(() => ManagedElfDiffRunner.ParseElf64(elfBadClass, "badclass.so"));
+        Assert.Contains("Unrecognized ELF class '3' in 'badclass.so'", exBadClass.Message);
+
+        // Big-endian ELF (EI_DATA = 2) -> throws explicit NotSupportedException
         var bigEndian = new byte[64];
         bigEndian[0] = 0x7F; bigEndian[1] = 0x45; bigEndian[2] = 0x4C; bigEndian[3] = 0x46;
         bigEndian[4] = 2; bigEndian[5] = 2;
-        Assert.Null(ManagedElfDiffRunner.ParseElf64(bigEndian, "be.so"));
+        var exBe = Assert.Throws<NotSupportedException>(() => ManagedElfDiffRunner.ParseElf64(bigEndian, "be.so"));
+        Assert.Contains("Big-endian ELF binary 'be.so' is not supported", exBe.Message);
+        Assert.Contains("Only little-endian ELF binaries are supported", exBe.Message);
+
+        // Unrecognized ELF data encoding (EI_DATA = 3) -> throws explicit InvalidDataException
+        var elfBadEncoding = new byte[64];
+        elfBadEncoding[0] = 0x7F; elfBadEncoding[1] = 0x45; elfBadEncoding[2] = 0x4C; elfBadEncoding[3] = 0x46;
+        elfBadEncoding[4] = 2; elfBadEncoding[5] = 3;
+        var exBadEncoding = Assert.Throws<InvalidDataException>(() => ManagedElfDiffRunner.ParseElf64(elfBadEncoding, "badenc.so"));
+        Assert.Contains("Unrecognized ELF data encoding '3' in 'badenc.so'", exBadEncoding.Message);
 
         // Invalid shoff
         var badShoff = new byte[64];
@@ -269,11 +286,44 @@ public class ManagedElfDiffRunnerTests
     }
 
     [Fact]
-    public void CreateDecompressionStream_XzMagic_ThrowsNotSupportedException()
+    public void CreateDecompressionStream_XzMagic_ReturnsXZStream()
     {
         using var ms = new MemoryStream(new byte[] { 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 });
-        var ex = Assert.Throws<NotSupportedException>(() => ManagedElfDiffRunner.CreateDecompressionStream(ms));
-        Assert.Contains("xz", ex.Message);
+        using var stream = ManagedElfDiffRunner.CreateDecompressionStream(ms);
+        Assert.IsType<SharpCompress.Compressors.Xz.XZStream>(stream);
+    }
+
+    [Fact]
+    public void CreateDecompressionStream_Bzip2Magic_ReturnsBZip2Stream()
+    {
+        using var rawMs = new MemoryStream();
+        using (var bzWriter = SharpCompress.Compressors.BZip2.BZip2Stream.Create(
+            rawMs, SharpCompress.Compressors.CompressionMode.Compress, false, true, false))
+        {
+            bzWriter.Write(Encoding.ASCII.GetBytes("070701test"));
+            bzWriter.Finish();
+        }
+
+        using var ms = new MemoryStream(rawMs.ToArray());
+        using var stream = ManagedElfDiffRunner.CreateDecompressionStream(ms);
+        Assert.IsType<SharpCompress.Compressors.BZip2.BZip2Stream>(stream);
+    }
+
+    [Fact]
+    public void CreateDecompressionStream_LzmaMagic_ReturnsLzmaStream()
+    {
+        // 5 bytes props + 8 bytes uncompressed size
+        var lzmaHeader = new byte[] { 0x5D, 0x00, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+        using var ms = new MemoryStream(lzmaHeader);
+        using var stream = ManagedElfDiffRunner.CreateDecompressionStream(ms);
+        Assert.IsType<SharpCompress.Compressors.LZMA.LzmaStream>(stream);
+    }
+
+    [Fact]
+    public void CreateDecompressionStream_LzmaTruncatedHeader_ThrowsInvalidDataException()
+    {
+        using var ms = new MemoryStream(new byte[] { 0x5D, 0x00, 0x00, 0x00 });
+        Assert.Throws<InvalidDataException>(() => ManagedElfDiffRunner.CreateDecompressionStream(ms));
     }
 
     [Fact]
@@ -285,14 +335,14 @@ public class ManagedElfDiffRunnerTests
     }
 
     [Fact]
-    public async Task RunDiffAsync_XzPayload_ReturnsFailureNotClean()
+    public async Task RunDiffAsync_TruncatedXzPayload_ReturnsFailureNotClean()
     {
         var tempOld = Path.GetTempFileName();
         var tempNew = Path.GetTempFileName();
 
         try
         {
-            // Synthetic RPM with XZ payload header
+            // Synthetic RPM with truncated XZ payload
             var xzPayloadRpm = CreateSyntheticRpmWithRawPayload(new byte[] { 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 0x00 });
             await File.WriteAllBytesAsync(tempOld, xzPayloadRpm);
             await File.WriteAllBytesAsync(tempNew, xzPayloadRpm);
@@ -302,7 +352,41 @@ public class ManagedElfDiffRunnerTests
 
             // Fail-closed: Must return failure, NEVER Clean
             Assert.False(result.Succeeded);
-            Assert.Contains("Unsupported RPM payload compression format: xz", result.ErrorMessage);
+            Assert.False(string.IsNullOrEmpty(result.ErrorMessage));
+        }
+        finally
+        {
+            if (File.Exists(tempOld)) File.Delete(tempOld);
+            if (File.Exists(tempNew)) File.Delete(tempNew);
+        }
+    }
+
+    [Fact]
+    public async Task RunDiffAsync_Elf32InPackage_ReturnsExplicitNotSupportedFailure()
+    {
+        var tempOld = Path.GetTempFileName();
+        var tempNew = Path.GetTempFileName();
+
+        try
+        {
+            using var payloadMs = new MemoryStream();
+            using (var gzip = new GZipStream(payloadMs, CompressionLevel.Fastest, leaveOpen: true))
+            {
+                // Write a 32-bit ELF (EI_CLASS = 1)
+                WriteCpioEntry(gzip, "usr/lib64/libcorrupt.so.1", new byte[] { 0x7F, 0x45, 0x4C, 0x46, 0x01, 0x01, 0x01, 0x00 });
+                WriteCpioTrailer(gzip);
+            }
+
+            var badElfRpm = CreateSyntheticRpmWithRawPayload(payloadMs.ToArray());
+            await File.WriteAllBytesAsync(tempOld, badElfRpm);
+            await File.WriteAllBytesAsync(tempNew, badElfRpm);
+
+            var runner = new ManagedElfDiffRunner();
+            var result = await runner.RunDiffAsync(tempOld, tempNew);
+
+            // Fail-closed: Must fail with explicit 32-bit diagnosis, never silent Clean
+            Assert.False(result.Succeeded);
+            Assert.Contains("32-bit ELF binary 'usr/lib64/libcorrupt.so.1' is not supported", result.ErrorMessage);
         }
         finally
         {
@@ -322,8 +406,11 @@ public class ManagedElfDiffRunnerTests
             using var payloadMs = new MemoryStream();
             using (var gzip = new GZipStream(payloadMs, CompressionLevel.Fastest, leaveOpen: true))
             {
-                // Write an unparseable 32-bit ELF (starts with \x7fELF but class is 1, not 2)
-                WriteCpioEntry(gzip, "usr/lib64/libcorrupt.so.1", new byte[] { 0x7F, 0x45, 0x4C, 0x46, 0x01, 0x01, 0x01, 0x00 });
+                // Write a 64-bit ELF with bad section headers (returns null from ParseElf64)
+                var corruptElf = new byte[64];
+                corruptElf[0] = 0x7F; corruptElf[1] = 0x45; corruptElf[2] = 0x4C; corruptElf[3] = 0x46;
+                corruptElf[4] = 2; corruptElf[5] = 1; // 64-bit little endian
+                WriteCpioEntry(gzip, "usr/lib64/libcorrupt.so.1", corruptElf);
                 WriteCpioTrailer(gzip);
             }
 
@@ -590,7 +677,15 @@ public class ManagedElfDiffRunnerTests
     }
 
     [Fact]
-    public async Task ContainsSharedLibrariesAsync_WithXzCompressedPayload_ThrowsNotSupportedException()
+    public async Task ContainsSharedLibrariesAsync_WithXzCompressedPayload_ReturnsTrue()
+    {
+        var xzRpm = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", "acl-xz.rpm");
+        var hasLibs = await ManagedElfDiffRunner.ContainsSharedLibrariesAsync(xzRpm);
+        Assert.True(hasLibs);
+    }
+
+    [Fact]
+    public async Task ContainsSharedLibrariesAsync_WithTruncatedXzPayload_ThrowsFailClosed()
     {
         var tempFile = Path.GetTempFileName();
         try
@@ -599,7 +694,9 @@ public class ManagedElfDiffRunnerTests
             var xzRpm = CreateSyntheticRpmWithRawPayload(xzPayload);
             await File.WriteAllBytesAsync(tempFile, xzRpm);
 
-            await Assert.ThrowsAsync<NotSupportedException>(() => ManagedElfDiffRunner.ContainsSharedLibrariesAsync(tempFile));
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(
+                () => ManagedElfDiffRunner.ContainsSharedLibrariesAsync(tempFile));
+            Assert.Contains("Corrupted or truncated RPM payload stream", ex.Message);
         }
         finally
         {
@@ -1010,5 +1107,116 @@ public class ManagedElfDiffRunnerTests
         Assert.True(result.ContainsKey("libfoo.so.1"));
         Assert.True(result.ContainsKey("libfoo.so.1.0.0"));
         Assert.Equal(result["libfoo.so.1"].ExportedSymbols, result["libfoo.so.1.0.0"].ExportedSymbols);
+    }
+
+    [Theory]
+    [InlineData("acl-zstd.rpm")]
+    [InlineData("acl-gzip.rpm")]
+    [InlineData("acl-xz.rpm")]
+    [InlineData("acl-bzip2.rpm")]
+    [InlineData("acl-lzma.rpm")]
+    public async Task ExtractSharedLibrariesAsync_MatrixPayloadFormats_SuccessfullyExtractsAclSymbols(string rpmFileName)
+    {
+        var rpmPath = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", rpmFileName);
+        Assert.True(File.Exists(rpmPath), $"RPM fixture '{rpmFileName}' must exist.");
+
+        var libs = await ManagedElfDiffRunner.ExtractSharedLibrariesAsync(rpmPath, 0, CancellationToken.None);
+
+        Assert.Single(libs);
+        var lib = libs.Values.First();
+        Assert.Equal("libacl.so.1.1.2301", Path.GetFileName(lib.FilePath));
+        Assert.Equal("libacl.so.1", lib.Soname);
+        Assert.Equal(44, lib.ExportedSymbols.Count);
+        Assert.Contains("acl_init", lib.ExportedSymbols);
+        Assert.Contains("acl_get_file", lib.ExportedSymbols);
+        Assert.Contains("acl_set_file", lib.ExportedSymbols);
+    }
+
+    [Fact]
+    public async Task RunDiffAsync_CrossFormatComparisons_AllMatchAndReturnClean()
+    {
+        var formats = new[] { "acl-zstd.rpm", "acl-gzip.rpm", "acl-xz.rpm", "acl-bzip2.rpm", "acl-lzma.rpm" };
+        var runner = new ManagedElfDiffRunner();
+
+        foreach (var oldFile in formats)
+        {
+            var oldPath = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", oldFile);
+            foreach (var newFile in formats)
+            {
+                var newPath = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", newFile);
+                var diff = await runner.RunDiffAsync(oldPath, newPath);
+
+                Assert.True(diff.Succeeded, $"Diff between '{oldFile}' and '{newFile}' should succeed, but failed: {diff.ErrorMessage}");
+                Assert.False(diff.HasAbiChange, $"Diff between '{oldFile}' and '{newFile}' should have no ABI changes.");
+                Assert.False(diff.IsBreakingChange, $"Diff between '{oldFile}' and '{newFile}' should not be breaking.");
+            }
+        }
+    }
+
+    [Fact]
+    public void CreateDecompressionStream_NonSeekableStream_ThrowsNotSupportedException()
+    {
+        var original = new byte[] { 0x1F, 0x8B, 0x08, 0x00, 0x11, 0x22 };
+        using var ms = new MemoryStream(original);
+        using var nonSeekable = new NonSeekableReadStream(ms);
+
+        var ex = Assert.Throws<NotSupportedException>(() => ManagedElfDiffRunner.CreateDecompressionStream(nonSeekable));
+        Assert.Contains("Payload decompression requires a seekable stream", ex.Message);
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_ResultDictionary_UsesOrdinalComparer()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", "acl-zstd.rpm");
+        var libs = await ManagedElfDiffRunner.ExtractSharedLibrariesAsync(fixturePath, 0, CancellationToken.None);
+        Assert.Same(StringComparer.Ordinal, libs.Comparer);
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_CaseDistinctLibraries_BothPreservedWithoutCollision()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            var rpmBytes = CreateSyntheticRpm(new[]
+            {
+                ("usr/lib64/libfoo.so.1", "libfoo.so.1", new[] { "func_a" }),
+                ("usr/lib64/libFoo.so.1", "libFoo.so.1", new[] { "func_b" })
+            });
+            await File.WriteAllBytesAsync(tempFile, rpmBytes);
+
+            var libs = await ManagedElfDiffRunner.ExtractSharedLibrariesAsync(tempFile, 0, CancellationToken.None);
+
+            Assert.Equal(2, libs.Count);
+            Assert.True(libs.ContainsKey("libfoo.so.1"));
+            Assert.True(libs.ContainsKey("libFoo.so.1"));
+            Assert.NotSame(libs["libfoo.so.1"], libs["libFoo.so.1"]);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    private sealed class NonSeekableReadStream : Stream
+    {
+        private readonly Stream _inner;
+        public NonSeekableReadStream(Stream inner) => _inner = inner;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+        public override void Flush() => _inner.Flush();
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override int Read(Span<byte> buffer) => _inner.Read(buffer);
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing) { if (disposing) _inner.Dispose(); base.Dispose(disposing); }
     }
 }
