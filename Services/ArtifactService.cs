@@ -82,9 +82,14 @@ public class ArtifactService : IArtifactService
 
             if (entry.FullName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
             {
-                if (!IsEligibleBinaryRpm(entry.FullName))
+                var cleanEntryName = Path.GetFileName(entry.FullName);
+                var isSrc = cleanEntryName.EndsWith(".src.rpm", StringComparison.OrdinalIgnoreCase) ||
+                            cleanEntryName.EndsWith(".nosrc.rpm", StringComparison.OrdinalIgnoreCase);
+                var isDebugsource = cleanEntryName.Contains("-debugsource", StringComparison.OrdinalIgnoreCase);
+
+                if (isSrc || isDebugsource)
                 {
-                    _logger?.LogDebug("Skipping non-binary or auxiliary RPM entry in artifact {ArtifactId}: {EntryName}", artifactId, entry.FullName);
+                    _logger?.LogDebug("Skipping source or debugsource RPM entry in artifact {ArtifactId}: {EntryName}", artifactId, entry.FullName);
                     continue;
                 }
 
@@ -201,6 +206,74 @@ public class ArtifactService : IArtifactService
         return parts[0];
     }
 
+    /// <summary>
+    /// Locates the corresponding -debuginfo RPM package for a given binary package from a collection of extracted RPM paths.
+    /// Returns null if no matching debuginfo package is present.
+    /// </summary>
+    public static string? FindMatchingDebuginfoRpm(string binaryRpmPath, IEnumerable<string> allExtractedRpms)
+    {
+        if (string.IsNullOrWhiteSpace(binaryRpmPath))
+            return null;
+
+        var binaryFileName = Path.GetFileName(binaryRpmPath);
+        var pkgName = ExtractPackageName(binaryFileName);
+        if (string.IsNullOrWhiteSpace(pkgName))
+            return null;
+
+        var expectedPrefix = $"{pkgName}-debuginfo-";
+        var debugCandidates = new List<string>();
+
+        foreach (var candidate in allExtractedRpms)
+        {
+            var candidateFileName = Path.GetFileName(candidate);
+            if (!candidateFileName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (candidateFileName.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return candidate;
+            }
+
+            if (candidateFileName.Contains("-debuginfo-", StringComparison.OrdinalIgnoreCase))
+            {
+                debugCandidates.Add(candidate);
+            }
+        }
+
+        // Subpackage matching: map e.g. pcre2-tools -> pcre2-debuginfo
+        foreach (var candidate in debugCandidates)
+        {
+            var candidateFileName = Path.GetFileName(candidate);
+            var candidatePkg = ExtractPackageName(candidateFileName);
+            if (candidatePkg.EndsWith("-debuginfo", StringComparison.OrdinalIgnoreCase))
+            {
+                var sourcePkg = candidatePkg[..^"-debuginfo".Length];
+                if (!string.IsNullOrEmpty(sourcePkg) &&
+                    pkgName.StartsWith($"{sourcePkg}-", StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Downloads an optional baseline debuginfo RPM from the configured stable mirror or release storage.
+    /// Returns null if not found or if debuginfo packages are not published in the baseline repository.
+    /// </summary>
+    public Task<string?> DownloadBaselineDebuginfoRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(packageName))
+            return Task.FromResult<string?>(null);
+
+        var debugPackageName = packageName.EndsWith("-debuginfo", StringComparison.OrdinalIgnoreCase)
+            ? packageName
+            : $"{packageName}-debuginfo";
+        return DownloadBaselineRpmAsync(debugPackageName, destinationDirectory, ct);
+    }
+
     public async Task<string?> DownloadBaselineRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(_options.StableRpmBaseUrl))
@@ -218,6 +291,13 @@ public class ArtifactService : IArtifactService
         try
         {
             var client = _httpClientFactory.CreateClient("StableRpmClient");
+            if (_rpmDependencyService != null && !_rpmDependencyService.IsMetadataLoaded)
+            {
+                _logger?.LogWarning(
+                    "Repository repodata metadata is not loaded; cannot resolve exact location href for baseline package '{PackageName}'. Attempting direct URL fallback.",
+                    packageName);
+            }
+
             var locationHref = _rpmDependencyService?.GetPackageLocation(packageName);
             string url;
             if (!string.IsNullOrWhiteSpace(locationHref))
@@ -236,6 +316,22 @@ public class ArtifactService : IArtifactService
             using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!response.IsSuccessStatusCode)
             {
+                var baseUrlEndsWithPackages = _options.StableRpmBaseUrl.TrimEnd('/').EndsWith("/Packages", StringComparison.OrdinalIgnoreCase);
+                if (string.IsNullOrWhiteSpace(locationHref) && !baseUrlEndsWithPackages)
+                {
+                    var filePart = safePackageName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase)
+                        ? safePackageName
+                        : $"{Uri.EscapeDataString(safePackageName)}.rpm";
+                    var fallbackPackagesUrl = $"{_options.StableRpmBaseUrl.TrimEnd('/')}/Packages/{filePart}";
+                    using var fallbackResponse = await client.GetAsync(fallbackPackagesUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+                    if (fallbackResponse.IsSuccessStatusCode)
+                    {
+                        await using var fallbackStream = File.Create(targetFile);
+                        await fallbackResponse.Content.CopyToAsync(fallbackStream, ct);
+                        return targetFile;
+                    }
+                }
+
                 _logger?.LogDebug("Baseline RPM for {PackageName} not found at {Url}", packageName, url);
                 return null;
             }

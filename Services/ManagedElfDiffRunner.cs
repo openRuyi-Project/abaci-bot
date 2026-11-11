@@ -31,7 +31,15 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
     {
     }
 
-    public async Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
+    public Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
+        => RunDiffAsync(oldRpmPath, newRpmPath, null, null, ct);
+
+    public async Task<AbiDiffResult> RunDiffAsync(
+        string oldRpmPath,
+        string newRpmPath,
+        string? oldDebuginfoPath,
+        string? newDebuginfoPath,
+        CancellationToken ct = default)
     {
         if (!File.Exists(oldRpmPath) || !File.Exists(newRpmPath))
         {
@@ -41,6 +49,11 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
                 IsBreakingChange: false,
                 Details: string.Empty,
                 ErrorMessage: $"Target RPM file not found: old='{oldRpmPath}', new='{newRpmPath}'");
+        }
+
+        if (!string.IsNullOrWhiteSpace(oldDebuginfoPath) || !string.IsNullOrWhiteSpace(newDebuginfoPath))
+        {
+            _logger?.LogDebug("Managed ELF runner operates on binary symbol tables (.dynsym); debuginfo packages are ignored.");
         }
 
         try
@@ -315,11 +328,41 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
         }
     }
 
-    internal static async Task<Dictionary<string, ParsedSharedLibrary>> ExtractSharedLibrariesAsync(
+    /// <summary>
+    /// Consolidated safety limits for RPM payload and CPIO archive processing.
+    /// </summary>
+    /// <param name="MaxEntryCount">Maximum entry count permitted in standard newc CPIO payloads (magic "070701" / "070702"), defaulting to 10,000.</param>
+    /// <param name="MaxStrippedEntryCount">Maximum entry count permitted in RPM v6 indexed stripped CPIO payloads (magic "07070X"), defaulting to 50,000 to accommodate multi-subpackage distributions (such as glibc or linux-kernel).</param>
+    /// <param name="MaxNameSize">Maximum byte length for CPIO file paths, defaulting to 4,096.</param>
+    /// <param name="MaxSingleFileSize">Maximum allowable uncompressed size for any individual file, defaulting to 500 MB.</param>
+    /// <param name="MaxTotalBytes">Maximum cumulative uncompressed bytes extracted across all archive entries, defaulting to 1 GB.</param>
+    internal sealed record RpmPayloadLimits(
+        int MaxEntryCount = 10_000,
+        int MaxStrippedEntryCount = 50_000,
+        int MaxNameSize = 4096,
+        long MaxSingleFileSize = 500L * 1024 * 1024,
+        long MaxTotalBytes = 1024L * 1024 * 1024); // 1 GB default
+
+    internal static Task<Dictionary<string, ParsedSharedLibrary>> ExtractSharedLibrariesAsync(
+        string rpmPath,
+        CancellationToken ct = default)
+        => ExtractSharedLibrariesAsync(rpmPath, limits: null, ct);
+
+    internal static Task<Dictionary<string, ParsedSharedLibrary>> ExtractSharedLibrariesAsync(
         string rpmPath,
         long maxTotalBytes,
-        CancellationToken ct)
+        CancellationToken ct = default)
+        => ExtractSharedLibrariesAsync(
+            rpmPath,
+            new RpmPayloadLimits(MaxTotalBytes: maxTotalBytes > 0 ? maxTotalBytes : 1024L * 1024 * 1024),
+            ct);
+
+    internal static async Task<Dictionary<string, ParsedSharedLibrary>> ExtractSharedLibrariesAsync(
+        string rpmPath,
+        RpmPayloadLimits? limits,
+        CancellationToken ct = default)
     {
+        var effectiveLimits = limits ?? new RpmPayloadLimits();
         var result = new Dictionary<string, ParsedSharedLibrary>(StringComparer.Ordinal);
 
         await using var rpmFileStream = new FileStream(rpmPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
@@ -353,23 +396,58 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             var magicStr = Encoding.ASCII.GetString(initialMagic);
             if (magicStr == "070701" || magicStr == "070702")
             {
-                await ExtractNewcCpioLibrariesAsync(decompressedStream, initialMagic, result, maxTotalBytes, ct);
+                await ExtractNewcCpioLibrariesAsync(decompressedStream, initialMagic, result, effectiveLimits, ct);
             }
             else if (magicStr == "07070X")
             {
-                await ExtractStrippedCpioLibrariesAsync(decompressedStream, initialMagic, metadata.Files, result, maxTotalBytes, ct);
+                // Stripped CPIO archives index all filesystem paths from the RPM header table.
+                // Large multi-subpackage distributions (such as glibc or linux-kernel) routinely
+                // contain tens of thousands of indexed files, so the default limit is 50,000 unless overridden.
+                await ExtractStrippedCpioLibrariesAsync(decompressedStream, initialMagic, metadata.Files, result, effectiveLimits, ct);
             }
             else
             {
                 throw new InvalidDataException($"Unsupported or unrecognized CPIO payload header magic: '{magicStr}'.");
             }
         }
-        catch (SharpCompress.Common.ArchiveException ex)
+        catch (Exception ex) when (IsCorruptedOrTruncatedPayloadException(ex))
         {
             throw new InvalidDataException($"Corrupted or truncated RPM payload stream: {ex.Message}", ex);
         }
 
         return result;
+    }
+
+    private static bool IsCorruptedOrTruncatedPayloadException(Exception ex)
+    {
+        if (ex is SharpCompress.Common.ArchiveException
+               or SharpCompress.Common.ArchiveOperationException
+               or EndOfStreamException
+               or ZstdSharp.ZstdException)
+        {
+            return true;
+        }
+
+        if (ex is InvalidDataException ide)
+        {
+            if (ide.Message.StartsWith("Corrupted or truncated RPM payload stream", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            // Safety limits and unsupported format diagnostics must propagate without corruption prefix
+            if (ide.Message.Contains("safety limit", StringComparison.OrdinalIgnoreCase) ||
+                ide.Message.Contains("out of bounds", StringComparison.OrdinalIgnoreCase) ||
+                ide.Message.Contains("Unsupported or unrecognized", StringComparison.OrdinalIgnoreCase) ||
+                ide.Message.Contains("not supported", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     private static async Task<RpmPackageMetadata> ReadMainHeaderMetadataAsync(Stream stream, CancellationToken ct)
@@ -400,10 +478,6 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
 
         return RpmPackageMetadata.Parse(indexBytes, nindex, dataBytes);
     }
-
-    internal static Task<Dictionary<string, ParsedSharedLibrary>> ExtractSharedLibrariesAsync(
-        string rpmPath,
-        CancellationToken ct) => ExtractSharedLibrariesAsync(rpmPath, 0, ct);
 
     /// <summary>
     /// Checks whether an RPM package contains at least one parseable 64-bit ELF shared library binary.
@@ -462,9 +536,9 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
 
     internal static Stream CreateDecompressionStream(Stream stream)
     {
-        // Probe first 4 bytes to detect compression format
-        var magic = new byte[4];
-        var read = stream.Read(magic, 0, 4);
+        // Probe first 6 bytes to detect compression format
+        var magic = new byte[6];
+        var read = stream.Read(magic, 0, 6);
         if (read < 4)
             throw new InvalidDataException("Payload stream truncated before compression header.");
 
@@ -493,10 +567,13 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             return stream;
         }
 
-        // XZ: FD 37 7A 58
+        // XZ: FD 37 7A 58 5A 00
         if (magic[0] == 0xFD && magic[1] == 0x37 && magic[2] == 0x7A && magic[3] == 0x58)
         {
-            return new SharpCompress.Compressors.Xz.XZStream(stream);
+            if (read < 6)
+                throw new InvalidDataException("XZ payload header truncated.");
+            if (magic[4] == 0x5A && magic[5] == 0x00)
+                return new SharpCompress.Compressors.Xz.XZStream(stream);
         }
 
         // BZip2: 42 5A 68 ("BZh")
@@ -534,18 +611,21 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
                 magic[0], magic[1], magic[2], magic[3]));
     }
 
-    internal static async Task ExtractNewcCpioLibrariesAsync(
+    internal static Task ExtractNewcCpioLibrariesAsync(
         Stream cpioStream,
         byte[] initialMagic,
         Dictionary<string, ParsedSharedLibrary> result,
         long maxTotalBytes,
         CancellationToken ct)
-    {
-        const int maxEntryCount = 10_000;
-        const int maxNameSize = 4096;
-        const long maxSingleFileSize = 500L * 1024 * 1024; // 500 MB
-        var effectiveMaxTotalBytes = maxTotalBytes > 0 ? maxTotalBytes : 2L * 1024 * 1024 * 1024; // default: 2 GB
+        => ExtractNewcCpioLibrariesAsync(cpioStream, initialMagic, result, new RpmPayloadLimits(MaxTotalBytes: maxTotalBytes > 0 ? maxTotalBytes : 1024L * 1024 * 1024), ct);
 
+    internal static async Task ExtractNewcCpioLibrariesAsync(
+        Stream cpioStream,
+        byte[] initialMagic,
+        Dictionary<string, ParsedSharedLibrary> result,
+        RpmPayloadLimits limits,
+        CancellationToken ct)
+    {
         var totalEntries = 0;
         long totalBytes = 0;
         var seenSoCount = 0;
@@ -584,19 +664,19 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             var fileSize = Convert.ToInt64(fileSizeHex, 16);
             var nameSize = Convert.ToInt32(nameSizeHex, 16);
 
-            if (nameSize < 0 || nameSize > maxNameSize)
-                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "CPIO entry name size out of bounds: {0} bytes (max: {1}).", nameSize, maxNameSize));
+            if (nameSize < 0 || nameSize > limits.MaxNameSize)
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "CPIO entry name size out of bounds: {0} bytes (max: {1}).", nameSize, limits.MaxNameSize));
 
-            if (fileSize < 0 || fileSize > maxSingleFileSize)
-                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "CPIO file size out of bounds: {0} bytes (max: {1}).", fileSize, maxSingleFileSize));
+            if (fileSize < 0 || fileSize > limits.MaxSingleFileSize)
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "CPIO file size out of bounds: {0} bytes (max: {1}).", fileSize, limits.MaxSingleFileSize));
 
             totalEntries++;
-            if (totalEntries > maxEntryCount)
-                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "CPIO entry count exceeded safety limit of {0}.", maxEntryCount));
+            if (totalEntries > limits.MaxEntryCount)
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "CPIO entry count exceeded safety limit of {0}.", limits.MaxEntryCount));
 
             totalBytes += fileSize;
-            if (totalBytes > effectiveMaxTotalBytes)
-                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "CPIO total payload uncompressed bytes exceeded safety limit of {0} bytes.", effectiveMaxTotalBytes));
+            if (totalBytes > limits.MaxTotalBytes)
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "CPIO total payload uncompressed bytes exceeded safety limit of {0} bytes.", limits.MaxTotalBytes));
 
             var nameBuf = new byte[nameSize];
             var nameRead = await ReadExactAsync(cpioStream, nameBuf, nameSize, ct);
@@ -680,18 +760,23 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
         }
     }
 
-    internal static async Task ExtractStrippedCpioLibrariesAsync(
+    internal static Task ExtractStrippedCpioLibrariesAsync(
         Stream cpioStream,
         byte[] initialMagic,
         IReadOnlyList<RpmFileEntry> files,
         Dictionary<string, ParsedSharedLibrary> result,
         long maxTotalBytes,
         CancellationToken ct)
-    {
-        const int maxEntryCount = 50_000;
-        const long maxSingleFileSize = 500L * 1024 * 1024; // 500 MB
-        var effectiveMaxTotalBytes = maxTotalBytes > 0 ? maxTotalBytes : 2L * 1024 * 1024 * 1024; // default: 2 GB
+        => ExtractStrippedCpioLibrariesAsync(cpioStream, initialMagic, files, result, new RpmPayloadLimits(MaxTotalBytes: maxTotalBytes > 0 ? maxTotalBytes : 1024L * 1024 * 1024), ct);
 
+    internal static async Task ExtractStrippedCpioLibrariesAsync(
+        Stream cpioStream,
+        byte[] initialMagic,
+        IReadOnlyList<RpmFileEntry> files,
+        Dictionary<string, ParsedSharedLibrary> result,
+        RpmPayloadLimits limits,
+        CancellationToken ct)
+    {
         var totalEntries = 0;
         long totalBytes = 0;
         var seenSoCount = 0;
@@ -792,16 +877,16 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             var entry = files[fileIdx];
             var fileSize = entry.Size;
 
-            if (fileSize < 0 || fileSize > maxSingleFileSize)
-                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "File size out of bounds: {0} bytes (max: {1}).", fileSize, maxSingleFileSize));
+            if (fileSize < 0 || fileSize > limits.MaxSingleFileSize)
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "File size out of bounds: {0} bytes (max: {1}).", fileSize, limits.MaxSingleFileSize));
 
             totalEntries++;
-            if (totalEntries > maxEntryCount)
-                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "Entry count exceeded safety limit of {0}.", maxEntryCount));
+            if (totalEntries > limits.MaxStrippedEntryCount)
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "Entry count exceeded safety limit of {0}.", limits.MaxStrippedEntryCount));
 
             totalBytes += fileSize;
-            if (totalBytes > effectiveMaxTotalBytes)
-                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "Total payload uncompressed bytes exceeded safety limit of {0} bytes.", effectiveMaxTotalBytes));
+            if (totalBytes > limits.MaxTotalBytes)
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "Total payload uncompressed bytes exceeded safety limit of {0} bytes.", limits.MaxTotalBytes));
 
             var isRegularFile = (entry.Mode & 0xF000) == 0x8000;
             var isSharedLibName = entry.Path.EndsWith(".so", StringComparison.OrdinalIgnoreCase) ||

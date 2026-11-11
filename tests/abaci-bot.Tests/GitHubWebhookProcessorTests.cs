@@ -1315,6 +1315,109 @@ public class GitHubWebhookProcessorTests
     }
 
     [Fact]
+    public async Task ProcessWorkflowRun_WithDebuginfoArtifacts_PassesDebuginfoToAbiDiffService()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_abi_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var prRpm = Path.Combine(tempDir, "pcre2-10.49-999.or.x86_64.rpm");
+            var prDebuginfo = Path.Combine(tempDir, "pcre2-debuginfo-10.49-999.or.x86_64.rpm");
+            await File.WriteAllBytesAsync(prRpm, SyntheticRpmBytesWithSharedLib);
+            await File.WriteAllBytesAsync(prDebuginfo, new byte[] { 0x01, 0x02 });
+
+            var baselineRpm = Path.Combine(tempDir, "pcre2-baseline.rpm");
+            var baselineDebuginfo = Path.Combine(tempDir, "pcre2-debuginfo-baseline.rpm");
+            await File.WriteAllBytesAsync(baselineRpm, SyntheticRpmBytesWithSharedLib);
+            await File.WriteAllBytesAsync(baselineDebuginfo, new byte[] { 0x03, 0x04 });
+
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 999L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(new List<string> { prRpm, prDebuginfo });
+
+            artifactService.DownloadBaselineRpmAsync("pcre2", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(baselineRpm);
+
+            artifactService.DownloadBaselineDebuginfoRpmAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(baselineDebuginfo);
+
+            abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, baselineDebuginfo, prDebuginfo, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(
+                    Succeeded: true,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: "Clean with DWARF")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(999L, "success", 43);
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            await abiDiffService.Received(1).CompareRpmsAsync(baselineRpm, prRpm, baselineDebuginfo, prDebuginfo, Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRun_WithoutDebuginfo_DoesNotQueryBaselineDebuginfo()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_nodebug_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var prRpm = Path.Combine(tempDir, "pcre2-10.49-999.or.x86_64.rpm");
+            await File.WriteAllBytesAsync(prRpm, SyntheticRpmBytesWithSharedLib);
+
+            var baselineRpm = Path.Combine(tempDir, "pcre2-baseline.rpm");
+            await File.WriteAllBytesAsync(baselineRpm, SyntheticRpmBytesWithSharedLib);
+
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 999L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(new List<string> { prRpm });
+
+            artifactService.DownloadBaselineRpmAsync("pcre2", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(baselineRpm);
+
+            abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(
+                    Succeeded: true,
+                    HasAbiChange: false,
+                    IsBreakingChange: false,
+                    Details: "Clean")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(999L, "success", 43);
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            // Verify baseline debuginfo was NOT queried since PR had no debuginfo
+            await artifactService.DidNotReceiveWithAnyArgs().DownloadBaselineDebuginfoRpmAsync(default!, default!, default);
+            await abiDiffService.Received(1).CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task ProcessWorkflowRun_FailedConclusion_SkipsAbiAnalysis()
     {
         var github = new FakeGitHubService();

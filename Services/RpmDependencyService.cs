@@ -506,7 +506,10 @@ public class RpmDependencyService : IRpmDependencyService
         return null;
     }
 
-    public async Task<bool> RefreshMetadataAsync(CancellationToken ct = default)
+    public Task<bool> RefreshMetadataAsync(CancellationToken ct = default)
+        => RefreshMetadataAsync(null, ct);
+
+    public async Task<bool> RefreshMetadataAsync(string? metadataUrlFallback, CancellationToken ct = default)
     {
         // 1. Try local cache file if configured and exists
         if (!string.IsNullOrWhiteSpace(_options.LocalCachePath) && File.Exists(_options.LocalCachePath))
@@ -526,15 +529,19 @@ public class RpmDependencyService : IRpmDependencyService
         }
 
         // 2. Try remote URL download if configured
-        if (!string.IsNullOrWhiteSpace(_options.PrimaryXmlUrl))
+        var targetUrl = !string.IsNullOrWhiteSpace(_options.PrimaryXmlUrl)
+            ? _options.PrimaryXmlUrl
+            : metadataUrlFallback;
+
+        if (!string.IsNullOrWhiteSpace(targetUrl))
         {
             try
             {
                 var client = _httpClientFactory.CreateClient("RpmMetadataClient");
-                var effectiveUrl = await ResolveEffectivePrimaryUrlAsync(client, _options.PrimaryXmlUrl, ct);
+                var effectiveUrl = await ResolveEffectivePrimaryUrlAsync(client, targetUrl, ct);
                 if (string.IsNullOrWhiteSpace(effectiveUrl))
                 {
-                    _logger?.LogWarning("Unable to resolve primary XML URL from configured PrimaryXmlUrl: {Url}", _options.PrimaryXmlUrl);
+                    _logger?.LogWarning("Unable to resolve primary XML URL from configured PrimaryXmlUrl / fallback: {Url}", targetUrl);
                     return false;
                 }
 
@@ -552,7 +559,7 @@ public class RpmDependencyService : IRpmDependencyService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger?.LogWarning(ex, "Failed to fetch RPM metadata from remote URL: {Url}", _options.PrimaryXmlUrl);
+                _logger?.LogWarning(ex, "Failed to fetch RPM metadata from remote URL: {Url}", targetUrl);
             }
         }
 

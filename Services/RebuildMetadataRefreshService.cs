@@ -6,7 +6,8 @@ using Microsoft.Extensions.Options;
 namespace abaci_bot.Services;
 
 /// <summary>
-/// Background periodic service for refreshing RPM repository metadata and rebuilding the reverse dependency DAG.
+/// Background periodic service for refreshing RPM repository metadata used by both
+/// Rebuild Impact Analysis and ABI Compliance baseline package resolution.
 /// Automatically executes an initial refresh upon application startup, followed by periodic refreshes based on
 /// <see cref="RebuildImpactOptions.RefreshIntervalHours"/>.
 /// </summary>
@@ -14,16 +15,19 @@ public class RebuildMetadataRefreshService : BackgroundService
 {
     private readonly IRpmDependencyService _rpmDependencyService;
     private readonly IOptions<RebuildImpactOptions> _options;
+    private readonly IOptions<AbiComplianceOptions>? _abiOptions;
     private readonly ILogger<RebuildMetadataRefreshService>? _logger;
 
     public RebuildMetadataRefreshService(
         IRpmDependencyService rpmDependencyService,
         IOptions<RebuildImpactOptions> options,
-        ILogger<RebuildMetadataRefreshService>? logger = null)
+        ILogger<RebuildMetadataRefreshService>? logger = null,
+        IOptions<AbiComplianceOptions>? abiOptions = null)
     {
         _rpmDependencyService = rpmDependencyService;
         _options = options;
         _logger = logger;
+        _abiOptions = abiOptions;
     }
 
     /// <summary>
@@ -34,16 +38,24 @@ public class RebuildMetadataRefreshService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var options = _options.Value;
-        if (!options.Enabled)
+        var rebuildOptions = _options.Value;
+        var abiOptions = _abiOptions?.Value;
+        var isRebuildEnabled = rebuildOptions.Enabled;
+        var isAbiBaselineEnabled = abiOptions != null && abiOptions.Enabled && !string.IsNullOrWhiteSpace(abiOptions.StableRpmBaseUrl);
+
+        if (!isRebuildEnabled && !isAbiBaselineEnabled)
         {
-            _logger?.LogInformation("RebuildMetadataRefreshService is disabled via configuration.");
+            _logger?.LogInformation("RebuildMetadataRefreshService is disabled via configuration (neither RebuildImpact nor AbiCompliance baseline is active).");
             return;
         }
 
+        var fallbackUrl = string.IsNullOrWhiteSpace(rebuildOptions.PrimaryXmlUrl) && !string.IsNullOrWhiteSpace(abiOptions?.StableRpmBaseUrl)
+            ? $"{abiOptions.StableRpmBaseUrl.TrimEnd('/')}/repodata/repomd.xml"
+            : null;
+
         _logger?.LogInformation(
             "RebuildMetadataRefreshService started. Periodic interval: {Hours} hours.",
-            options.RefreshIntervalHours);
+            rebuildOptions.RefreshIntervalHours);
 
         try
         {
@@ -62,7 +74,7 @@ public class RebuildMetadataRefreshService : BackgroundService
             try
             {
                 _logger?.LogInformation("Executing RPM metadata refresh...");
-                var success = await _rpmDependencyService.RefreshMetadataAsync(stoppingToken);
+                var success = await _rpmDependencyService.RefreshMetadataAsync(fallbackUrl, stoppingToken);
                 _logger?.LogInformation("RPM metadata refresh completed: {Success}", success ? "Success" : "No updates / failed");
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

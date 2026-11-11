@@ -20,7 +20,15 @@ public record AbiDiffResult(
 /// </summary>
 public interface IAbiDiffRunner
 {
-    Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default);
+    Task<AbiDiffResult> RunDiffAsync(
+        string oldRpmPath,
+        string newRpmPath,
+        string? oldDebuginfoPath,
+        string? newDebuginfoPath,
+        CancellationToken ct = default);
+
+    Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
+        => RunDiffAsync(oldRpmPath, newRpmPath, null, null, ct);
 }
 
 /// <summary>
@@ -29,4 +37,11 @@ public interface IAbiDiffRunner
 public interface IAbiDiffService
 {
     Task<AbiDiffResult> CompareRpmsAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default);
+
+    Task<AbiDiffResult> CompareRpmsAsync(
+        string oldRpmPath,
+        string newRpmPath,
+        string? oldDebuginfoPath,
+        string? newDebuginfoPath,
+        CancellationToken ct = default);
 }

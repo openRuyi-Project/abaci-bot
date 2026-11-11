@@ -294,6 +294,21 @@ public class ManagedElfDiffRunnerTests
     }
 
     [Fact]
+    public void CreateDecompressionStream_XzTruncated_ThrowsInvalidDataException()
+    {
+        using var ms = new MemoryStream(new byte[] { 0xFD, 0x37, 0x7A, 0x58, 0x5A });
+        var ex = Assert.Throws<InvalidDataException>(() => ManagedElfDiffRunner.CreateDecompressionStream(ms));
+        Assert.Contains("XZ payload header truncated", ex.Message);
+    }
+
+    [Fact]
+    public void CreateDecompressionStream_XzInvalidHeader_ThrowsNotSupportedException()
+    {
+        using var ms = new MemoryStream(new byte[] { 0xFD, 0x37, 0x7A, 0x58, 0x11, 0x22 });
+        Assert.Throws<NotSupportedException>(() => ManagedElfDiffRunner.CreateDecompressionStream(ms));
+    }
+
+    [Fact]
     public void CreateDecompressionStream_Bzip2Magic_ReturnsBZip2Stream()
     {
         using var rawMs = new MemoryStream();
@@ -387,6 +402,78 @@ public class ManagedElfDiffRunnerTests
             // Fail-closed: Must fail with explicit 32-bit diagnosis, never silent Clean
             Assert.False(result.Succeeded);
             Assert.Contains("32-bit ELF binary 'usr/lib64/libcorrupt.so.1' is not supported", result.ErrorMessage);
+        }
+        finally
+        {
+            if (File.Exists(tempOld)) File.Delete(tempOld);
+            if (File.Exists(tempNew)) File.Delete(tempNew);
+        }
+    }
+
+    [Fact]
+    public async Task RunDiffAsync_BigEndianElfInPackage_ReturnsExplicitNotSupportedFailure()
+    {
+        var tempOld = Path.GetTempFileName();
+        var tempNew = Path.GetTempFileName();
+
+        try
+        {
+            using var payloadMs = new MemoryStream();
+            using (var gzip = new GZipStream(payloadMs, CompressionLevel.Fastest, leaveOpen: true))
+            {
+                var beElf = new byte[64];
+                beElf[0] = 0x7F; beElf[1] = 0x45; beElf[2] = 0x4C; beElf[3] = 0x46;
+                beElf[4] = 2; beElf[5] = 2;
+                WriteCpioEntry(gzip, "usr/lib64/libbe.so.1", beElf);
+                WriteCpioTrailer(gzip);
+            }
+
+            var beElfRpm = CreateSyntheticRpmWithRawPayload(payloadMs.ToArray());
+            await File.WriteAllBytesAsync(tempOld, beElfRpm);
+            await File.WriteAllBytesAsync(tempNew, beElfRpm);
+
+            var runner = new ManagedElfDiffRunner();
+            var result = await runner.RunDiffAsync(tempOld, tempNew);
+
+            Assert.False(result.Succeeded);
+            Assert.Contains("Big-endian ELF binary 'usr/lib64/libbe.so.1' is not supported", result.ErrorMessage);
+        }
+        finally
+        {
+            if (File.Exists(tempOld)) File.Delete(tempOld);
+            if (File.Exists(tempNew)) File.Delete(tempNew);
+        }
+    }
+
+    [Fact]
+    public async Task RunDiffAsync_MixedElf32AndElf64InPackage_FailsClosed()
+    {
+        var tempOld = Path.GetTempFileName();
+        var tempNew = Path.GetTempFileName();
+
+        try
+        {
+            using var payloadMs = new MemoryStream();
+            using (var gzip = new GZipStream(payloadMs, CompressionLevel.Fastest, leaveOpen: true))
+            {
+                var valid64 = CreateSyntheticElf64("libfoo.so.1", new[] { "func_ok" });
+                WriteCpioEntry(gzip, "usr/lib64/libfoo.so.1", valid64);
+
+                var elf32 = new byte[] { 0x7F, 0x45, 0x4C, 0x46, 0x01, 0x01, 0x01, 0x00 };
+                WriteCpioEntry(gzip, "usr/lib/lib32.so.1", elf32);
+
+                WriteCpioTrailer(gzip);
+            }
+
+            var mixedRpm = CreateSyntheticRpmWithRawPayload(payloadMs.ToArray());
+            await File.WriteAllBytesAsync(tempOld, mixedRpm);
+            await File.WriteAllBytesAsync(tempNew, mixedRpm);
+
+            var runner = new ManagedElfDiffRunner();
+            var result = await runner.RunDiffAsync(tempOld, tempNew);
+
+            Assert.False(result.Succeeded);
+            Assert.Contains("32-bit ELF binary 'usr/lib/lib32.so.1' is not supported", result.ErrorMessage);
         }
         finally
         {
@@ -1195,6 +1282,242 @@ public class ManagedElfDiffRunnerTests
         finally
         {
             if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_TruncatedBZip2Payload_ThrowsInvalidDataExceptionWithSealedMessage()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", "acl-bzip2.rpm");
+        if (!File.Exists(fixturePath))
+        {
+            fixturePath = Path.Combine(Directory.GetCurrentDirectory(), "fixtures", "rpm", "acl-bzip2.rpm");
+        }
+        Assert.True(File.Exists(fixturePath), $"Fixture file not found: {fixturePath}");
+
+        var fullBytes = await File.ReadAllBytesAsync(fixturePath);
+        var truncatedBytes = new byte[fullBytes.Length - 1000];
+        Array.Copy(fullBytes, truncatedBytes, truncatedBytes.Length);
+
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(tempFile, truncatedBytes);
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                ManagedElfDiffRunner.ExtractSharedLibrariesAsync(tempFile, 0, CancellationToken.None));
+            Assert.StartsWith("Corrupted or truncated RPM payload stream", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_TruncatedLzmaPayload_ThrowsInvalidDataExceptionWithSealedMessage()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "fixtures", "rpm", "acl-lzma.rpm");
+        if (!File.Exists(fixturePath))
+        {
+            fixturePath = Path.Combine(Directory.GetCurrentDirectory(), "fixtures", "rpm", "acl-lzma.rpm");
+        }
+        Assert.True(File.Exists(fixturePath), $"Fixture file not found: {fixturePath}");
+
+        var fullBytes = await File.ReadAllBytesAsync(fixturePath);
+        var truncatedBytes = new byte[fullBytes.Length - 1000];
+        Array.Copy(fullBytes, truncatedBytes, truncatedBytes.Length);
+
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(tempFile, truncatedBytes);
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                ManagedElfDiffRunner.ExtractSharedLibrariesAsync(tempFile, 0, CancellationToken.None));
+            Assert.StartsWith("Corrupted or truncated RPM payload stream", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_PayloadLimits_MaxEntryCountExceeded_ThrowsInvalidDataException()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            var rpmBytes = CreateSyntheticRpm(new[]
+            {
+                ("usr/lib64/liba.so.1", "liba.so.1", new[] { "func_a" }),
+                ("usr/lib64/libb.so.1", "libb.so.1", new[] { "func_b" })
+            });
+            await File.WriteAllBytesAsync(tempFile, rpmBytes);
+
+            var strictLimits = new ManagedElfDiffRunner.RpmPayloadLimits(MaxEntryCount: 1);
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                ManagedElfDiffRunner.ExtractSharedLibrariesAsync(tempFile, strictLimits, CancellationToken.None));
+            Assert.Contains("entry count exceeded safety limit", ex.Message);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_PayloadLimits_MaxTotalBytesExceeded_ThrowsInvalidDataException()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            var rpmBytes = CreateSyntheticRpm(new[]
+            {
+                ("usr/lib64/liba.so.1", "liba.so.1", new[] { "func_a" })
+            });
+            await File.WriteAllBytesAsync(tempFile, rpmBytes);
+
+            var strictLimits = new ManagedElfDiffRunner.RpmPayloadLimits(MaxTotalBytes: 10);
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                ManagedElfDiffRunner.ExtractSharedLibrariesAsync(tempFile, strictLimits, CancellationToken.None));
+            Assert.Contains("total payload uncompressed bytes exceeded safety limit", ex.Message);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_PayloadLimits_MaxSingleFileSizeExceeded_ThrowsInvalidDataException()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            var rpmBytes = CreateSyntheticRpm(new[]
+            {
+                ("usr/lib64/liba.so.1", "liba.so.1", new[] { "func_a" })
+            });
+            await File.WriteAllBytesAsync(tempFile, rpmBytes);
+
+            var strictLimits = new ManagedElfDiffRunner.RpmPayloadLimits(MaxSingleFileSize: 10);
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                ManagedElfDiffRunner.ExtractSharedLibrariesAsync(tempFile, strictLimits, CancellationToken.None));
+            Assert.Contains("file size out of bounds", ex.Message);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_NonExistentFile_ThrowsFileNotFoundExceptionNotInvalidData()
+    {
+        // Unrelated I/O errors must preserve standard BCL exception semantics and not be reclassified as corrupted payload
+        await Assert.ThrowsAsync<FileNotFoundException>(() =>
+            ManagedElfDiffRunner.ExtractSharedLibrariesAsync("nonexistent-rpm-file-xyz.rpm", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ExtractStrippedCpioLibrariesAsync_WithMoreThan10000Entries_SucceedsUnderDefaultStrippedLimit()
+    {
+        const int entryCount = 10_050;
+        var files = new List<ManagedElfDiffRunner.RpmFileEntry>(entryCount);
+        using var ms = new MemoryStream();
+
+        for (int i = 0; i < entryCount; i++)
+        {
+            files.Add(new ManagedElfDiffRunner.RpmFileEntry($"/usr/share/doc/file_{i}.txt", 0x81A4, 0, ""));
+            if (i == 0)
+            {
+                ms.Write(Encoding.ASCII.GetBytes("0000000000"));
+            }
+            else
+            {
+                var idxHex = i.ToString("X8", CultureInfo.InvariantCulture);
+                ms.Write(Encoding.ASCII.GetBytes("07070X" + idxHex + "00"));
+            }
+        }
+        ms.Position = 0;
+
+        var magic = Encoding.ASCII.GetBytes("07070X");
+        var result = new Dictionary<string, ParsedSharedLibrary>();
+
+        await ManagedElfDiffRunner.ExtractStrippedCpioLibrariesAsync(ms, magic, files, result, maxTotalBytes: 0, CancellationToken.None);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task ExtractStrippedCpioLibrariesAsync_ExceedingStrippedLimit_ThrowsInvalidDataException()
+    {
+        var files = new[]
+        {
+            new ManagedElfDiffRunner.RpmFileEntry("/usr/share/doc/file_0.txt", 0x81A4, 0, ""),
+            new ManagedElfDiffRunner.RpmFileEntry("/usr/share/doc/file_1.txt", 0x81A4, 0, "")
+        };
+        using var ms = new MemoryStream();
+        ms.Write(Encoding.ASCII.GetBytes("0000000000"));
+        ms.Write(Encoding.ASCII.GetBytes("07070X0000000100"));
+        ms.Position = 0;
+
+        var magic = Encoding.ASCII.GetBytes("07070X");
+        var result = new Dictionary<string, ParsedSharedLibrary>();
+        var strictLimits = new ManagedElfDiffRunner.RpmPayloadLimits(MaxStrippedEntryCount: 1);
+
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            ManagedElfDiffRunner.ExtractStrippedCpioLibrariesAsync(ms, magic, files, result, strictLimits, CancellationToken.None));
+        Assert.Contains("Entry count exceeded safety limit of 1.", ex.Message);
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_GzipTruncation_ThrowsWithSealedPayloadMessage()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            var rpmBytes = CreateSyntheticRpm(new[]
+            {
+                ("usr/lib64/liblarge1.so.1", "liblarge1.so.1", Enumerable.Range(0, 100).Select(i => $"symbol_{i}_abcdefghijklmnopqrstuvwxyz").ToArray()),
+                ("usr/lib64/liblarge2.so.1", "liblarge2.so.1", Enumerable.Range(0, 100).Select(i => $"other_symbol_{i}_abcdefghijklmnopqrstuvwxyz").ToArray())
+            });
+
+            var truncatedBytes = new byte[rpmBytes.Length - 300];
+            Array.Copy(rpmBytes, truncatedBytes, truncatedBytes.Length);
+            await File.WriteAllBytesAsync(tempFile, truncatedBytes);
+
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                ManagedElfDiffRunner.ExtractSharedLibrariesAsync(tempFile, CancellationToken.None));
+            Assert.Contains("Corrupted or truncated RPM payload stream", ex.Message);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task RunDiffAsync_WithDebuginfoParameters_OperatesCleanly()
+    {
+        var tempOld = Path.GetTempFileName();
+        var tempNew = Path.GetTempFileName();
+        try
+        {
+            var rpmBytes = CreateSyntheticRpm(new[] { ("usr/lib64/libdemo.so.1", "libdemo.so.1", new[] { "f1" }) });
+            await File.WriteAllBytesAsync(tempOld, rpmBytes);
+            await File.WriteAllBytesAsync(tempNew, rpmBytes);
+
+            var runner = new ManagedElfDiffRunner();
+            var result = await runner.RunDiffAsync(tempOld, tempNew, "old-debug.rpm", "new-debug.rpm");
+
+            Assert.True(result.Succeeded);
+            Assert.False(result.HasAbiChange);
+        }
+        finally
+        {
+            if (File.Exists(tempOld)) File.Delete(tempOld);
+            if (File.Exists(tempNew)) File.Delete(tempNew);
         }
     }
 

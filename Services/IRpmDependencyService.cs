@@ -40,4 +40,9 @@ public interface IRpmDependencyService
     /// Initializes or refreshes metadata from configured remote URL or local cache file.
     /// </summary>
     Task<bool> RefreshMetadataAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Initializes or refreshes metadata with an optional fallback remote metadata URL (e.g. repomd.xml or direct primary.xml).
+    /// </summary>
+    Task<bool> RefreshMetadataAsync(string? metadataUrlFallback, CancellationToken ct = default);
 }

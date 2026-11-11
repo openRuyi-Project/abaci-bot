@@ -27,4 +27,10 @@ public interface IArtifactService
     /// Downloads a baseline RPM from the configured stable mirror or release storage.
     /// </summary>
     Task<string?> DownloadBaselineRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default);
+
+    /// <summary>
+    /// Downloads an optional baseline debuginfo RPM from the configured stable mirror or release storage.
+    /// Returns null if not found or if debuginfo packages are not published in the baseline repository.
+    /// </summary>
+    Task<string?> DownloadBaselineDebuginfoRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default);
 }

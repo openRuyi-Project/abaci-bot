@@ -38,7 +38,14 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
     /// Builds the ProcessStartInfo configured to execute abipkgdiff.
     /// Exposes process construction for testing CLI contracts without starting external processes.
     /// </summary>
-    public static ProcessStartInfo BuildStartInfo(string executablePath, string oldRpmPath, string newRpmPath, bool privateDso = true)
+    public static ProcessStartInfo BuildStartInfo(
+        string executablePath,
+        string oldRpmPath,
+        string newRpmPath,
+        bool privateDso = true,
+        bool dsoOnly = true,
+        string? oldDebuginfoPath = null,
+        string? newDebuginfoPath = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -52,12 +59,34 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
         {
             startInfo.ArgumentList.Add("--private-dso");
         }
+        if (dsoOnly)
+        {
+            startInfo.ArgumentList.Add("--dso-only");
+        }
+        if (!string.IsNullOrWhiteSpace(oldDebuginfoPath))
+        {
+            startInfo.ArgumentList.Add("--d1");
+            startInfo.ArgumentList.Add(oldDebuginfoPath);
+        }
+        if (!string.IsNullOrWhiteSpace(newDebuginfoPath))
+        {
+            startInfo.ArgumentList.Add("--d2");
+            startInfo.ArgumentList.Add(newDebuginfoPath);
+        }
         startInfo.ArgumentList.Add(oldRpmPath);
         startInfo.ArgumentList.Add(newRpmPath);
         return startInfo;
     }
 
-    public async Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
+    public Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
+        => RunDiffAsync(oldRpmPath, newRpmPath, null, null, ct);
+
+    public async Task<AbiDiffResult> RunDiffAsync(
+        string oldRpmPath,
+        string newRpmPath,
+        string? oldDebuginfoPath,
+        string? newDebuginfoPath,
+        CancellationToken ct = default)
     {
         if (_rpmSupportUnavailable)
         {
@@ -80,6 +109,18 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 ErrorMessage: $"Target RPM file not found: old='{oldRpmPath}', new='{newRpmPath}'");
         }
 
+        if (!string.IsNullOrWhiteSpace(oldDebuginfoPath) && !File.Exists(oldDebuginfoPath))
+        {
+            _logger?.LogWarning("Specified old debuginfo RPM was not found on disk: {Path}", oldDebuginfoPath);
+        }
+        if (!string.IsNullOrWhiteSpace(newDebuginfoPath) && !File.Exists(newDebuginfoPath))
+        {
+            _logger?.LogWarning("Specified new debuginfo RPM was not found on disk: {Path}", newDebuginfoPath);
+        }
+
+        var effectiveOldDebug = !string.IsNullOrWhiteSpace(oldDebuginfoPath) && File.Exists(oldDebuginfoPath) ? oldDebuginfoPath : null;
+        var effectiveNewDebug = !string.IsNullOrWhiteSpace(newDebuginfoPath) && File.Exists(newDebuginfoPath) ? newDebuginfoPath : null;
+
         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_options.TimeoutSeconds > 0 ? _options.TimeoutSeconds : 300));
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
         var effectiveCt = linkedCts.Token;
@@ -88,7 +129,7 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
         try
         {
             var usePrivateDso = _privateDsoSupported;
-            var startInfo = BuildStartInfo(_options.AbipkgdiffExecutablePath, oldRpmPath, newRpmPath, usePrivateDso);
+            var startInfo = BuildStartInfo(_options.AbipkgdiffExecutablePath, oldRpmPath, newRpmPath, usePrivateDso, dsoOnly: true, effectiveOldDebug, effectiveNewDebug);
 
             process = new Process { StartInfo = startInfo };
             process.Start();
@@ -107,7 +148,7 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 _logger?.LogWarning("abipkgdiff executable does not support --private-dso; retrying without this option");
                 process.Dispose();
 
-                startInfo = BuildStartInfo(_options.AbipkgdiffExecutablePath, oldRpmPath, newRpmPath, privateDso: false);
+                startInfo = BuildStartInfo(_options.AbipkgdiffExecutablePath, oldRpmPath, newRpmPath, privateDso: false, dsoOnly: true, effectiveOldDebug, effectiveNewDebug);
                 process = new Process { StartInfo = startInfo };
                 process.Start();
 
@@ -399,7 +440,15 @@ public class AbiDiffService : IAbiDiffService
         _logger = logger;
     }
 
-    public async Task<AbiDiffResult> CompareRpmsAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
+    public Task<AbiDiffResult> CompareRpmsAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
+        => CompareRpmsAsync(oldRpmPath, newRpmPath, null, null, ct);
+
+    public async Task<AbiDiffResult> CompareRpmsAsync(
+        string oldRpmPath,
+        string newRpmPath,
+        string? oldDebuginfoPath,
+        string? newDebuginfoPath,
+        CancellationToken ct = default)
     {
         if (!_options.Enabled)
         {
@@ -418,7 +467,9 @@ public class AbiDiffService : IAbiDiffService
             return await _fallbackRunner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
         }
 
-        var result = await _runner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
+        var result = (!string.IsNullOrWhiteSpace(oldDebuginfoPath) || !string.IsNullOrWhiteSpace(newDebuginfoPath))
+            ? await _runner.RunDiffAsync(oldRpmPath, newRpmPath, oldDebuginfoPath, newDebuginfoPath, ct)
+            : await _runner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
 
         // Fall back to managed ELF runner if primary runner lacks tool or RPM capability
         if (_options.EnableFallback && _fallbackRunner != null && (!result.Succeeded && result.ToolMissing))

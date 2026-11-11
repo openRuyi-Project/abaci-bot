@@ -97,6 +97,30 @@ public class AbiDiffServiceTests
     }
 
     [Fact]
+    public async Task AbiDiffService_WithDebuginfo_DelegatesToDebuginfoRunnerOverload()
+    {
+        var runner = Substitute.For<IAbiDiffRunner>();
+        runner.RunDiffAsync("old.rpm", "new.rpm", "old-dbg.rpm", "new-dbg.rpm", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new AbiDiffResult(
+                Succeeded: true,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: "Clean with DWARF")));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true
+        });
+        var service = new AbiDiffService(runner, options);
+
+        var result = await service.CompareRpmsAsync("old.rpm", "new.rpm", "old-dbg.rpm", "new-dbg.rpm");
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Clean with DWARF", result.Details);
+        await runner.Received(1).RunDiffAsync("old.rpm", "new.rpm", "old-dbg.rpm", "new-dbg.rpm", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public void ProcessAbiDiffRunner_BuildStartInfo_ConstructsAccurateAbipkgdiffCliContract()
     {
         var startInfo = ProcessAbiDiffRunner.BuildStartInfo("abipkgdiff", "/tmp/old.rpm", "/tmp/new.rpm");
@@ -106,10 +130,11 @@ public class AbiDiffServiceTests
         Assert.True(startInfo.RedirectStandardOutput);
         Assert.True(startInfo.RedirectStandardError);
         Assert.True(startInfo.CreateNoWindow);
-        Assert.Equal(3, startInfo.ArgumentList.Count);
+        Assert.Equal(4, startInfo.ArgumentList.Count);
         Assert.Equal("--private-dso", startInfo.ArgumentList[0]);
-        Assert.Equal("/tmp/old.rpm", startInfo.ArgumentList[1]);
-        Assert.Equal("/tmp/new.rpm", startInfo.ArgumentList[2]);
+        Assert.Equal("--dso-only", startInfo.ArgumentList[1]);
+        Assert.Equal("/tmp/old.rpm", startInfo.ArgumentList[2]);
+        Assert.Equal("/tmp/new.rpm", startInfo.ArgumentList[3]);
     }
 
     [Fact]
@@ -439,13 +464,36 @@ public class AbiDiffServiceTests
     }
 
     [Fact]
-    public void BuildStartInfo_IncludesPrivateDsoOption()
+    public void BuildStartInfo_IncludesPrivateDsoAndDsoOnlyAndDebugOptions()
     {
-        var startInfoWithDso = ProcessAbiDiffRunner.BuildStartInfo("abipkgdiff", "old.rpm", "new.rpm", privateDso: true);
+        var startInfoWithDso = ProcessAbiDiffRunner.BuildStartInfo("abipkgdiff", "old.rpm", "new.rpm", privateDso: true, dsoOnly: true);
         Assert.Contains("--private-dso", startInfoWithDso.ArgumentList);
+        Assert.Contains("--dso-only", startInfoWithDso.ArgumentList);
 
-        var startInfoWithoutDso = ProcessAbiDiffRunner.BuildStartInfo("abipkgdiff", "old.rpm", "new.rpm", privateDso: false);
+        var startInfoWithoutDso = ProcessAbiDiffRunner.BuildStartInfo("abipkgdiff", "old.rpm", "new.rpm", privateDso: false, dsoOnly: false);
         Assert.DoesNotContain("--private-dso", startInfoWithoutDso.ArgumentList);
+        Assert.DoesNotContain("--dso-only", startInfoWithoutDso.ArgumentList);
+
+        var startInfoWithDebug = ProcessAbiDiffRunner.BuildStartInfo(
+            "abipkgdiff", "old.rpm", "new.rpm",
+            privateDso: true, dsoOnly: true,
+            oldDebuginfoPath: "old-debug.rpm", newDebuginfoPath: "new-debug.rpm");
+        Assert.Contains("--d1", startInfoWithDebug.ArgumentList);
+        Assert.Contains("old-debug.rpm", startInfoWithDebug.ArgumentList);
+        Assert.Contains("--d2", startInfoWithDebug.ArgumentList);
+        Assert.Contains("new-debug.rpm", startInfoWithDebug.ArgumentList);
+
+        var startInfoSingleOld = ProcessAbiDiffRunner.BuildStartInfo(
+            "abipkgdiff", "old.rpm", "new.rpm",
+            oldDebuginfoPath: "old-debug.rpm", newDebuginfoPath: null);
+        Assert.Contains("--d1", startInfoSingleOld.ArgumentList);
+        Assert.DoesNotContain("--d2", startInfoSingleOld.ArgumentList);
+
+        var startInfoSingleNew = ProcessAbiDiffRunner.BuildStartInfo(
+            "abipkgdiff", "old.rpm", "new.rpm",
+            oldDebuginfoPath: null, newDebuginfoPath: "new-debug.rpm");
+        Assert.DoesNotContain("--d1", startInfoSingleNew.ArgumentList);
+        Assert.Contains("--d2", startInfoSingleNew.ArgumentList);
     }
 
     [Fact]
@@ -587,6 +635,43 @@ public class AbiDiffServiceTests
         finally
         {
             if (File.Exists(scriptPath)) File.Delete(scriptPath);
+        }
+    }
+
+    [Fact]
+    public async Task ProcessAbiDiffRunner_NonExistentDebuginfoPaths_LogsWarning()
+    {
+        var tempOld = Path.GetTempFileName();
+        var tempNew = Path.GetTempFileName();
+        var logger = Substitute.For<ILogger<ProcessAbiDiffRunner>>();
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            AbipkgdiffExecutablePath = "nonexistent-abipkgdiff-tool"
+        });
+        var runner = new ProcessAbiDiffRunner(options, logger);
+
+        try
+        {
+            var result = await runner.RunDiffAsync(tempOld, tempNew, "missing-old-debug.rpm", "missing-new-debug.rpm");
+
+            logger.Received().Log(
+                LogLevel.Warning,
+                Arg.Any<EventId>(),
+                Arg.Is<object>(o => o.ToString()!.Contains("missing-old-debug.rpm")),
+                Arg.Any<Exception?>(),
+                Arg.Any<Func<object, Exception?, string>>());
+
+            logger.Received().Log(
+                LogLevel.Warning,
+                Arg.Any<EventId>(),
+                Arg.Is<object>(o => o.ToString()!.Contains("missing-new-debug.rpm")),
+                Arg.Any<Exception?>(),
+                Arg.Any<Func<object, Exception?, string>>());
+        }
+        finally
+        {
+            if (File.Exists(tempOld)) File.Delete(tempOld);
+            if (File.Exists(tempNew)) File.Delete(tempNew);
         }
     }
 }
