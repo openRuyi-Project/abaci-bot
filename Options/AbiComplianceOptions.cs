@@ -23,6 +23,13 @@ public class AbiComplianceOptions
     public bool EnableFallback { get; set; } = true;
 
     /// <summary>
+    /// When true, explicitly permits the application to start and operate using the pure managed
+    /// fallback engine even if the host environment lacks native abipkgdiff with RPM support.
+    /// Defaults to false to enforce the startup deployment gate; operators must explicitly opt in.
+    /// </summary>
+    public bool AllowManagedFallback { get; set; }
+
+    /// <summary>
     /// When true, requires native abipkgdiff with RPM support and fails startup
     /// if the host environment cannot provide it.
     /// </summary>

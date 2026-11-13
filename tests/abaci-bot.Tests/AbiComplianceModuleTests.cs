@@ -109,6 +109,104 @@ public class AbiComplianceModuleTests
     }
 
     [Fact]
+    public async Task ProcessAsync_BreakingChangeWithFailedChecks_AppliesBothBreakingAndFailedLabels()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(_abiService, options);
+
+        var context = CreateContext();
+        var diffResult = new AbiDiffResult(
+            Succeeded: false,
+            HasAbiChange: true,
+            IsBreakingChange: true,
+            Details: "SONAME changed from libfoo.so.1 to libfoo.so.2",
+            ErrorMessage: "Baseline package missing for libbar",
+            HasFailedChecks: true);
+        context.AbiResult = diffResult;
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.ImpactAbi, context.LabelsToAdd);
+
+        Assert.Equal(2, context.PendingComments.Count);
+        Assert.Contains(context.PendingComments, c => c.Contains("ABI Compliance Check Incomplete") && c.Contains("Baseline package missing"));
+        Assert.Contains(context.PendingComments, c => c.Contains("ABI Breaking Change Detected") && c.Contains("SONAME changed"));
+    }
+
+    [Fact]
+    public async Task ProcessAsync_CleanManagedCheck_SucceedsWithoutFailureLabels()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(_abiService, options);
+
+        var context = CreateContext();
+        var diffResult = new AbiDiffResult(
+            Succeeded: true,
+            HasAbiChange: false,
+            IsBreakingChange: false,
+            Details: "[Symbol-Only Managed Analysis] All shared libraries and exported symbols are identical (without DWARF type layout validation).",
+            IsIncomplete: true);
+        context.AbiResult = diffResult;
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.DoesNotContain(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.ImpactAbi, context.LabelsToAdd);
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_ManagedCheckWithBreakingChange_AddsBreakingChangeLabelAndReport()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(_abiService, options);
+
+        var context = CreateContext();
+        var diffResult = new AbiDiffResult(
+            Succeeded: true,
+            HasAbiChange: true,
+            IsBreakingChange: true,
+            Details: "[Incomplete Check: Debuginfo was supplied but managed runner only performs symbol-level comparison without DWARF type layout validation] SONAME changed from libfoo.so.1 to libfoo.so.2",
+            IsIncomplete: true);
+        context.AbiResult = diffResult;
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.ImpactAbi, context.LabelsToAdd);
+
+        Assert.Single(context.PendingComments);
+        Assert.Contains("ABI Breaking Change Detected", context.PendingComments[0]);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_ManagedCheckWithCompatibleAbiChange_AddsImpactAbiLabel()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
+        var module = new AbiComplianceModule(_abiService, options);
+
+        var context = CreateContext();
+        var diffResult = new AbiDiffResult(
+            Succeeded: true,
+            HasAbiChange: true,
+            IsBreakingChange: false,
+            Details: "[Symbol-Only Managed Analysis] 1 exported symbol(s) added: new_func",
+            IsIncomplete: true);
+        context.AbiResult = diffResult;
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.ImpactAbi, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
     public async Task ProcessAsync_AbidiffFailedWithExistingLabel_DoesNotAddDuplicateComment()
     {
         var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());

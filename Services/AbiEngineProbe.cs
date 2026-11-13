@@ -20,6 +20,7 @@ public class AbiEngineProbe : IHostedService
     private readonly ILogger<AbiEngineProbe> _logger;
 
     public static bool NativeSupportsV6 { get; internal set; }
+    public static string ActiveEngineTier { get; internal set; } = "disabled";
 
     public AbiEngineProbe(
         IOptions<AbiComplianceOptions> options,
@@ -33,6 +34,7 @@ public class AbiEngineProbe : IHostedService
     {
         if (!_options.Enabled)
         {
+            ActiveEngineTier = "disabled";
             _logger.LogInformation("ABI compliance engine: DISABLED in configuration.");
             return;
         }
@@ -41,25 +43,34 @@ public class AbiEngineProbe : IHostedService
 
         if (nativeAvailable && rpmSupport)
         {
+            ActiveEngineTier = "native";
             _logger.LogInformation("ABI compliance engine: Tier 1 Native ({Path}) available with RPM support. Managed fallback enabled: {Fallback}.",
                 _options.AbipkgdiffExecutablePath, _options.EnableFallback);
             return;
         }
 
-        if (_options.StrictEngine)
+        var hasFileOverride = OperatingSystem.IsLinux() && File.Exists("/etc/abaci-bot/ALLOW_MANAGED_SURFACE_ABIGATE");
+        var hasEnvOverride = string.Equals(Environment.GetEnvironmentVariable("ABACI_ALLOW_MANAGED_FALLBACK"), "1", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(Environment.GetEnvironmentVariable("ABACI_ALLOW_MANAGED_FALLBACK"), "true", StringComparison.OrdinalIgnoreCase);
+        var isExplicitlyAllowed = _options.AllowManagedFallback || hasFileOverride || hasEnvOverride;
+
+        if (_options.StrictEngine || !isExplicitlyAllowed)
         {
-            var fatalMessage = $"Strict ABI engine mode is enabled, but native tool '{_options.AbipkgdiffExecutablePath}' is unavailable or lacks RPM support: {diagnostic}. Startup aborted.";
+            ActiveEngineTier = "unavailable";
+            var fatalMessage = $"ABI compliance engine: native tool '{_options.AbipkgdiffExecutablePath}' is unavailable or lacks RPM support ({diagnostic}). Startup aborted. To permit pure managed C# fallback, set 'AbiCompliance:AllowManagedFallback=true' in configuration, create '/etc/abaci-bot/ALLOW_MANAGED_SURFACE_ABIGATE', or set environment variable 'ABACI_ALLOW_MANAGED_FALLBACK=1'.";
             _logger.LogCritical("{FatalMessage}", fatalMessage);
             throw new InvalidOperationException(fatalMessage);
         }
 
         if (_options.EnableFallback)
         {
-            _logger.LogWarning("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}). Active engine: Tier 3 Pure Managed C# Fallback (RPM/Cpio/Zstd/GZip/XZ/BZip2/LZMA/ELF64).",
+            ActiveEngineTier = "managed";
+            _logger.LogWarning("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}). Active engine: Tier 3 Pure Managed C# Fallback (explicitly permitted by operator override).",
                 diagnostic);
         }
         else
         {
+            ActiveEngineTier = "unavailable";
             _logger.LogError("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}) and fallback is disabled. ABI checks will fail on PRs.",
                 diagnostic);
         }

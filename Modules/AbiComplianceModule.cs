@@ -63,30 +63,31 @@ public class AbiComplianceModule : IPullRequestModule
     /// </summary>
     public void ApplyAbiResult(PullRequestContext context, AbiDiffResult result)
     {
-        if (!result.Succeeded)
+        var hasFailed = !result.Succeeded || result.HasFailedChecks;
+        var hasBreaking = result.IsBreakingChange;
+        var hasAbi = result.HasAbiChange;
+
+        if (hasFailed)
         {
             _logger?.LogWarning("ABI analysis was not completed for PR #{PrNumber}: {Error}",
                 context.PrNumber, result.ErrorMessage);
-
-            // Reconcile managed labels: assign ImpactAbiCheckFailed and strip any obsolete Impact: ABI / Breaking Change labels
-            context.ReconcileLabels(ManagedLabels, GitHubLabels.ImpactAbiCheckFailed);
-
-            if (!context.ExistingLabels.Contains(GitHubLabels.ImpactAbiCheckFailed))
-            {
-                var reason = !string.IsNullOrWhiteSpace(result.ErrorMessage)
-                    ? result.ErrorMessage
-                    : (!string.IsNullOrWhiteSpace(result.Details) ? result.Details : "Unknown engine error");
-                var comment = _formatter.FormatAbiCheckFailed(reason);
-                context.PendingComments.Add(comment);
-            }
-            return;
         }
 
         context.ReconcileLabels(ManagedLabels, label =>
-            (result.HasAbiChange && string.Equals(label, GitHubLabels.ImpactAbi, StringComparison.OrdinalIgnoreCase)) ||
-            (result.IsBreakingChange && string.Equals(label, GitHubLabels.ImpactBreakingChange, StringComparison.OrdinalIgnoreCase)));
+            (hasFailed && string.Equals(label, GitHubLabels.ImpactAbiCheckFailed, StringComparison.OrdinalIgnoreCase)) ||
+            (hasBreaking && string.Equals(label, GitHubLabels.ImpactBreakingChange, StringComparison.OrdinalIgnoreCase)) ||
+            (hasAbi && !hasFailed && string.Equals(label, GitHubLabels.ImpactAbi, StringComparison.OrdinalIgnoreCase)));
 
-        if (result.IsBreakingChange)
+        if (hasFailed && !context.ExistingLabels.Contains(GitHubLabels.ImpactAbiCheckFailed))
+        {
+            var reason = !string.IsNullOrWhiteSpace(result.ErrorMessage)
+                ? result.ErrorMessage
+                : (!string.IsNullOrWhiteSpace(result.Details) ? result.Details : "Unknown engine error");
+            var comment = _formatter.FormatAbiCheckFailed(reason);
+            context.PendingComments.Add(comment);
+        }
+
+        if (hasBreaking)
         {
             if (!context.ExistingLabels.Contains(GitHubLabels.ImpactBreakingChange))
             {

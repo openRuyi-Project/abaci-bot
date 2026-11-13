@@ -2,6 +2,7 @@ using abaci_bot.Contexts;
 using abaci_bot.Modules;
 using abaci_bot.Options;
 using abaci_bot.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NSubstitute;
@@ -324,6 +325,153 @@ public class AbiDiffServiceTests
     }
 
     [Fact]
+    public async Task AbiDiffService_PrimaryRunnerToolMissingWithDebuginfo_PassesDebuginfoToFallbackRunner()
+    {
+        var primaryRunner = Substitute.For<IAbiDiffRunner>();
+        primaryRunner.RunDiffAsync("old.rpm", "new.rpm", "old-dbg.rpm", "new-dbg.rpm", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new AbiDiffResult(
+                Succeeded: false,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: "Missing tool",
+                ErrorMessage: "abipkgdiff executable not found",
+                ToolMissing: true)));
+
+        var fallbackRunner = Substitute.For<IAbiDiffRunner>();
+        fallbackRunner.RunDiffAsync("old.rpm", "new.rpm", "old-dbg.rpm", "new-dbg.rpm", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new AbiDiffResult(
+                Succeeded: true,
+                HasAbiChange: false,
+                IsBreakingChange: false,
+                Details: "Managed symbol diff clean",
+                IsIncomplete: true)));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            EnableFallback = true
+        });
+
+        var service = new AbiDiffService(primaryRunner, fallbackRunner, options);
+
+        var result = await service.CompareRpmsAsync("old.rpm", "new.rpm", "old-dbg.rpm", "new-dbg.rpm");
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.IsIncomplete);
+        await fallbackRunner.Received(1).RunDiffAsync("old.rpm", "new.rpm", "old-dbg.rpm", "new-dbg.rpm", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void DependencyInjection_ResolvesAbiDiffServiceWithManagedFallback()
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddOptions();
+        services.AddLogging();
+        services.AddSingleton<ManagedElfDiffRunner>();
+        services.AddSingleton<ProcessAbiDiffRunner>();
+        services.AddSingleton<IAbiDiffRunner>(sp => sp.GetRequiredService<ProcessAbiDiffRunner>());
+        services.AddSingleton<IAbiDiffService>(sp =>
+            new AbiDiffService(
+                sp.GetRequiredService<ProcessAbiDiffRunner>(),
+                sp.GetService<ManagedElfDiffRunner>(),
+                sp.GetRequiredService<IOptions<AbiComplianceOptions>>(),
+                sp.GetService<ILogger<AbiDiffService>>()));
+
+        using var sp = services.BuildServiceProvider();
+        var service = sp.GetRequiredService<IAbiDiffService>() as AbiDiffService;
+
+        Assert.NotNull(service);
+        Assert.IsType<ProcessAbiDiffRunner>(service.PrimaryRunner);
+        Assert.IsType<ManagedElfDiffRunner>(service.FallbackRunner);
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_MissingNativeWithoutAllowManagedFallback_ThrowsInvalidOperationException()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            AbipkgdiffExecutablePath = "nonexistent-abipkgdiff-tool-xyz",
+            EnableFallback = true,
+            AllowManagedFallback = false
+        });
+        var logger = Substitute.For<ILogger<AbiEngineProbe>>();
+        var probe = new AbiEngineProbe(options, logger);
+
+        var prevEnv = Environment.GetEnvironmentVariable("ABACI_ALLOW_MANAGED_FALLBACK");
+        try
+        {
+            Environment.SetEnvironmentVariable("ABACI_ALLOW_MANAGED_FALLBACK", null);
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => probe.StartAsync(CancellationToken.None));
+            Assert.Contains("unavailable or lacks RPM support", ex.Message);
+            Assert.Contains("AbiCompliance:AllowManagedFallback=true", ex.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ABACI_ALLOW_MANAGED_FALLBACK", prevEnv);
+        }
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_MissingNativeWithAllowManagedFallback_SetsActiveEngineTierManaged()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            AbipkgdiffExecutablePath = "nonexistent-abipkgdiff-tool-xyz",
+            EnableFallback = true,
+            AllowManagedFallback = true
+        });
+        var logger = Substitute.For<ILogger<AbiEngineProbe>>();
+        var probe = new AbiEngineProbe(options, logger);
+
+        await probe.StartAsync(CancellationToken.None);
+
+        Assert.Equal("managed", AbiEngineProbe.ActiveEngineTier);
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_MissingNativeWithEnvOverride_SetsActiveEngineTierManaged()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            AbipkgdiffExecutablePath = "nonexistent-abipkgdiff-tool-xyz",
+            EnableFallback = true,
+            AllowManagedFallback = false
+        });
+        var logger = Substitute.For<ILogger<AbiEngineProbe>>();
+        var probe = new AbiEngineProbe(options, logger);
+
+        var prevEnv = Environment.GetEnvironmentVariable("ABACI_ALLOW_MANAGED_FALLBACK");
+        try
+        {
+            Environment.SetEnvironmentVariable("ABACI_ALLOW_MANAGED_FALLBACK", "1");
+            await probe.StartAsync(CancellationToken.None);
+            Assert.Equal("managed", AbiEngineProbe.ActiveEngineTier);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ABACI_ALLOW_MANAGED_FALLBACK", prevEnv);
+        }
+    }
+
+    [Fact]
+    public async Task AbiEngineProbe_Disabled_SetsActiveEngineTierDisabled()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = false
+        });
+        var logger = Substitute.For<ILogger<AbiEngineProbe>>();
+        var probe = new AbiEngineProbe(options, logger);
+
+        await probe.StartAsync(CancellationToken.None);
+
+        Assert.Equal("disabled", AbiEngineProbe.ActiveEngineTier);
+    }
+
+    [Fact]
     public async Task AbiDiffService_PrimaryRunnerToolMissing_DoesNotFallBackWhenDisabled()
     {
         var primaryRunner = Substitute.For<IAbiDiffRunner>();
@@ -376,6 +524,7 @@ public class AbiDiffServiceTests
         {
             Enabled = true,
             StrictEngine = false,
+            AllowManagedFallback = true,
             AbipkgdiffExecutablePath = "nonexistent-tool-strictly-required-999"
         });
 
@@ -393,6 +542,7 @@ public class AbiDiffServiceTests
         {
             Enabled = true,
             StrictEngine = false,
+            AllowManagedFallback = true,
             EnableFallback = false,
             AbipkgdiffExecutablePath = "nonexistent-tool-strictly-required-999"
         });

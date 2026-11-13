@@ -3,6 +3,7 @@ using abaci_bot.Modules;
 using abaci_bot.Modules.ChangeTypeStrategies;
 using abaci_bot.Options;
 using abaci_bot.Pipelines;
+using Microsoft.Extensions.Options;
 using Octokit.Webhooks;
 using Octokit.Webhooks.AspNetCore;
 
@@ -93,8 +94,14 @@ builder.Services.AddSingleton<ISpdxLicenseService, SpdxLicenseService>();
 builder.Services.AddSingleton<ICveSecurityService, CveSecurityService>();
 builder.Services.AddSingleton<IRpmDependencyService, RpmDependencyService>();
 builder.Services.AddSingleton<ManagedElfDiffRunner>();
-builder.Services.AddSingleton<IAbiDiffRunner, ProcessAbiDiffRunner>();
-builder.Services.AddSingleton<IAbiDiffService, AbiDiffService>();
+builder.Services.AddSingleton<ProcessAbiDiffRunner>();
+builder.Services.AddSingleton<IAbiDiffRunner>(sp => sp.GetRequiredService<ProcessAbiDiffRunner>());
+builder.Services.AddSingleton<IAbiDiffService>(sp =>
+    new AbiDiffService(
+        sp.GetRequiredService<ProcessAbiDiffRunner>(),
+        sp.GetService<ManagedElfDiffRunner>(),
+        sp.GetRequiredService<IOptions<AbiComplianceOptions>>(),
+        sp.GetService<ILogger<AbiDiffService>>()));
 builder.Services.AddSingleton<IArtifactService, ArtifactService>();
 builder.Services.AddSingleton<IGovernanceCommentFormatter, GovernanceCommentFormatter>();
 
@@ -128,7 +135,12 @@ var app = builder.Build();
 app.MapGitHubWebhooks("/api/webhook", config["GitHubApp:WebhookSecret"]!);
 
 // Health check endpoint for Docker/Kubernetes
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "healthy",
+    timestamp = DateTime.UtcNow,
+    abiEngine = AbiEngineProbe.ActiveEngineTier
+}));
 
 app.Run();
 

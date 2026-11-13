@@ -1067,7 +1067,9 @@ public class ManagedElfDiffRunnerTests
         var result = await runner.RunDiffAsync(v1Path, v2Path);
 
         Assert.True(result.Succeeded);
-        Assert.StartsWith("[Symbol-Only Managed Analysis]", result.Details);
+        Assert.True(result.IsIncomplete);
+        Assert.Contains("[Symbol-Only Managed Analysis]", result.Details);
+        Assert.Contains("[Incomplete Check: Managed runner performed symbol-only comparison", result.Details);
         Assert.True(result.HasAbiChange);
     }
 
@@ -1439,6 +1441,8 @@ public class ManagedElfDiffRunnerTests
                 ms.Write(Encoding.ASCII.GetBytes("07070X" + idxHex + "00"));
             }
         }
+        var trailer = "070701" + new string('0', 88) + "0000000B" + "00000000" + "TRAILER!!!\0";
+        ms.Write(Encoding.ASCII.GetBytes(trailer));
         ms.Position = 0;
 
         var magic = Encoding.ASCII.GetBytes("07070X");
@@ -1513,11 +1517,146 @@ public class ManagedElfDiffRunnerTests
 
             Assert.True(result.Succeeded);
             Assert.False(result.HasAbiChange);
+            Assert.True(result.IsIncomplete);
+            Assert.Contains("Incomplete Check", result.Details);
         }
         finally
         {
             if (File.Exists(tempOld)) File.Delete(tempOld);
             if (File.Exists(tempNew)) File.Delete(tempNew);
+        }
+    }
+
+    [Fact]
+    public async Task RunDiffAsync_WithoutDebuginfo_MarksIsIncompleteAndIncludesPrefix()
+    {
+        var tempOld = Path.GetTempFileName();
+        var tempNew = Path.GetTempFileName();
+        try
+        {
+            var rpmBytes = CreateSyntheticRpm(new[] { ("usr/lib64/libdemo.so.1", "libdemo.so.1", new[] { "f1" }) });
+            await File.WriteAllBytesAsync(tempOld, rpmBytes);
+            await File.WriteAllBytesAsync(tempNew, rpmBytes);
+
+            var runner = new ManagedElfDiffRunner();
+            var result = await runner.RunDiffAsync(tempOld, tempNew);
+
+            Assert.True(result.Succeeded);
+            Assert.False(result.HasAbiChange);
+            Assert.True(result.IsIncomplete);
+            Assert.Contains("Incomplete Check: Managed runner performed symbol-only comparison", result.Details);
+        }
+        finally
+        {
+            if (File.Exists(tempOld)) File.Delete(tempOld);
+            if (File.Exists(tempNew)) File.Delete(tempNew);
+        }
+    }
+
+    [Fact]
+    public void RpmPackageMetadata_Parse_HugeCountDoesNotOverflowOrAllocateHugeMemory()
+    {
+        // 1 entry of 16 bytes: tag=DIRINDEXES(1116), type=4(int32), offset=0, count=0x40000000 (1073741824)
+        var indexBytes = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(0, 4), 1116);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(4, 4), 4);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(8, 4), 0);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(12, 4), 0x40000000);
+
+        var data = new byte[64];
+
+        // Should safely ignore the untrusted huge count without integer overflow or out of memory
+        var meta = ManagedElfDiffRunner.RpmPackageMetadata.Parse(indexBytes, 1, data);
+        Assert.NotNull(meta);
+        Assert.Empty(meta.Files);
+    }
+
+    [Fact]
+    public void RpmPackageMetadata_Parse_MissingFileModes_InfersSharedLibraryMode()
+    {
+        // 3 entries: DIRINDEXES(1116), BASENAMES(1117), DIRNAMES(1118)
+        var indexBytes = new byte[48];
+        // DIRINDEXES: tag=1116, type=4, offset=32, count=1
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(0, 4), 1116);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(4, 4), 4);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(8, 4), 32);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(12, 4), 1);
+
+        // BASENAMES: tag=1117, type=8, offset=0, count=1
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(16, 4), 1117);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(20, 4), 8);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(24, 4), 0);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(28, 4), 1);
+
+        // DIRNAMES: tag=1118, type=8, offset=16, count=1
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(32, 4), 1118);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(36, 4), 8);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(40, 4), 16);
+        BinaryPrimitives.WriteInt32BigEndian(indexBytes.AsSpan(44, 4), 1);
+
+        var data = new byte[36];
+        Encoding.UTF8.GetBytes("libtest.so.1\0").CopyTo(data, 0);
+        Encoding.UTF8.GetBytes("/usr/lib64/\0").CopyTo(data, 16);
+        BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(32, 4), 0);
+
+        var meta = ManagedElfDiffRunner.RpmPackageMetadata.Parse(indexBytes, 3, data);
+        Assert.NotNull(meta);
+        Assert.Single(meta.Files);
+        Assert.Equal("usr/lib64/libtest.so.1", meta.Files[0].Path);
+        Assert.Equal(0x81ED, meta.Files[0].Mode);
+    }
+
+    [Fact]
+    public async Task ExtractStrippedCpioLibrariesAsync_MissingTrailer_ThrowsInvalidDataException()
+    {
+        // Construct a stripped CPIO payload with one entry for a file, but stream ends without TRAILER!!!
+        var meta = new ManagedElfDiffRunner.RpmPackageMetadata(new[]
+        {
+            new ManagedElfDiffRunner.RpmFileEntry("usr/lib64/libfoo.so.1", 0x81ED, 0, null)
+        });
+
+        // Stream starts with the remaining 10 bytes of entry 0 ("0000000000"), then terminates without TRAILER!!!
+        var headerBytes = Encoding.ASCII.GetBytes("0000000000");
+        using var stream = new MemoryStream(headerBytes);
+        var result = new Dictionary<string, ParsedSharedLibrary>();
+        var limits = new ManagedElfDiffRunner.RpmPayloadLimits();
+
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            ManagedElfDiffRunner.ExtractStrippedCpioLibrariesAsync(stream, Encoding.ASCII.GetBytes("07070X"), meta.Files, result, limits, CancellationToken.None));
+
+        Assert.Contains("missing TRAILER!!! entry", ex.Message);
+    }
+
+    [Fact]
+    public async Task ExtractSharedLibrariesAsync_StrippedCpioWithEmptyMetadataFiles_ThrowsInvalidDataException()
+    {
+        using var ms = new MemoryStream();
+        var lead = new byte[96];
+        lead[0] = 0xED; lead[1] = 0xAB; lead[2] = 0xEE; lead[3] = 0xDB;
+        ms.Write(lead);
+
+        var sigIntro = new byte[16];
+        sigIntro[0] = 0x8E; sigIntro[1] = 0xAD; sigIntro[2] = 0xE8; sigIntro[3] = 0x01;
+        ms.Write(sigIntro);
+
+        var mainIntro = new byte[16];
+        mainIntro[0] = 0x8E; mainIntro[1] = 0xAD; mainIntro[2] = 0xE8; mainIntro[3] = 0x01;
+        ms.Write(mainIntro);
+
+        ms.Write(Encoding.ASCII.GetBytes("07070X0000000000"));
+
+        var tempPath = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(tempPath, ms.ToArray());
+            var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                ManagedElfDiffRunner.ExtractSharedLibrariesAsync(tempPath));
+
+            Assert.Contains("indexed stripped CPIO archive requires package header file metadata", ex.Message);
+        }
+        finally
+        {
+            if (File.Exists(tempPath)) File.Delete(tempPath);
         }
     }
 

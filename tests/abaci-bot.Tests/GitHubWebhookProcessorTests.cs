@@ -2472,6 +2472,60 @@ public class GitHubWebhookProcessorTests
     }
 
     [Fact]
+    public async Task ProcessWorkflowRunAsync_FailureAndBreakingChange_AggregatesBothBreakingAndFailedLabels()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_failbreak_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpmBreak = Path.Combine(tempDir, "pkg-break-1.0.rpm");
+        var prRpmFail = Path.Combine(tempDir, "pkg-fail-1.0.rpm");
+        var baseRpmBreak = Path.Combine(tempDir, "pkg-break-base.rpm");
+        var baseRpmFail = Path.Combine(tempDir, "pkg-fail-base.rpm");
+
+        await File.WriteAllBytesAsync(prRpmBreak, SyntheticRpmBytesWithSharedLib);
+        await File.WriteAllBytesAsync(prRpmFail, SyntheticRpmBytesWithSharedLib);
+        await File.WriteAllTextAsync(baseRpmBreak, "base-break");
+        await File.WriteAllTextAsync(baseRpmFail, "base-fail");
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 2003L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpmBreak, prRpmFail }));
+
+            artifactService.DownloadBaselineRpmAsync("pkg-break", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baseRpmBreak));
+            artifactService.DownloadBaselineRpmAsync("pkg-fail", Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baseRpmFail));
+
+            abiDiffService.CompareRpmsAsync(baseRpmBreak, prRpmBreak, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(Succeeded: true, HasAbiChange: true, IsBreakingChange: true, Details: "SONAME changed")));
+            abiDiffService.CompareRpmsAsync(baseRpmFail, prRpmFail, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(Succeeded: false, HasAbiChange: false, IsBreakingChange: false, Details: "", ErrorMessage: "abipkgdiff crashed")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(2003L, "success", 58, headSha: "commit-sha-match");
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            // Breaking change must NOT mask failure: both Breaking Change and Check Failed labels must be applied
+            Assert.Contains($"add:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
+            Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+            Assert.DoesNotContain($"add:{GitHubLabels.ImpactAbi}", github.LabelOperations);
+
+            // Both comments must be submitted
+            Assert.Contains(github.CreatedComments, c => c.Comment.Contains("ABI Breaking Change Detected"));
+            Assert.Contains(github.CreatedComments, c => c.Comment.Contains("ABI Compliance Check Incomplete"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ProcessWorkflowRunAsync_NonPackagingWorkflow_SkipsAbiCheckWithoutModifyingAbiLabels()
     {
         var github = new FakeGitHubService();

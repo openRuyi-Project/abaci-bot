@@ -430,7 +430,7 @@ public class AbiDiffService : IAbiDiffService
 
     public AbiDiffService(
         IAbiDiffRunner runner,
-        ManagedElfDiffRunner? fallbackRunner,
+        IAbiDiffRunner? fallbackRunner,
         IOptions<AbiComplianceOptions> options,
         ILogger<AbiDiffService>? logger = null)
     {
@@ -439,6 +439,9 @@ public class AbiDiffService : IAbiDiffService
         _options = options.Value;
         _logger = logger;
     }
+
+    internal IAbiDiffRunner PrimaryRunner => _runner;
+    internal IAbiDiffRunner? FallbackRunner => _fallbackRunner;
 
     public Task<AbiDiffResult> CompareRpmsAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
         => CompareRpmsAsync(oldRpmPath, newRpmPath, null, null, ct);
@@ -464,7 +467,7 @@ public class AbiDiffService : IAbiDiffService
         if (isV6Package && !AbiEngineProbe.NativeSupportsV6 && _options.EnableFallback && _fallbackRunner != null)
         {
             _logger?.LogInformation("Package is RPM v6 and native runner lacks v6 support. Falling back to managed ELF symbol diff runner directly.");
-            return await _fallbackRunner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
+            return await _fallbackRunner.RunDiffAsync(oldRpmPath, newRpmPath, oldDebuginfoPath, newDebuginfoPath, ct);
         }
 
         var result = (!string.IsNullOrWhiteSpace(oldDebuginfoPath) || !string.IsNullOrWhiteSpace(newDebuginfoPath))
@@ -475,7 +478,7 @@ public class AbiDiffService : IAbiDiffService
         if (_options.EnableFallback && _fallbackRunner != null && (!result.Succeeded && result.ToolMissing))
         {
             _logger?.LogInformation("Primary ABI runner unavailable ({Reason}). Falling back to managed ELF symbol diff runner.", result.ErrorMessage);
-            var fallbackResult = await _fallbackRunner.RunDiffAsync(oldRpmPath, newRpmPath, ct);
+            var fallbackResult = await _fallbackRunner.RunDiffAsync(oldRpmPath, newRpmPath, oldDebuginfoPath, newDebuginfoPath, ct);
             return fallbackResult;
         }
 

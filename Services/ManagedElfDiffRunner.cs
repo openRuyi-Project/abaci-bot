@@ -18,8 +18,13 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
     private readonly ILogger<ManagedElfDiffRunner>? _logger;
     private readonly AbiComplianceOptions _options;
 
+    public ManagedElfDiffRunner()
+        : this(null, null)
+    {
+    }
+
     public ManagedElfDiffRunner(
-        IOptions<AbiComplianceOptions>? options = null,
+        IOptions<AbiComplianceOptions>? options,
         ILogger<ManagedElfDiffRunner>? logger = null)
     {
         _options = options?.Value ?? new AbiComplianceOptions();
@@ -31,10 +36,10 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
     {
     }
 
-    public Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
+    public virtual Task<AbiDiffResult> RunDiffAsync(string oldRpmPath, string newRpmPath, CancellationToken ct = default)
         => RunDiffAsync(oldRpmPath, newRpmPath, null, null, ct);
 
-    public async Task<AbiDiffResult> RunDiffAsync(
+    public virtual async Task<AbiDiffResult> RunDiffAsync(
         string oldRpmPath,
         string newRpmPath,
         string? oldDebuginfoPath,
@@ -51,7 +56,8 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
                 ErrorMessage: $"Target RPM file not found: old='{oldRpmPath}', new='{newRpmPath}'");
         }
 
-        if (!string.IsNullOrWhiteSpace(oldDebuginfoPath) || !string.IsNullOrWhiteSpace(newDebuginfoPath))
+        var hasDebuginfo = !string.IsNullOrWhiteSpace(oldDebuginfoPath) || !string.IsNullOrWhiteSpace(newDebuginfoPath);
+        if (hasDebuginfo)
         {
             _logger?.LogDebug("Managed ELF runner operates on binary symbol tables (.dynsym); debuginfo packages are ignored.");
         }
@@ -61,7 +67,18 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             var oldLibraries = await ExtractSharedLibrariesAsync(oldRpmPath, _options.MaxTotalPayloadBytes, ct);
             var newLibraries = await ExtractSharedLibrariesAsync(newRpmPath, _options.MaxTotalPayloadBytes, ct);
 
-            return CompareLibraries(oldLibraries, newLibraries);
+            var diffResult = CompareLibraries(oldLibraries, newLibraries);
+            if (diffResult.IsIncomplete)
+            {
+                var prefix = hasDebuginfo
+                    ? "[Incomplete Check: Debuginfo was supplied but managed runner only performs symbol-level comparison without DWARF type layout validation] "
+                    : "[Incomplete Check: Managed runner performed symbol-only comparison; type-level ABI changes may be undetected] ";
+                diffResult = diffResult with
+                {
+                    Details = prefix + diffResult.Details
+                };
+            }
+            return diffResult;
         }
         catch (OperationCanceledException)
         {
@@ -166,6 +183,7 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
                 Succeeded: true,
                 HasAbiChange: true,
                 IsBreakingChange: true,
+                IsIncomplete: true,
                 Details: "[Symbol-Only Managed Analysis] " + details.ToString().TrimEnd());
         }
 
@@ -175,6 +193,7 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
                 Succeeded: true,
                 HasAbiChange: true,
                 IsBreakingChange: false,
+                IsIncomplete: true,
                 Details: "[Symbol-Only Managed Analysis] " + details.ToString().TrimEnd());
         }
 
@@ -182,6 +201,7 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             Succeeded: true,
             HasAbiChange: false,
             IsBreakingChange: false,
+            IsIncomplete: true,
             Details: "[Symbol-Only Managed Analysis] All shared libraries and exported symbols are identical (without DWARF type layout validation).");
     }
 
@@ -239,30 +259,30 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
                 var offset = BinaryPrimitives.ReadInt32BigEndian(indexBytes.AsSpan(entryOffset + 8, 4));
                 var count = BinaryPrimitives.ReadInt32BigEndian(indexBytes.AsSpan(entryOffset + 12, 4));
 
-                if (offset < 0 || offset >= data.Length || count <= 0)
+                if (offset < 0 || offset >= data.Length || count <= 0 || count > 200_000)
                     continue;
 
                 switch (tag)
                 {
-                    case RPMTAG_DIRINDEXES when type == 4 && offset + count * 4 <= data.Length:
+                    case RPMTAG_DIRINDEXES when type == 4 && (long)offset + (long)count * 4 <= data.Length:
                         dirIndexes = new int[count];
                         for (var k = 0; k < count; k++)
                             dirIndexes[k] = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(offset + k * 4, 4));
                         break;
 
-                    case RPMTAG_FILEMODES when type == 3 && offset + count * 2 <= data.Length:
+                    case RPMTAG_FILEMODES when type == 3 && (long)offset + (long)count * 2 <= data.Length:
                         fileModes = new int[count];
                         for (var k = 0; k < count; k++)
                             fileModes[k] = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(offset + k * 2, 2));
                         break;
 
-                    case RPMTAG_FILESIZES when type == 4 && offset + count * 4 <= data.Length:
+                    case RPMTAG_FILESIZES when type == 4 && (long)offset + (long)count * 4 <= data.Length:
                         fileSizes = new long[count];
                         for (var k = 0; k < count; k++)
                             fileSizes[k] = (long)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(offset + k * 4, 4));
                         break;
 
-                    case RPMTAG_LONGFILESIZES when type == 5 && offset + count * 8 <= data.Length:
+                    case RPMTAG_LONGFILESIZES when type == 5 && (long)offset + (long)count * 8 <= data.Length:
                         longFileSizes = new long[count];
                         for (var k = 0; k < count; k++)
                             longFileSizes[k] = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(offset + k * 8, 8));
@@ -293,6 +313,10 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
 
                     var rawPath = (dir.TrimStart('/') + baseNames[i]).TrimStart('/');
                     var mode = fileModes != null && i < fileModes.Length ? fileModes[i] : 0;
+                    if (mode == 0 && (rawPath.EndsWith(".so", StringComparison.OrdinalIgnoreCase) || rawPath.Contains(".so.", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        mode = 0x81ED; // Default to standard regular executable file for shared libraries if fileModes tag is missing or truncated
+                    }
                     var size = longFileSizes != null && i < longFileSizes.Length
                         ? longFileSizes[i]
                         : (fileSizes != null && i < fileSizes.Length ? fileSizes[i] : 0L);
@@ -307,6 +331,9 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
 
         private static string[] ParseStringArray(byte[] data, int offset, int count)
         {
+            if (count <= 0 || count > 200_000 || offset < 0 || offset >= data.Length)
+                return Array.Empty<string>();
+
             var result = new string[count];
             var cur = offset;
             for (var i = 0; i < count; i++)
@@ -400,6 +427,11 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             }
             else if (magicStr == "07070X")
             {
+                if (metadata.Files.Count == 0)
+                {
+                    throw new InvalidDataException("Corrupted RPM payload: indexed stripped CPIO archive requires package header file metadata, but file table is empty.");
+                }
+
                 // Stripped CPIO archives index all filesystem paths from the RPM header table.
                 // Large multi-subpackage distributions (such as glibc or linux-kernel) routinely
                 // contain tens of thousands of indexed files, so the default limit is 50,000 unless overridden.
@@ -463,7 +495,7 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
         var nindex = BinaryPrimitives.ReadInt32BigEndian(intro.AsSpan(8, 4));
         var hsize = BinaryPrimitives.ReadInt32BigEndian(intro.AsSpan(12, 4));
 
-        if (nindex < 0 || hsize < 0 || nindex > 100_000 || hsize > 100_000_000)
+        if (nindex < 0 || hsize < 0 || nindex > 50_000 || hsize > 16_000_000)
             throw new InvalidDataException($"Corrupted RPM main header dimensions: index={nindex}, dataSize={hsize}");
 
         var indexBytes = new byte[nindex * 16];
@@ -506,7 +538,7 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
         var nindex = BinaryPrimitives.ReadInt32BigEndian(intro.AsSpan(8, 4));
         var hsize = BinaryPrimitives.ReadInt32BigEndian(intro.AsSpan(12, 4));
 
-        if (nindex < 0 || hsize < 0 || nindex > 100_000 || hsize > 100_000_000)
+        if (nindex < 0 || hsize < 0 || nindex > 50_000 || hsize > 16_000_000)
             throw new InvalidDataException($"Corrupted RPM header dimensions: index={nindex}, dataSize={hsize}");
 
         long bytesToSkip = (long)nindex * 16 + hsize;
@@ -781,6 +813,7 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
         long totalBytes = 0;
         var seenSoCount = 0;
         var parsedSoCount = 0;
+        var sawTrailer = false;
         var digestToLib = new Dictionary<string, ParsedSharedLibrary>(StringComparer.Ordinal);
 
         var first = true;
@@ -813,28 +846,6 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
                 }
             }
 
-            var magicStr = Encoding.ASCII.GetString(headerBuf, 0, 6);
-            if (magicStr == "070701" || magicStr == "070702")
-            {
-                var restOfHeader = new byte[94];
-                var restRead = await ReadExactAsync(cpioStream, restOfHeader, 94, ct);
-                if (restRead == 94)
-                {
-                    var nameSizeHex = Encoding.ASCII.GetString(restOfHeader, 80, 8);
-                    if (int.TryParse(nameSizeHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var nameSize) && nameSize > 0 && nameSize < 100)
-                    {
-                        var nameBytes = new byte[nameSize];
-                        await ReadExactAsync(cpioStream, nameBytes, nameSize, ct);
-                        var entryName = Encoding.ASCII.GetString(nameBytes).TrimEnd('\0');
-                        if (entryName == "TRAILER!!!")
-                        {
-                            break;
-                        }
-                    }
-                }
-                break;
-            }
-
             if (headerBuf[0] == 0)
             {
                 var nonZeroIdx = -1;
@@ -854,8 +865,30 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
                     var fillRead = await ReadExactAsync(cpioStream, headerBuf.AsMemory(shift, nonZeroIdx), ct);
                     if (fillRead < nonZeroIdx)
                         break;
-                    magicStr = Encoding.ASCII.GetString(headerBuf, 0, 6);
                 }
+            }
+
+            var magicStr = Encoding.ASCII.GetString(headerBuf, 0, 6);
+            if (magicStr == "070701" || magicStr == "070702")
+            {
+                var restOfHeader = new byte[94];
+                var restRead = await ReadExactAsync(cpioStream, restOfHeader, 94, ct);
+                if (restRead == 94)
+                {
+                    var nameSizeHex = Encoding.ASCII.GetString(restOfHeader, 78, 8);
+                    if (int.TryParse(nameSizeHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var nameSize) && nameSize > 0 && nameSize < 100)
+                    {
+                        var nameBytes = new byte[nameSize];
+                        await ReadExactAsync(cpioStream, nameBytes, nameSize, ct);
+                        var entryName = Encoding.ASCII.GetString(nameBytes).TrimEnd('\0');
+                        if (entryName == "TRAILER!!!")
+                        {
+                            sawTrailer = true;
+                            break;
+                        }
+                    }
+                }
+                break;
             }
 
             if (magicStr != "07070X")
@@ -888,7 +921,7 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             if (totalBytes > limits.MaxTotalBytes)
                 throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture, "Total payload uncompressed bytes exceeded safety limit of {0} bytes.", limits.MaxTotalBytes));
 
-            var isRegularFile = (entry.Mode & 0xF000) == 0x8000;
+            var isRegularFile = entry.Mode == 0 || (entry.Mode & 0xF000) == 0x8000;
             var isSharedLibName = entry.Path.EndsWith(".so", StringComparison.OrdinalIgnoreCase) ||
                                   entry.Path.Contains(".so.", StringComparison.OrdinalIgnoreCase);
 
@@ -932,9 +965,14 @@ public class ManagedElfDiffRunner : IAbiDiffRunner
             }
         }
 
+        if (!sawTrailer)
+        {
+            throw new InvalidDataException("Stripped CPIO archive truncated: missing TRAILER!!! entry.");
+        }
+
         foreach (var file in files)
         {
-            var isRegularFile = (file.Mode & 0xF000) == 0x8000;
+            var isRegularFile = file.Mode == 0 || (file.Mode & 0xF000) == 0x8000;
             var isSharedLibName = file.Path.EndsWith(".so", StringComparison.OrdinalIgnoreCase) ||
                                   file.Path.Contains(".so.", StringComparison.OrdinalIgnoreCase);
             if (isRegularFile && isSharedLibName && !string.IsNullOrEmpty(file.Digest))

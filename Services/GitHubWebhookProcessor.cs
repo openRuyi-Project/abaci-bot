@@ -363,25 +363,33 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
 
                         if (diffResults.Count > 0)
                         {
-                            // Priority hierarchy: Breaking > Failure / Incomplete > AbiChange > Clean
-                            var breaking = diffResults.FirstOrDefault(d => d.Succeeded && d.IsBreakingChange);
-                            if (breaking != null)
-                            {
-                                abiResult = breaking;
-                            }
-                            else
-                            {
-                                var failure = diffResults.FirstOrDefault(d => !d.Succeeded);
-                                if (failure != null)
-                                {
-                                    abiResult = failure;
-                                }
-                                else
-                                {
-                                    var abiChange = diffResults.FirstOrDefault(d => d.Succeeded && d.HasAbiChange);
-                                    abiResult = abiChange ?? diffResults[0];
-                                }
-                            }
+                            var anyBreaking = diffResults.Any(d => d.IsBreakingChange);
+                            var anyFailed = diffResults.Any(d => !d.Succeeded);
+                            var anyIncomplete = diffResults.Any(d => d.IsIncomplete);
+                            var anyAbiChange = diffResults.Any(d => d.HasAbiChange);
+
+                            var allSucceeded = diffResults.All(d => d.Succeeded);
+
+                            var combinedDetails = string.Join("\n\n", diffResults
+                                .Select(d => d.Details)
+                                .Where(s => !string.IsNullOrWhiteSpace(s)));
+
+                            var errorMessages = diffResults
+                                .Where(d => !d.Succeeded && !string.IsNullOrWhiteSpace(d.ErrorMessage))
+                                .Select(d => d.ErrorMessage!)
+                                .Distinct()
+                                .ToList();
+                            var combinedError = errorMessages.Count > 0 ? string.Join("; ", errorMessages) : null;
+
+                            abiResult = new AbiDiffResult(
+                                Succeeded: allSucceeded,
+                                HasAbiChange: anyAbiChange,
+                                IsBreakingChange: anyBreaking,
+                                Details: combinedDetails,
+                                ErrorMessage: combinedError,
+                                ToolMissing: diffResults.Any(d => d.ToolMissing),
+                                IsIncomplete: anyIncomplete,
+                                HasFailedChecks: anyFailed);
                         }
                         else if (prRpms.Count == 0)
                         {
