@@ -19,6 +19,7 @@ public class RpmDependencyService : IRpmDependencyService
     // Key: provider package name, Value: set of downstream packages directly requiring it
     private Dictionary<string, HashSet<string>> _reverseGraph = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _packageLocations = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, string> _packageLocationsByArch = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _graphLock = new();
     private volatile bool _isMetadataLoaded;
 
@@ -34,13 +35,24 @@ public class RpmDependencyService : IRpmDependencyService
         _logger = logger;
     }
 
-    public string? GetPackageLocation(string packageName)
+    public string? GetPackageLocation(string packageName, string? arch = null)
     {
         if (string.IsNullOrWhiteSpace(packageName))
             return null;
 
         lock (_graphLock)
         {
+            if (!string.IsNullOrWhiteSpace(arch))
+            {
+                var archKey = FormattableString.Invariant($"{packageName}/{arch}");
+                if (_packageLocationsByArch.TryGetValue(archKey, out var archLoc))
+                    return archLoc;
+
+                var noarchKey = FormattableString.Invariant($"{packageName}/noarch");
+                if (_packageLocationsByArch.TryGetValue(noarchKey, out var noarchLoc))
+                    return noarchLoc;
+            }
+
             return _packageLocations.TryGetValue(packageName, out var loc) ? loc : null;
         }
     }
@@ -235,8 +247,11 @@ public class RpmDependencyService : IRpmDependencyService
         // Map package name -> set of required capabilities
         var packageRequirements = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         var packageLocations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var packageLocationsByArch = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         string? currentPackage = null;
+        string? currentArch = null;
+        string? currentElement = null;
         bool inProvides = false;
         bool inRequires = false;
 
@@ -247,36 +262,29 @@ public class RpmDependencyService : IRpmDependencyService
             if (reader.NodeType == XmlNodeType.Element)
             {
                 var name = reader.LocalName;
+                currentElement = name;
 
                 if (name == "package" && reader.GetAttribute("type") == "rpm")
                 {
                     currentPackage = null;
-                }
-                else if (name == "name" && currentPackage == null && reader.Depth <= 3)
-                {
-                    currentPackage = reader.ReadElementContentAsString();
-                    if (!string.IsNullOrWhiteSpace(currentPackage))
-                    {
-                        // A package always provides its own name
-                        if (!capabilityProviders.TryGetValue(currentPackage, out var list))
-                        {
-                            list = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                            capabilityProviders[currentPackage] = list;
-                        }
-                        list.Add(currentPackage);
-
-                        if (!packageRequirements.ContainsKey(currentPackage))
-                        {
-                            packageRequirements[currentPackage] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        }
-                    }
+                    currentArch = null;
                 }
                 else if (name == "location" && currentPackage != null)
                 {
                     var href = reader.GetAttribute("href");
                     if (!string.IsNullOrWhiteSpace(href))
                     {
-                        packageLocations[currentPackage] = href;
+                        if (!string.IsNullOrWhiteSpace(currentArch))
+                        {
+                            var archKey = FormattableString.Invariant($"{currentPackage}/{currentArch}");
+                            packageLocationsByArch[archKey] = href;
+                        }
+
+                        if (!packageLocations.ContainsKey(currentPackage) ||
+                            string.Equals(currentArch, "riscv64", StringComparison.OrdinalIgnoreCase))
+                        {
+                            packageLocations[currentPackage] = href;
+                        }
                     }
                 }
                 else if (name == "provides")
@@ -324,12 +332,42 @@ public class RpmDependencyService : IRpmDependencyService
                     }
                 }
             }
+            else if (reader.NodeType == XmlNodeType.Text)
+            {
+                if (currentElement == "name" && currentPackage == null && reader.Depth <= 3)
+                {
+                    var pkgVal = reader.Value?.Trim();
+                    if (!string.IsNullOrWhiteSpace(pkgVal))
+                    {
+                        currentPackage = pkgVal;
+                        // A package always provides its own name
+                        if (!capabilityProviders.TryGetValue(currentPackage, out var list))
+                        {
+                            list = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            capabilityProviders[currentPackage] = list;
+                        }
+                        list.Add(currentPackage);
+
+                        if (!packageRequirements.ContainsKey(currentPackage))
+                        {
+                            packageRequirements[currentPackage] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        }
+                    }
+                }
+                else if (currentElement == "arch" && currentArch == null && reader.Depth <= 3)
+                {
+                    currentArch = reader.Value?.Trim();
+                }
+            }
             else if (reader.NodeType == XmlNodeType.EndElement)
             {
                 if (reader.LocalName == "provides")
                     inProvides = false;
                 else if (reader.LocalName == "requires")
                     inRequires = false;
+
+                if (reader.LocalName == currentElement)
+                    currentElement = null;
             }
         }
 
@@ -368,6 +406,7 @@ public class RpmDependencyService : IRpmDependencyService
         {
             _reverseGraph = newReverseGraph;
             _packageLocations = packageLocations;
+            _packageLocationsByArch = packageLocationsByArch;
             _isMetadataLoaded = true;
         }
 

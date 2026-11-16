@@ -1282,7 +1282,7 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
 
-            artifactService.DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baselineRpm));
 
             abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>())
@@ -1298,7 +1298,7 @@ public class GitHubWebhookProcessorTests
             await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
             await artifactService.Received(1).DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>());
-            await artifactService.Received(1).DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<CancellationToken>());
+            await artifactService.Received(1).DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), "x86_64", Arg.Any<CancellationToken>());
             await abiDiffService.Received(1).CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>());
 
             Assert.Contains($"add:{GitHubLabels.ImpactAbi}", github.LabelOperations);
@@ -1339,10 +1339,10 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 999L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(new List<string> { prRpm, prDebuginfo });
 
-            artifactService.DownloadBaselineRpmAsync("pcre2", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pcre2", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(baselineRpm);
 
-            artifactService.DownloadBaselineDebuginfoRpmAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineDebuginfoRpmAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(baselineDebuginfo);
 
             abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, baselineDebuginfo, prDebuginfo, Arg.Any<CancellationToken>())
@@ -1389,7 +1389,7 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 999L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(new List<string> { prRpm });
 
-            artifactService.DownloadBaselineRpmAsync("pcre2", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pcre2", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(baselineRpm);
 
             abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>())
@@ -1405,7 +1405,7 @@ public class GitHubWebhookProcessorTests
             await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
             // Verify baseline debuginfo was NOT queried since PR had no debuginfo
-            await artifactService.DidNotReceiveWithAnyArgs().DownloadBaselineDebuginfoRpmAsync(default!, default!, default);
+            await artifactService.DidNotReceiveWithAnyArgs().DownloadBaselineDebuginfoRpmAsync(default!, default!, default, default);
             await abiDiffService.Received(1).CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>());
         }
         finally
@@ -1453,7 +1453,7 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
 
-            artifactService.DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baselineRpm));
 
             abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>())
@@ -1505,7 +1505,7 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
 
-            artifactService.DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("libgpg-error", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baselineRpm));
 
             abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, Arg.Any<CancellationToken>())
@@ -1556,7 +1556,7 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 888L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { srcRpm, binRpm }));
 
-            artifactService.DownloadBaselineRpmAsync("Catch2", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("Catch2", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baselineRpm));
 
             abiDiffService.CompareRpmsAsync(baselineRpm, binRpm, Arg.Any<CancellationToken>())
@@ -1611,7 +1611,7 @@ public class GitHubWebhookProcessorTests
             await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
             // Baseline download and ABI diff must NOT be attempted for unparseable package
-            await artifactService.DidNotReceive().DownloadBaselineRpmAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+            await artifactService.DidNotReceiveWithAnyArgs().DownloadBaselineRpmAsync(default!, default!, default, default);
             await abiDiffService.DidNotReceive().CompareRpmsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
 
             // Fail-closed: Must add Impact: ABI Check Failed
@@ -1647,7 +1647,7 @@ public class GitHubWebhookProcessorTests
             await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
             // Pre-scan skips the package: no baseline download or comparison is invoked
-            await artifactService.DidNotReceive().DownloadBaselineRpmAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+            await artifactService.DidNotReceiveWithAnyArgs().DownloadBaselineRpmAsync(default!, default!, default, default);
             await abiDiffService.DidNotReceive().CompareRpmsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
 
             // No impact labels should be added
@@ -2226,7 +2226,7 @@ public class GitHubWebhookProcessorTests
             // Configure positive outcomes: if processing were NOT skipped, it would definitely add ImpactBreakingChange
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 1001L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
-            artifactService.DownloadBaselineRpmAsync("pkg", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baseRpm));
             abiDiffService.CompareRpmsAsync(baseRpm, prRpm, Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult(new AbiDiffResult(Succeeded: true, HasAbiChange: true, IsBreakingChange: true, Details: "Breaking ABI Change")));
@@ -2301,7 +2301,7 @@ public class GitHubWebhookProcessorTests
         {
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 1004L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm }));
-            artifactService.DownloadBaselineRpmAsync("pkg", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baseRpm));
 
             // Tool output simulates exit 0 with stderr: "Support for rpm hasn't been enabled"
@@ -2353,9 +2353,9 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 1002L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpmClean, prRpmBreak }));
 
-            artifactService.DownloadBaselineRpmAsync("pkg-clean", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg-clean", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baseRpmClean));
-            artifactService.DownloadBaselineRpmAsync("pkg-breaking", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg-breaking", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baseRpmBreak));
 
             abiDiffService.CompareRpmsAsync(baseRpmClean, prRpmClean, Arg.Any<CancellationToken>())
@@ -2399,9 +2399,9 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 2001L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpmClean, prRpmMissing }));
 
-            artifactService.DownloadBaselineRpmAsync("pkg-clean", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg-clean", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baseRpmClean));
-            artifactService.DownloadBaselineRpmAsync("pkg-nobase", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg-nobase", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(null)); // Baseline missing!
 
             abiDiffService.CompareRpmsAsync(baseRpmClean, prRpmClean, Arg.Any<CancellationToken>())
@@ -2446,9 +2446,9 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 2002L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpmChange, prRpmFail }));
 
-            artifactService.DownloadBaselineRpmAsync("pkg-change", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg-change", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baseRpmChange));
-            artifactService.DownloadBaselineRpmAsync("pkg-fail", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg-fail", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baseRpmFail));
 
             abiDiffService.CompareRpmsAsync(baseRpmChange, prRpmChange, Arg.Any<CancellationToken>())
@@ -2495,9 +2495,9 @@ public class GitHubWebhookProcessorTests
             artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 2003L, Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpmBreak, prRpmFail }));
 
-            artifactService.DownloadBaselineRpmAsync("pkg-break", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg-break", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baseRpmBreak));
-            artifactService.DownloadBaselineRpmAsync("pkg-fail", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            artifactService.DownloadBaselineRpmAsync("pkg-fail", Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<string?>(baseRpmFail));
 
             abiDiffService.CompareRpmsAsync(baseRpmBreak, prRpmBreak, Arg.Any<CancellationToken>())
@@ -2597,6 +2597,55 @@ public class GitHubWebhookProcessorTests
     {
         var result = GitHubWebhookProcessor.IsAuthorizedWorkflow(workflowName, workflowPath, configuredNames);
         Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public async Task ProcessWorkflowRun_Riscv64Package_PassesTargetArchToBaselineDownload()
+    {
+        var github = new FakeGitHubService();
+        var artifactService = Substitute.For<IArtifactService>();
+        var abiDiffService = Substitute.For<IAbiDiffService>();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_riscv64_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var prRpm = Path.Combine(tempDir, "pcre2-10.42-7.oe2403.riscv64.rpm");
+        var prDebuginfo = Path.Combine(tempDir, "pcre2-debuginfo-10.42-7.oe2403.riscv64.rpm");
+        var baselineRpm = Path.Combine(tempDir, "pcre2-baseline.rpm");
+        var baselineDebuginfo = Path.Combine(tempDir, "pcre2-debuginfo-baseline.rpm");
+
+        await File.WriteAllBytesAsync(prRpm, SyntheticRpmBytesWithSharedLib);
+        await File.WriteAllBytesAsync(prDebuginfo, new byte[] { 0x01, 0x02 });
+        await File.WriteAllTextAsync(baselineRpm, "dummy-baseline");
+        await File.WriteAllTextAsync(baselineDebuginfo, "dummy-debuginfo");
+
+        try
+        {
+            artifactService.DownloadRunRpmArtifactsAsync("owner", "repo", 555L, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<IReadOnlyList<string>>(new[] { prRpm, prDebuginfo }));
+
+            artifactService.DownloadBaselineRpmAsync("pcre2", Arg.Any<string>(), "riscv64", Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baselineRpm));
+
+            artifactService.DownloadBaselineDebuginfoRpmAsync("pcre2-debuginfo", Arg.Any<string>(), "riscv64", Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<string?>(baselineDebuginfo));
+
+            abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, baselineDebuginfo, prDebuginfo, Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(new AbiDiffResult(true, false, false, "Clean")));
+
+            var processor = CreateAbiProcessor(github, artifactService, abiDiffService);
+            var payload = CreateWorkflowRunEvent(555L, "success", 77);
+
+            await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
+
+            // Assert that targetArch "riscv64" was strictly queried for both baseline RPM and debuginfo
+            await artifactService.Received(1).DownloadBaselineRpmAsync("pcre2", Arg.Any<string>(), "riscv64", Arg.Any<CancellationToken>());
+            await artifactService.Received(1).DownloadBaselineDebuginfoRpmAsync("pcre2-debuginfo", Arg.Any<string>(), "riscv64", Arg.Any<CancellationToken>());
+            await abiDiffService.Received(1).CompareRpmsAsync(baselineRpm, prRpm, baselineDebuginfo, prDebuginfo, Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
     }
 
     #endregion

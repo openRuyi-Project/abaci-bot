@@ -678,5 +678,139 @@ public class ArtifactServiceTests
             if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
         }
     }
+
+    [Theory]
+    [InlineData("pcre2-10.42-7.oe2403.riscv64.rpm", "riscv64")]
+    [InlineData("acl-2.3.1-2.oe2403.riscv64.rpm", "riscv64")]
+    [InlineData("pcre2-10.48-1.x86_64.rpm", "x86_64")]
+    [InlineData("pcre2-doc-10.48-1.noarch.rpm", "noarch")]
+    [InlineData("some-package-1.0.aarch64.rpm", "aarch64")]
+    [InlineData("nodotarchitecture.rpm", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void ExtractPackageArch_IdentifiesArchitectureCorrectly(string? fileName, string? expectedArch)
+    {
+        var arch = ArtifactService.ExtractPackageArch(fileName!);
+        Assert.Equal(expectedArch, arch);
+    }
+
+    [Fact]
+    public async Task DownloadBaselineRpmAsync_WithTargetArch_QueriesRpmDependencyServiceWithArch()
+    {
+        var rpmDepService = Substitute.For<IRpmDependencyService>();
+        rpmDepService.IsMetadataLoaded.Returns(true);
+        rpmDepService.GetPackageLocation("pcre2", "riscv64")
+            .Returns("Packages/pcre2-10.42-7.oe2403.riscv64.rpm");
+
+        var handler = new DelegatingHandlerStub(req =>
+        {
+            if (req.RequestUri!.ToString().Contains("pcre2-10.42-7.oe2403.riscv64.rpm"))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent("dummy-riscv64-rpm"u8.ToArray())
+                };
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+
+        var client = new HttpClient(handler);
+        _httpClientFactory.CreateClient("StableRpmClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            StableRpmBaseUrl = "https://repo.openeuler.org/openruyi"
+        });
+
+        var service = new ArtifactService(_gitHub, _httpClientFactory, options, rpmDepService);
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_arch_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var downloaded = await service.DownloadBaselineRpmAsync("pcre2", tempDir, "riscv64");
+            Assert.NotNull(downloaded);
+            Assert.True(File.Exists(downloaded));
+            rpmDepService.Received(1).GetPackageLocation("pcre2", "riscv64");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadBaselineRpmAsync_WithRpmExtension_ConstructsDirectUrlWithoutAppendingRpm()
+    {
+        string? requestedUrl = null;
+        var handler = new DelegatingHandlerStub(req =>
+        {
+            requestedUrl = req.RequestUri!.ToString();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent("dummy-rpm-data"u8.ToArray())
+            };
+        });
+
+        var client = new HttpClient(handler);
+        _httpClientFactory.CreateClient("StableRpmClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            StableRpmBaseUrl = "https://repo.openeuler.org/baselines"
+        });
+
+        var service = new ArtifactService(_gitHub, _httpClientFactory, options);
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_direct_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var downloaded = await service.DownloadBaselineRpmAsync("libgpg-error-1.47.rpm", tempDir);
+            Assert.NotNull(downloaded);
+            Assert.Equal("https://repo.openeuler.org/baselines/libgpg-error-1.47.rpm", requestedUrl);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadBaselineDebuginfoRpmAsync_WithDebuginfoPackageName_DoesNotDoubleDebuginfoSuffix()
+    {
+        string? requestedUrl = null;
+        var handler = new DelegatingHandlerStub(req =>
+        {
+            requestedUrl = req.RequestUri!.ToString();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent("dummy-debuginfo-data"u8.ToArray())
+            };
+        });
+
+        var client = new HttpClient(handler);
+        _httpClientFactory.CreateClient("StableRpmClient").Returns(client);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            StableRpmBaseUrl = "https://repo.openeuler.org/baselines"
+        });
+
+        var service = new ArtifactService(_gitHub, _httpClientFactory, options);
+        var tempDir = Path.Combine(Path.GetTempPath(), "abaci_test_dbg_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var downloaded = await service.DownloadBaselineDebuginfoRpmAsync("pcre2-debuginfo", tempDir, "riscv64");
+            Assert.NotNull(downloaded);
+            Assert.Equal("https://repo.openeuler.org/baselines/pcre2-debuginfo.rpm", requestedUrl);
+
+            var emptyResult = await service.DownloadBaselineDebuginfoRpmAsync("", tempDir);
+            Assert.Null(emptyResult);
+
+            var emptyRpm = await service.DownloadBaselineRpmAsync("", tempDir);
+            Assert.Null(emptyRpm);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
 }
 

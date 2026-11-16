@@ -340,15 +340,16 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
                             }
 
                             var pkgName = ArtifactService.ExtractPackageName(fileName);
+                            var prArch = ArtifactService.ExtractPackageArch(fileName);
                             var prDebuginfo = ArtifactService.FindMatchingDebuginfoRpm(prRpm, prRpms);
-                            var baselineRpm = await _artifactService.DownloadBaselineRpmAsync(pkgName, tempDir, cancellationToken);
+                            var baselineRpm = await _artifactService.DownloadBaselineRpmAsync(pkgName, tempDir, prArch, cancellationToken);
                             if (!string.IsNullOrEmpty(baselineRpm) && File.Exists(baselineRpm))
                             {
                                 var debuginfoPkg = !string.IsNullOrWhiteSpace(prDebuginfo)
                                     ? ArtifactService.ExtractPackageName(Path.GetFileName(prDebuginfo))
                                     : pkgName;
                                 var baselineDebuginfo = !string.IsNullOrWhiteSpace(prDebuginfo)
-                                    ? await _artifactService.DownloadBaselineDebuginfoRpmAsync(debuginfoPkg, tempDir, cancellationToken)
+                                    ? await _artifactService.DownloadBaselineDebuginfoRpmAsync(debuginfoPkg, tempDir, prArch, cancellationToken)
                                     : null;
                                 var diff = (!string.IsNullOrWhiteSpace(baselineDebuginfo) || !string.IsNullOrWhiteSpace(prDebuginfo))
                                     ? await _abiDiffService.CompareRpmsAsync(baselineRpm, prRpm, baselineDebuginfo, prDebuginfo, cancellationToken)
