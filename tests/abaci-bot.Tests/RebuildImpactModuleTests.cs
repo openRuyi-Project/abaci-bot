@@ -804,6 +804,50 @@ public class RebuildImpactModuleTests
         Assert.False(success);
     }
 
+    [Fact]
+    public async Task LoadMetadataAsync_MultiArchPackages_ResolvesExactArchitectureAndFallback()
+    {
+        var xml = """
+        <metadata xmlns="http://linux.duke.edu/metadata/common" xmlns:rpm="http://linux.duke.edu/metadata/rpm">
+          <package type="rpm">
+            <name>pcre2</name>
+            <arch>x86_64</arch>
+            <location href="Packages/pcre2-10.42-1.x86_64.rpm"/>
+            <format>
+              <rpm:provides><rpm:entry name="libpcre2-8.so.0"/></rpm:provides>
+            </format>
+          </package>
+          <package type="rpm">
+            <name>pcre2</name>
+            <arch>riscv64</arch>
+            <location href="Packages/pcre2-10.42-1.riscv64.rpm"/>
+            <format>
+              <rpm:provides><rpm:entry name="libpcre2-8.so.0"/></rpm:provides>
+            </format>
+          </package>
+          <package type="rpm">
+            <name>shared-doc</name>
+            <arch>noarch</arch>
+            <location href="Packages/shared-doc-1.0.noarch.rpm"/>
+          </package>
+        </metadata>
+        """;
+
+        using var ms = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(xml));
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions());
+        var service = new RpmDependencyService(_httpClientFactory, options);
+
+        await service.LoadMetadataAsync(ms, isGzipped: false);
+
+        Assert.True(service.IsMetadataLoaded);
+        Assert.Equal("Packages/pcre2-10.42-1.riscv64.rpm", service.GetPackageLocation("pcre2", "riscv64"));
+        Assert.Equal("Packages/pcre2-10.42-1.x86_64.rpm", service.GetPackageLocation("pcre2", "x86_64"));
+        Assert.Equal("Packages/pcre2-10.42-1.riscv64.rpm", service.GetPackageLocation("pcre2"));
+        Assert.Equal("Packages/shared-doc-1.0.noarch.rpm", service.GetPackageLocation("shared-doc", "riscv64"));
+        Assert.Equal("Packages/shared-doc-1.0.noarch.rpm", service.GetPackageLocation("shared-doc"));
+        Assert.Null(service.GetPackageLocation("non-existent", "riscv64"));
+    }
+
     private sealed class HttpHandlerStub : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;

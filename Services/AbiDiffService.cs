@@ -168,6 +168,26 @@ public class ProcessAbiDiffRunner : IAbiDiffRunner
                 _cachedRpmErrorMessage = result.ErrorMessage;
                 _logger?.LogError("abipkgdiff on host system lacks RPM support. Short-circuiting future diffs: {Error}", result.ErrorMessage);
             }
+
+            var hasPairedDebuginfo = effectiveOldDebug != null && effectiveNewDebug != null;
+            var isAsymmetricalDebuginfo = (effectiveOldDebug != null) ^ (effectiveNewDebug != null);
+
+            if (result.Succeeded && (!hasPairedDebuginfo || isAsymmetricalDebuginfo))
+            {
+                var details = result.Details;
+                if (isAsymmetricalDebuginfo)
+                {
+                    var note = "[Native Analysis: Debuginfo was provided for only one package side; type-level validation was omitted]";
+                    details = string.IsNullOrWhiteSpace(details) ? note : $"{details}\n{note}";
+                }
+
+                result = result with
+                {
+                    IsIncomplete = true,
+                    Details = details
+                };
+            }
+
             return result;
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
@@ -490,7 +510,7 @@ public class AbiDiffService : IAbiDiffService
     /// Returns false if the file is missing, inaccessible, or not a verified RPM v6 package, delegating comprehensive
     /// file validation and I/O error logging to the downstream diff pipeline.
     /// </summary>
-    private static bool IsRpmV6(string rpmPath)
+    internal static bool IsRpmV6(string rpmPath)
     {
         try
         {

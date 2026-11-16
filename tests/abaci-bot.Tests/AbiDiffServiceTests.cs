@@ -824,4 +824,78 @@ public class AbiDiffServiceTests
             if (File.Exists(tempNew)) File.Delete(tempNew);
         }
     }
+
+    [Theory]
+    [InlineData(new byte[] { 0xED, 0xAB, 0xEE, 0xDB, 4 }, true)]
+    [InlineData(new byte[] { 0xED, 0xAB, 0xEE, 0xDB, 6 }, true)]
+    [InlineData(new byte[] { 0xED, 0xAB, 0xEE, 0xDB, 3 }, false)]
+    [InlineData(new byte[] { 0xED, 0xAB, 0xEE }, false)]
+    [InlineData(new byte[] { 0x00, 0xAB, 0xEE, 0xDB, 4 }, false)]
+    [InlineData(new byte[] { 0xED, 0x00, 0xEE, 0xDB, 4 }, false)]
+    [InlineData(new byte[] { 0xED, 0xAB, 0x00, 0xDB, 4 }, false)]
+    [InlineData(new byte[] { 0xED, 0xAB, 0xEE, 0x00, 4 }, false)]
+    public void IsRpmV6_AccuratelyDifferentiatesRpmFormats(byte[] headerBytes, bool expectedV6)
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"test_rpmv6_{Guid.NewGuid():N}.rpm");
+        try
+        {
+            File.WriteAllBytes(tempFile, headerBytes);
+            var isV6 = AbiDiffService.IsRpmV6(tempFile);
+            Assert.Equal(expectedV6, isV6);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void IsRpmV6_MissingFile_ReturnsFalse()
+    {
+        var isV6 = AbiDiffService.IsRpmV6("non-existent-missing-file-path-999.rpm");
+        Assert.False(isV6);
+    }
+
+    [Fact]
+    public async Task CompareRpmsAsync_WithRpmV6PackageAndNoNativeV6Support_FallsBackDirectlyToFallbackRunner()
+    {
+        var primaryRunner = Substitute.For<IAbiDiffRunner>();
+        var fallbackRunner = Substitute.For<IAbiDiffRunner>();
+        fallbackRunner.RunDiffAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new AbiDiffResult(true, false, false, "Fallback Clean")));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions
+        {
+            Enabled = true,
+            EnableFallback = true
+        });
+
+        var service = new AbiDiffService(primaryRunner, fallbackRunner, options);
+        Assert.Same(primaryRunner, service.PrimaryRunner);
+        Assert.Same(fallbackRunner, service.FallbackRunner);
+
+        var tempV4 = Path.Combine(Path.GetTempPath(), $"v4_{Guid.NewGuid():N}.rpm");
+        var tempV6 = Path.Combine(Path.GetTempPath(), $"v6_{Guid.NewGuid():N}.rpm");
+
+        var originalV6 = AbiEngineProbe.NativeSupportsV6;
+        AbiEngineProbe.NativeSupportsV6 = false;
+
+        try
+        {
+            File.WriteAllBytes(tempV4, new byte[] { 0xED, 0xAB, 0xEE, 0xDB, 3 });
+            File.WriteAllBytes(tempV6, new byte[] { 0xED, 0xAB, 0xEE, 0xDB, 4 });
+
+            var result = await service.CompareRpmsAsync(tempV4, tempV6);
+            Assert.True(result.Succeeded);
+            Assert.Equal("Fallback Clean", result.Details);
+            await fallbackRunner.Received(1).RunDiffAsync(tempV4, tempV6, null, null, Arg.Any<CancellationToken>());
+            await primaryRunner.DidNotReceive().RunDiffAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            AbiEngineProbe.NativeSupportsV6 = originalV6;
+            if (File.Exists(tempV4)) File.Delete(tempV4);
+            if (File.Exists(tempV6)) File.Delete(tempV6);
+        }
+    }
 }

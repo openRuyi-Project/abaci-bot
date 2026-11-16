@@ -32,9 +32,9 @@ public interface IRpmDependencyService
 
     /// <summary>
     /// Resolves the relative repository location href for a package (e.g. "Packages/libgpg-error-1.47-1.oe2403.x86_64.rpm")
-    /// extracted from primary.xml metadata.
+    /// extracted from primary.xml metadata, optionally filtered by target architecture.
     /// </summary>
-    string? GetPackageLocation(string packageName);
+    string? GetPackageLocation(string packageName, string? arch = null);
 
     /// <summary>
     /// Initializes or refreshes metadata from configured remote URL or local cache file.

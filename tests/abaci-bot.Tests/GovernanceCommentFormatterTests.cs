@@ -171,4 +171,27 @@ public class GovernanceCommentFormatterTests
         Assert.Contains("(output truncated)", output);
         AssertNoEmojis(output);
     }
+
+    [Fact]
+    public void FormatAbiBreakingChange_ChineseWithLongSnippet_TruncatesWithChineseSuffix()
+    {
+        var longSnippet = new string('B', 2000);
+        var output = _formatter.FormatAbiBreakingChange(longSnippet, "zh-CN");
+
+        Assert.StartsWith("> [!CAUTION]", output);
+        Assert.Contains("ABI 破坏性兼容性变更预警", output);
+        Assert.Contains("输出过长已截断", output);
+        AssertNoEmojis(output);
+        AssertNoInternalTaskCodes(output);
+    }
+
+    [Fact]
+    public void FormatAbiCheckFailed_ChineseWithLongMultilineReason_FormatsCodeBlock()
+    {
+        var multilineLong = "Error line 1\nError line 2\n" + new string('X', 1200);
+        var outputZh = _formatter.FormatAbiCheckFailed(multilineLong, "zh-CN");
+        Assert.Contains("```", outputZh);
+        Assert.Contains("输出过长已截断", outputZh);
+        AssertNoEmojis(outputZh);
+    }
 }

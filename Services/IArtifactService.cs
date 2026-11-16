@@ -24,13 +24,13 @@ public interface IArtifactService
         string owner, string repo, long runId, string destinationDirectory, CancellationToken ct = default);
 
     /// <summary>
-    /// Downloads a baseline RPM from the configured stable mirror or release storage.
+    /// Downloads a baseline RPM from the configured stable mirror or release storage, optionally matched by target architecture.
     /// </summary>
-    Task<string?> DownloadBaselineRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default);
+    Task<string?> DownloadBaselineRpmAsync(string packageName, string destinationDirectory, string? targetArch = null, CancellationToken ct = default);
 
     /// <summary>
-    /// Downloads an optional baseline debuginfo RPM from the configured stable mirror or release storage.
+    /// Downloads an optional baseline debuginfo RPM from the configured stable mirror or release storage, optionally matched by target architecture.
     /// Returns null if not found or if debuginfo packages are not published in the baseline repository.
     /// </summary>
-    Task<string?> DownloadBaselineDebuginfoRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default);
+    Task<string?> DownloadBaselineDebuginfoRpmAsync(string packageName, string destinationDirectory, string? targetArch = null, CancellationToken ct = default);
 }

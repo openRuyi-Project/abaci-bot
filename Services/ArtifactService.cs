@@ -207,6 +207,29 @@ public class ArtifactService : IArtifactService
     }
 
     /// <summary>
+    /// Extracts the target architecture from a standard RPM file name (e.g. "pcre2-10.42-7.oe2403.riscv64.rpm" -> "riscv64").
+    /// </summary>
+    public static string? ExtractPackageArch(string rpmFileName)
+    {
+        if (string.IsNullOrWhiteSpace(rpmFileName))
+            return null;
+
+        var fileName = Path.GetFileName(rpmFileName);
+        if (fileName.EndsWith(".rpm", StringComparison.OrdinalIgnoreCase))
+        {
+            fileName = fileName[..^4];
+        }
+
+        var lastDot = fileName.LastIndexOf('.');
+        if (lastDot >= 0 && lastDot < fileName.Length - 1)
+        {
+            return fileName[(lastDot + 1)..];
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Locates the corresponding -debuginfo RPM package for a given binary package from a collection of extracted RPM paths.
     /// Returns null if no matching debuginfo package is present.
     /// </summary>
@@ -260,10 +283,14 @@ public class ArtifactService : IArtifactService
     }
 
     /// <summary>
-    /// Downloads an optional baseline debuginfo RPM from the configured stable mirror or release storage.
+    /// Downloads an optional baseline debuginfo RPM from the configured stable mirror or release storage, optionally matched by architecture.
     /// Returns null if not found or if debuginfo packages are not published in the baseline repository.
     /// </summary>
-    public Task<string?> DownloadBaselineDebuginfoRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default)
+    public Task<string?> DownloadBaselineDebuginfoRpmAsync(
+        string packageName,
+        string destinationDirectory,
+        string? targetArch = null,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(packageName))
             return Task.FromResult<string?>(null);
@@ -271,10 +298,14 @@ public class ArtifactService : IArtifactService
         var debugPackageName = packageName.EndsWith("-debuginfo", StringComparison.OrdinalIgnoreCase)
             ? packageName
             : $"{packageName}-debuginfo";
-        return DownloadBaselineRpmAsync(debugPackageName, destinationDirectory, ct);
+        return DownloadBaselineRpmAsync(debugPackageName, destinationDirectory, targetArch, ct);
     }
 
-    public async Task<string?> DownloadBaselineRpmAsync(string packageName, string destinationDirectory, CancellationToken ct = default)
+    public async Task<string?> DownloadBaselineRpmAsync(
+        string packageName,
+        string destinationDirectory,
+        string? targetArch = null,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(_options.StableRpmBaseUrl))
             return null;
@@ -298,7 +329,7 @@ public class ArtifactService : IArtifactService
                     packageName);
             }
 
-            var locationHref = _rpmDependencyService?.GetPackageLocation(packageName);
+            var locationHref = _rpmDependencyService?.GetPackageLocation(packageName, targetArch);
             string url;
             if (!string.IsNullOrWhiteSpace(locationHref))
             {
