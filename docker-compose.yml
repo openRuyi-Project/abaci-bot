@@ -1,6 +1,6 @@
 services:
   abaci-bot:
-    image: ghcr.io/openruyi/abaci-bot:latest
+    image: ghcr.io/openruyi-project/abaci-bot:latest
     # Or build locally:
     # build: .
     container_name: abaci-bot

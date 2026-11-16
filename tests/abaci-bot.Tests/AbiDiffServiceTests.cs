@@ -404,7 +404,8 @@ public class AbiDiffServiceTests
             Environment.SetEnvironmentVariable("ABACI_ALLOW_MANAGED_FALLBACK", null);
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => probe.StartAsync(CancellationToken.None));
             Assert.Contains("unavailable or lacks RPM support", ex.Message);
-            Assert.Contains("AbiCompliance:AllowManagedFallback=true", ex.Message);
+            Assert.Contains("Startup aborted", ex.Message);
+            Assert.Contains("https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations", ex.Message);
         }
         finally
         {

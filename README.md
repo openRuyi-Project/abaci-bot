@@ -112,6 +112,7 @@ The ABI compliance module and its runner are configured in `appsettings.json` un
 | `Enabled` | `bool` | `true` | Master toggle for the ABI compliance module. |
 | `AbipkgdiffExecutablePath` | `string` | `"abipkgdiff"` | Path or command name of the Libabigail package-level comparison binary. Must be an RPM-enabled build. |
 | `EnableFallback` | `bool` | `true` | Enables automatic fallback to pure managed C# ELF/RPM symbol diff engine when native `abipkgdiff` is unavailable or lacks RPM support. |
+| `AllowManagedFallback` | `bool` | `false` | Explicit operator permission gate allowing application startup and operation with pure managed C# fallback when native `abipkgdiff` is unavailable. |
 | `StrictEngine` | `bool` | `false` | When true, aborts startup if native `abipkgdiff` with RPM support is not found on the host system. |
 | `WorkflowNames` | `List<string>` | `["build", "package", "rpm"]` | Whitelist of workflow name or path substrings authorized to trigger ABI analysis on `workflow_run` events. Non-matching workflows skip ABI analysis without modifying ABI labels. |
 | `StableRpmBaseUrl` | `string?` | `null` | Base URL used to download the baseline/stable RPM for each built package. When unset, no baseline is available and the module reports `Impact: ABI Check Failed`. |
@@ -119,7 +120,32 @@ The ABI compliance module and its runner are configured in `appsettings.json` un
 | `TimeoutSeconds` | `int` | `300` | Timeout for a single `abipkgdiff` invocation, in seconds. |
 | `MaxTotalPayloadBytes` | `long` | `1073741824` (1 GB) | Maximum cumulative uncompressed payload size processed by the managed ELF/RPM engine before aborting for DoS safety. |
 
-> **Deployment Note on Native Engine Permissions**: When running the bot under a dedicated non-root service account (e.g., systemd `User=abaci` or restricted container user), ensure the account has a valid and writable `$HOME` directory (or configure `$XDG_CACHE_HOME`). Native `abipkgdiff` creates temporary extraction directories under the user's home path; if the home directory does not exist or is unwritable, `abipkgdiff` aborts. When native extraction is unavailable, the service automatically falls back to the pure managed C# engine.
+#### ABI Engine Tiers and Limitations
+
+`abaci-bot` supports two ABI comparison engines:
+
+| Capability | Tier 1: Native Engine (`abipkgdiff` / Libabigail) | Tier 3: Managed C# Engine (`ManagedElfDiffRunner`) |
+|---|---|---|
+| **Scope** | DWARF type layout, struct member offsets, and ELF dynamic symbols | ELF dynamic symbol table (`.dynsym`), exported symbols, SONAME |
+| **Removed / Changed Symbols** | Yes | Yes |
+| **SONAME Compatibility** | Yes | Yes |
+| **DWARF Type Layout Checking** | Yes | No (symbols only; does not parse DWARF or struct layouts) |
+| **Environment Dependencies** | `abipkgdiff` / `libabigail`, `rpm` (`rpm2cpio`), `cpio`, `libicu` | Pure .NET runtime |
+| **Supported Packages** | RPM v4, RPM v6 | RPM v4, RPM v6 indexed payloads (gzip, zstd, xz, bzip2, lzma) |
+| **Policy** | Default for distribution PR gating | Fallback workaround; requires explicit operator configuration |
+
+> [!IMPORTANT]
+> Run `abaci-bot` in a supported environment equipped with native Libabigail and RPM tooling, such as the container image (`ghcr.io/openruyi-project/abaci-bot:latest` or `docker compose up`) or supported distributions (Fedora, openEuler, RHEL).
+
+> [!NOTE]
+> The managed C# engine is a fallback workaround for environments lacking native tools. It compares ELF dynamic symbol tables and SONAMEs. It does not inspect DWARF debuginfo and cannot detect struct layout or member offset changes.
+>
+> Enabling managed fallback requires explicit operator configuration via one of:
+> 1. `AbiCompliance:AllowManagedFallback: true` in `appsettings.json`
+> 2. Environment variable `ABACI_ALLOW_MANAGED_FALLBACK=1`
+> 3. File `/etc/abaci-bot/ALLOW_MANAGED_SURFACE_ABIGATE` on Linux hosts
+
+> **Deployment Note on Native Engine Permissions**: When running the bot under a dedicated non-root service account (e.g. systemd `User=abaci` or container UID `1654`), ensure the account has a writable `$HOME` directory (or configure `$XDG_CACHE_HOME`). Native `abipkgdiff` writes cache files to `~/.cache/libabigail`; if unwritable, execution fails.
 
 #### File Content Cache Configuration (`FileCache`)
 
@@ -185,14 +211,14 @@ Or run the published binary directly:
 
 ```bash
 # Pull the image
-docker pull ghcr.io/openruyi/abaci-bot:latest
+docker pull ghcr.io/openruyi-project/abaci-bot:latest
 
 # Run with mounted config
 docker run -d \
   --name abaci-bot \
   -p 3456:3456 \
   -v $(pwd)/appsettings.json:/app/appsettings.json:ro \
-  ghcr.io/openruyi/abaci-bot:latest
+  ghcr.io/openruyi-project/abaci-bot:latest
 ```
 
 ### 7. Build Docker Image Locally (Optional)
