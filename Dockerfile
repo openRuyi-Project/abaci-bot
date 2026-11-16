@@ -1,14 +1,19 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH=amd64
 WORKDIR /src
 
 # Copy csproj and restore dependencies
 COPY *.csproj ./
 RUN dotnet restore
 
-# Copy everything else and publish self-contained for linux-x64
+# Copy everything else and publish self-contained for target architecture
 COPY . ./
-RUN dotnet publish -c Release -r linux-x64 --self-contained -o /app/publish
+RUN case "${TARGETARCH}" in \
+        "arm64")   RID="linux-arm64" ;; \
+        *)         RID="linux-x64" ;; \
+    esac \
+    && dotnet publish -c Release -r ${RID} --self-contained -o /app/publish
 
 # Runtime stage: Fedora 45 provides native rpm 6.x and libabigail 2.x with full v4 and v6 support
 FROM registry.fedoraproject.org/fedora:45 AS runtime

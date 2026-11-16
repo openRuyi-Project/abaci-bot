@@ -57,7 +57,7 @@ public class AbiEngineProbe : IHostedService
         if (_options.StrictEngine || !isExplicitlyAllowed)
         {
             ActiveEngineTier = "unavailable";
-            var fatalMessage = $"ABI compliance engine: native tool '{_options.AbipkgdiffExecutablePath}' is unavailable or lacks RPM support ({diagnostic}). Startup aborted. To permit pure managed C# fallback, set 'AbiCompliance:AllowManagedFallback=true' in configuration, create '/etc/abaci-bot/ALLOW_MANAGED_SURFACE_ABIGATE', or set environment variable 'ABACI_ALLOW_MANAGED_FALLBACK=1'.";
+            var fatalMessage = $"ABI compliance engine: native tool '{_options.AbipkgdiffExecutablePath}' is unavailable or lacks RPM support ({diagnostic}). Startup aborted. See https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations";
             _logger.LogCritical("{FatalMessage}", fatalMessage);
             throw new InvalidOperationException(fatalMessage);
         }
@@ -65,13 +65,13 @@ public class AbiEngineProbe : IHostedService
         if (_options.EnableFallback)
         {
             ActiveEngineTier = "managed";
-            _logger.LogWarning("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}). Active engine: Tier 3 Pure Managed C# Fallback (explicitly permitted by operator override).",
+            _logger.LogWarning("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}). Active engine: Tier 3 Pure Managed C# Fallback (symbol-level only, no DWARF type layout validation; workaround enabled by operator override). See https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations",
                 diagnostic);
         }
         else
         {
             ActiveEngineTier = "unavailable";
-            _logger.LogError("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}) and fallback is disabled. ABI checks will fail on PRs.",
+            _logger.LogError("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}) and fallback is disabled. See https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations",
                 diagnostic);
         }
     }

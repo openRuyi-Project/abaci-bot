@@ -9,10 +9,21 @@ using Microsoft.Extensions.Options;
 namespace abaci_bot.Services;
 
 /// <summary>
-/// Pure managed C# runner that performs binary ABI analysis by extracting RPM payloads (RPM/cpio container; gzip/zstd/xz/bzip2/lzma payload)
-/// and inspecting ELF64 shared object (.so) dynamic symbols (.dynsym) and sonames (.dynamic).
-/// Serves as a robust cross-platform fallback when native abipkgdiff is unavailable or lacks RPM support.
+/// Pure managed C# runner for binary ABI analysis by extracting RPM payloads
+/// and inspecting ELF dynamic symbols (.dynsym) and SONAMEs (.dynamic).
+/// Fallback workaround when native abipkgdiff is unavailable.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>Scope and Limitations:</b><br />
+/// This runner performs symbol-level comparison (exported symbols, types, bindings, SONAME).
+/// It does not parse DWARF debuginfo and cannot detect struct layout or member offset changes.
+/// </para>
+/// <para>
+/// For full binary compatibility analysis with DWARF type verification, run in a supported environment with Tier 1 Native Libabigail (<c>abipkgdiff</c>).
+/// See <see href="https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations"/>.
+/// </para>
+/// </remarks>
 public class ManagedElfDiffRunner : IAbiDiffRunner
 {
     private readonly ILogger<ManagedElfDiffRunner>? _logger;
