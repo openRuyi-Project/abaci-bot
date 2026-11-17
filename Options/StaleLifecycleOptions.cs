@@ -48,7 +48,7 @@ public class StaleLifecycleOptions
     /// </summary>
     public List<string> ExemptLabels { get; set; } = new()
     {
-        Services.GitHubLabels.StatusPinned,
+        Services.GitHubLabels.StatusStaleExempt,
         Services.GitHubLabels.WorkflowBlocked,
         "Security",
         "Epic"

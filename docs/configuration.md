@@ -53,6 +53,11 @@ be replaced with the four facts above.
 
 ASP.NET Core's configuration builder natively reads JSON files with comments and trailing commas enabled (`JsonCommentHandling.Skip` and `AllowTrailingCommas = true`).
 
+`appsettings.demo.jsonc` intentionally mirrors every default declared in `Options/*.cs`.
+`DemoConfigurationOptionsTests` fails when a property or default is missing from the demo
+file, so the reference cannot drift silently. The deployed `appsettings.json` only needs
+the values that differ from those defaults.
+
 ---
 
 ## 3. Required Settings Checklist

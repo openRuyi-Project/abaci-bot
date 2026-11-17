@@ -296,7 +296,7 @@ public class TargetClassificationModuleTests
 
         var staleOptions = config.GetSection("StaleLifecycle").Get<StaleLifecycleOptions>();
         Assert.NotNull(staleOptions);
-        Assert.Contains(GitHubLabels.StatusPinned, staleOptions.ExemptLabels);
+        Assert.Contains(GitHubLabels.StatusStaleExempt, staleOptions.ExemptLabels);
 
         var abiOptions = config.GetSection("AbiCompliance").Get<AbiComplianceOptions>();
         Assert.NotNull(abiOptions);

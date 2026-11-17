@@ -68,8 +68,8 @@ public class ShinyNewPrModuleTests
         Assert.True(module.ShouldProcess(context));
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.Equal("Status: New", GitHubLabels.New);
-        Assert.Contains(GitHubLabels.New, context.LabelsToAdd);
+        Assert.Equal("Status: New", GitHubLabels.StatusNew);
+        Assert.Contains(GitHubLabels.StatusNew, context.LabelsToAdd);
         Assert.Contains("Status: New", context.LabelsToAdd);
         Assert.Empty(context.LabelsToRemove);
     }
@@ -83,12 +83,12 @@ public class ShinyNewPrModuleTests
             senderLogin: "reviewer-alice",
             authorLogin: "contributor",
             reviewAction: PullRequestReviewAction.Submitted,
-            existingLabels: new[] { GitHubLabels.New, GitHubLabels.WorkflowReadyForReview });
+            existingLabels: new[] { GitHubLabels.StatusNew, GitHubLabels.WorkflowReadyForReview });
 
         Assert.True(module.ShouldProcess(context));
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.Contains(GitHubLabels.New, context.LabelsToRemove);
+        Assert.Contains(GitHubLabels.StatusNew, context.LabelsToRemove);
         Assert.Empty(context.LabelsToAdd);
     }
 
@@ -101,7 +101,7 @@ public class ShinyNewPrModuleTests
             senderLogin: "contributor",
             authorLogin: "contributor",
             commentAction: IssueCommentAction.Created,
-            existingLabels: new[] { GitHubLabels.New });
+            existingLabels: new[] { GitHubLabels.StatusNew });
 
         Assert.True(module.ShouldProcess(context));
         await module.ProcessAsync(context, CancellationToken.None);
@@ -121,7 +121,7 @@ public class ShinyNewPrModuleTests
             authorLogin: "contributor",
             senderType: "Bot",
             commentAction: IssueCommentAction.Created,
-            existingLabels: new[] { GitHubLabels.New });
+            existingLabels: new[] { GitHubLabels.StatusNew });
 
         await module.ProcessAsync(botTypeContext, CancellationToken.None);
         Assert.Empty(botTypeContext.LabelsToRemove);
@@ -133,7 +133,7 @@ public class ShinyNewPrModuleTests
             authorLogin: "contributor",
             senderType: "User",
             commentAction: IssueCommentAction.Created,
-            existingLabels: new[] { GitHubLabels.New });
+            existingLabels: new[] { GitHubLabels.StatusNew });
 
         await module.ProcessAsync(suffixContext, CancellationToken.None);
         Assert.Empty(suffixContext.LabelsToRemove);
@@ -145,7 +145,7 @@ public class ShinyNewPrModuleTests
             authorLogin: "contributor",
             senderType: "User",
             commentAction: IssueCommentAction.Created,
-            existingLabels: new[] { GitHubLabels.New });
+            existingLabels: new[] { GitHubLabels.StatusNew });
 
         await module.ProcessAsync(whitelistContext, CancellationToken.None);
         Assert.Empty(whitelistContext.LabelsToRemove);
@@ -160,10 +160,10 @@ public class ShinyNewPrModuleTests
             senderLogin: "maintainer-bob",
             authorLogin: "contributor",
             commentAction: IssueCommentAction.Created,
-            existingLabels: new[] { GitHubLabels.New });
+            existingLabels: new[] { GitHubLabels.StatusNew });
 
         await module.ProcessAsync(context, CancellationToken.None);
-        Assert.Contains(GitHubLabels.New, context.LabelsToRemove);
+        Assert.Contains(GitHubLabels.StatusNew, context.LabelsToRemove);
     }
 
     [Fact]
@@ -244,12 +244,12 @@ public class ShinyNewPrModuleTests
             senderLogin: "reviewer-bob",
             authorLogin: "author-alice",
             reviewCommentAction: Octokit.Webhooks.Events.PullRequestReviewComment.PullRequestReviewCommentAction.Created,
-            existingLabels: new[] { GitHubLabels.New });
+            existingLabels: new[] { GitHubLabels.StatusNew });
 
         Assert.True(module.ShouldProcess(context));
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.Contains(GitHubLabels.New, context.LabelsToRemove);
+        Assert.Contains(GitHubLabels.StatusNew, context.LabelsToRemove);
     }
 
     [Fact]
@@ -261,12 +261,12 @@ public class ShinyNewPrModuleTests
             senderLogin: "author-alice",
             authorLogin: "author-alice",
             reviewCommentAction: Octokit.Webhooks.Events.PullRequestReviewComment.PullRequestReviewCommentAction.Created,
-            existingLabels: new[] { GitHubLabels.New });
+            existingLabels: new[] { GitHubLabels.StatusNew });
 
         Assert.True(module.ShouldProcess(context));
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.DoesNotContain(GitHubLabels.New, context.LabelsToRemove);
+        Assert.DoesNotContain(GitHubLabels.StatusNew, context.LabelsToRemove);
     }
 
     [Fact]
@@ -278,11 +278,11 @@ public class ShinyNewPrModuleTests
             senderLogin: "ci-bot",
             authorLogin: "author-alice",
             reviewCommentAction: Octokit.Webhooks.Events.PullRequestReviewComment.PullRequestReviewCommentAction.Created,
-            existingLabels: new[] { GitHubLabels.New });
+            existingLabels: new[] { GitHubLabels.StatusNew });
 
         Assert.True(module.ShouldProcess(context));
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.DoesNotContain(GitHubLabels.New, context.LabelsToRemove);
+        Assert.DoesNotContain(GitHubLabels.StatusNew, context.LabelsToRemove);
     }
 }
