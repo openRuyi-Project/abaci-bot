@@ -1,6 +1,6 @@
 # Build stage
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 WORKDIR /src
 
 # Copy csproj and restore dependencies
