@@ -55,16 +55,16 @@ public class ShinyNewPrModule : IPullRequestModule
         if (context.EventType == PullRequestEventType.PullRequest &&
             context.PullRequestAction == PullRequestAction.Opened)
         {
-            context.LabelsToAdd.Add(GitHubLabels.New);
+            context.LabelsToAdd.Add(GitHubLabels.StatusNew);
             return Task.CompletedTask;
         }
 
         // 2. On review or comment: if the PR currently carries "Status: New", remove it upon first human non-author engagement
-        if (context.ExistingLabels.Contains(GitHubLabels.New))
+        if (context.ExistingLabels.Contains(GitHubLabels.StatusNew))
         {
             if (!context.IsSenderAuthorOrBot(_botOptions.Whitelist))
             {
-                context.LabelsToRemove.Add(GitHubLabels.New);
+                context.LabelsToRemove.Add(GitHubLabels.StatusNew);
             }
         }
 

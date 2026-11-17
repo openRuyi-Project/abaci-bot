@@ -1138,7 +1138,7 @@ public class GitHubWebhookProcessorTests
         // 1. WorkflowStateModule -> Workflow: Ready For Review
         Assert.Contains($"add:{GitHubLabels.WorkflowReadyForReview}", github.LabelOperations);
         // 2. ShinyNewPrModule -> new
-        Assert.Contains($"add:{GitHubLabels.New}", github.LabelOperations);
+        Assert.Contains($"add:{GitHubLabels.StatusNew}", github.LabelOperations);
         // 3. TargetClassificationModule -> Target: Rolling (default main/master)
         Assert.Contains($"add:{GitHubLabels.TargetRolling}", github.LabelOperations);
         // 4. ChangeTypeClassificationModule -> Type: Packaging
@@ -1237,7 +1237,7 @@ public class GitHubWebhookProcessorTests
             (nameof(WebhookSimplePullRequest.Head), head),
             (nameof(WebhookSimplePullRequest.Base), @base),
             (nameof(WebhookSimplePullRequest.Draft), false),
-            (nameof(WebhookSimplePullRequest.Labels), Labels(new[] { GitHubLabels.New, GitHubLabels.StatusStale })));
+            (nameof(WebhookSimplePullRequest.Labels), Labels(new[] { GitHubLabels.StatusNew, GitHubLabels.StatusStale })));
 
         var comment = Create<Octokit.Webhooks.Models.PullRequestReviewComment>(
             (nameof(Octokit.Webhooks.Models.PullRequestReviewComment.Body), "Please check this diff line"),
@@ -1253,7 +1253,7 @@ public class GitHubWebhookProcessorTests
             reviewCommentEvent,
             Octokit.Webhooks.Events.PullRequestReviewComment.PullRequestReviewCommentAction.Created);
 
-        Assert.Contains($"remove:{GitHubLabels.New}", github.LabelOperations);
+        Assert.Contains($"remove:{GitHubLabels.StatusNew}", github.LabelOperations);
         Assert.Contains($"remove:{GitHubLabels.StatusStale}", github.LabelOperations);
     }
 

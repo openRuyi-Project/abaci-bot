@@ -45,9 +45,7 @@ flowchart TD
 
 ## Module Reference Documentation
 
-Each module has a dedicated specification detailing triggers, decision trees, managed labels, configuration options, and failure semantics:
-
-| Module | Priority | Purpose | Managed Labels | Documentation |
+Each module has a dedicated specification detailing triggers, decision trees, managed labels, configuration options, and failure semantics:| Module | Priority | Purpose | Managed Labels | Documentation |
 |---|---|---|---|---|
 | `WorkflowStateModule` | 10 | Tracks PR review progression and merge completion | `Workflow: In Dev`, `Workflow: Ready For Review`, `Workflow: In Review`, `Workflow: Blocked`, `Workflow: Complete`, `Commits: Updated` | [`modules/workflow-state.md`](modules/workflow-state.md) |
 | `StaleUnstaleModule` | 12 | Removes `Status: Stale` on human activity | Strips `Status: Stale` | [`modules/stale-lifecycle.md`](modules/stale-lifecycle.md) |
@@ -61,3 +59,7 @@ Each module has a dedicated specification detailing triggers, decision trees, ma
 | `VulnerabilityModule` | 70 | Correlates CVE mentions with OSV/NVD | `Severity: 1-4`, `Vulnerability: Detected`, `Fixed-Pending`, `Resolved`, `Dismissed` | [`modules/vulnerability.md`](modules/vulnerability.md) |
 | `RebuildImpactModule` | 80 | Analyzes reverse dependency impact | `Rebuild: 0` through `Rebuild: 5001+`, `Workflow: Blocked` | [`modules/rebuild-impact.md`](modules/rebuild-impact.md) |
 | `AbiComplianceModule` | 85 | Verifies binary ABI backwards compatibility | `Impact: ABI`, `Impact: Breaking Change`, `Status: ABI Unverified` | [`modules/abi-compliance.md`](modules/abi-compliance.md) |
+
+> Defaults and label values are owned by `Options/*.cs` and `Services/GitHubLabels.cs`.
+> The tables in these pages are references, not a second source of truth: contract tests
+> keep `appsettings.demo.jsonc` and `docs/labels.md` aligned with the code.

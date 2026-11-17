@@ -16,9 +16,9 @@ public static class GitHubLabels
     // 2. Notifications, compliance & indicators
     public const string CommitsUpdated = "Commits: Updated";
     public const string AiAssistance = "AI Assistance";
-    public const string New = "Status: New";
+    public const string StatusNew = "Status: New";
     public const string StatusStale = "Status: Stale";
-    public const string StatusPinned = "Status: stale-exempt";
+    public const string StatusStaleExempt = "Status: stale-exempt";
     public const string StatusAbiUnverified = "Status: ABI Unverified";
     public const string ComplianceLicenseIssue = "Compliance: License Issue";
 
