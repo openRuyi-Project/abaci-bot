@@ -20,20 +20,25 @@
   "GitHubApp": {
     // Format: positive integer.
     // Missing or 0: startup aborts.
+    // Required: no default.
     "AppId": 123456,
     // Format: positive integer.
     // Missing or 0: startup aborts. Environment override GitHubApp__InstallationId
     // takes precedence and is the usual way to repoint an existing install.
+    // Required: no default.
     "InstallationId": 78901234,
     // Format: PEM-encoded RSA private key. Literal "\n" sequences are converted to
     // newlines at startup.
     // Missing or unparsable: startup aborts.
+    // Required: no default.
     "PrivateKey": "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
     // Format: the secret configured on the GitHub App webhook.
     // Missing: startup aborts. Wrong value: every delivery is rejected with 400.
+    // Required: no default.
     "WebhookSecret": "webhook_secret",
     // Format: organization team slug.
     // Missing: startup aborts. Unknown team: captain-only transitions fail.
+    // Required: no default.
     "TeamName": "captains"
   },
 
@@ -48,6 +53,7 @@
         // Format: scheme://host:port.
         // 0.0.0.0 is reachable through a container port mapping; 127.0.0.1 is
         // loopback-only and will not be reachable from outside the container.
+        // Default: http://0.0.0.0:3456 in the container.
         "Url": "http://0.0.0.0:3456"
       }
     }
@@ -60,15 +66,19 @@
   "TargetClassification": {
     // Format: repository names ("owner/repo" or bare name).
     // Empty: LTS is decided only by LtsBranchPrefixes.
+    // Default: [] (no dedicated LTS repository).
     "LtsRepositories": [],
     // Format: branch name prefixes.
     // Empty: no branch is classified as LTS by prefix.
+    // Default: ["lts/", "lts-"].
     "LtsBranchPrefixes": [ "lts/", "lts-" ],
     // Format: exact base branch names.
     // Empty: no branch is explicitly Rolling; DefaultTarget applies.
+    // Default: ["main", "master", "rolling"].
     "RollingBranches": [ "main", "master", "rolling" ],
     // Allowed values: "Rolling", "LTS", or null.
     // Null or unrecognized: an unmatched branch receives no Target label.
+    // Default: "Rolling".
     "DefaultTarget": "Rolling"
   },
 
@@ -79,26 +89,33 @@
   "ChangeTypeClassification": {
     // Format: file extensions including the leading dot.
     // Empty: extension-based documentation detection is disabled.
+    // Default: [".md", ".txt", ".rst"].
     "DocumentationExtensions": [ ".md", ".txt", ".rst" ],
     // Format: directory prefixes including the trailing slash.
     // Empty: directory-based documentation detection is disabled.
+    // Default: ["docs/", "doc/"].
     "DocumentationDirectories": [ "docs/", "doc/" ],
     // Format: file extensions including the leading dot.
     // Empty: extension-based packaging detection is disabled.
+    // Default: [".spec", ".patch", ".diff"].
     "PackagingExtensions": [ ".spec", ".patch", ".diff" ],
     // Format: directory prefixes including the trailing slash.
     // Empty: directory-based packaging detection is disabled.
+    // Default: ["SPECS/", "SOURCES/"].
     "PackagingDirectories": [ "SPECS/", "SOURCES/" ],
     // Format: file extensions including the leading dot.
     // Only evaluated for repositories in HomepageRepositories.
     // Empty: Type: Frontend is never applied.
+    // Default: the extension list below.
     "FrontendExtensions": [ ".vue", ".ts", ".js", ".jsx", ".tsx", ".html", ".css", ".scss", ".less" ],
     // Format: repository names.
     // Empty: no repository uses the package strategy; unlisted repositories fall
     // back to the generic strategy (documentation/CI heuristics).
+    // Default: ["openRuyi"].
     "PackageRepositories": [ "openRuyi" ],
     // Format: repository names.
     // Empty: frontend rules never apply to any repository.
+    // Default: ["homepage"].
     "HomepageRepositories": [ "homepage" ]
   },
 
@@ -117,9 +134,11 @@
     "DryRun": true,
     // Format: "owner/repo" entries.
     // Empty: no repository is scanned, so the worker is effectively idle.
+    // Default: [] (no repository is scanned).
     "MonitoredRepositories": [],
     // Format: "owner/repo" entries.
     // Empty: nothing is excluded; entries here win over MonitoredRepositories.
+    // Default: [] (nothing is excluded).
     "ExcludedRepositories": [],
     // Unit: days. Range: > 0. Default: 30.
     // Only used when Enabled=true and DryRun=false.
@@ -137,9 +156,11 @@
     ],
     // Placeholders: {StaleDays}, {CloseDays}.
     // Empty: the built-in default message is posted.
+    // Default: the built-in message in Options/StaleLifecycleOptions.cs.
     "StaleCommentTemplate": "This issue or pull request has been automatically marked as stale because it has not had recent activity within the last {StaleDays} days. It will be closed in {CloseDays} days if no further activity occurs. If this is still relevant, please comment or push a commit to keep it active. Thank you for your contributions!",
     // Placeholders: {CloseDays}.
     // Empty: the built-in default message is posted.
+    // Default: the built-in message in Options/StaleLifecycleOptions.cs.
     "CloseCommentTemplate": "This issue or pull request was closed because it has been stalled for over {CloseDays} days with no activity after being marked as stale. Feel free to reopen it or file a new one if you would like to continue the work.",
     // Unit: hours. Range: > 0. Default: 24.
     // Controls how often an enabled worker starts a new sweep.
@@ -160,6 +181,7 @@
     // Format: GitHub logins or "[bot]" slugs.
     // Empty: only GitHub's own bot markers ("type=Bot" and the "[bot]" suffix) are
     // recognized; listed accounts no longer suppress triage-label removal.
+    // Default: the accounts listed below.
     "Whitelist": [
       "github-actions",
       "github-actions[bot]",
@@ -180,9 +202,11 @@
     "Enabled": true,
     // Format: absolute URL.
     // Empty: the embedded license list is used and no remote refresh is attempted.
+    // Default: https://spdx.org/licenses/licenses.json.
     "UpdateRemoteUrl": "https://spdx.org/licenses/licenses.json",
     // Format: absolute URL.
     // Empty: the embedded exception list is used and no remote refresh is attempted.
+    // Default: https://spdx.org/licenses/exceptions.json.
     "UpdateExceptionsRemoteUrl": "https://spdx.org/licenses/exceptions.json",
     // Unit: hours. Range: > 0. Default: 24.
     // 0: periodic refresh is disabled; the last loaded list stays in memory.
@@ -206,12 +230,15 @@
     "Enabled": true,
     // Format: absolute URL.
     // Empty: OSV lookup is skipped; the NVD fallback is still attempted.
+    // Default: https://api.osv.dev/v1/vulns/.
     "OsvApiBaseUrl": "https://api.osv.dev/v1/vulns/",
     // Format: absolute URL.
     // Empty: NVD lookup is skipped; only OSV is used.
+    // Default: https://services.nvd.nist.gov/rest/json/cves/2.0.
     "NvdApiBaseUrl": "https://services.nvd.nist.gov/rest/json/cves/2.0",
     // Format: NVD API key string.
     // Null or empty: unauthenticated NVD rate limits apply.
+    // Default: null.
     "NvdApiKey": null,
     // Unit: hours. Range: > 0. Default: 12.
     // 0: resolved CVE records are not cached (higher API usage).
@@ -236,9 +263,11 @@
     // Format: URL to repomd.xml or to a primary.xml(.gz/.zst) file.
     // Null: falls back to the repository derived from AbiCompliance:StableRpmBaseUrl;
     // if neither is set, no dependency graph is loaded and no Rebuild label is applied.
+    // Default: null.
     "PrimaryXmlUrl": null,
     // Format: path to a local primary metadata FILE (.xml or .xml.gz), not a directory.
     // Null: no local snapshot is read.
+    // Default: null.
     "LocalCachePath": null,
     // Unit: hours. Range: > 0. Default: 6.
     // Values below 0.1 are clamped to 0.1.
@@ -248,6 +277,7 @@
     "CalculationMode": "Transitive",
     // Unit: dependency hops. Range: >= 1 or null.
     // Null: unlimited depth.
+    // Default: null (unlimited).
     "MaxDepth": null,
     // Unit: affected packages. Range: >= 0. Default: 1001.
     // Blocking applies when the affected count is >= this value on TargetBranchToBlock;
@@ -268,6 +298,7 @@
     // Format: executable name or absolute path.
     // Empty or missing: the startup probe fails and the deployment gate decides whether
     // startup continues.
+    // Default: "abipkgdiff".
     "AbipkgdiffExecutablePath": "abipkgdiff",
     // Default: true.
     // false: the managed engine is never used, even when AllowManagedFallback is true.
@@ -282,12 +313,15 @@
     "StrictEngine": false,
     // Format: workflow name or path substrings.
     // Empty: built-in defaults build/package/rpm are used.
+    // Default: ["build", "package", "rpm"].
     "WorkflowNames": [ "build", "package", "rpm" ],
     // Format: absolute URL to the stable RPM repository root.
     // Null: no baseline is available, so every check ends as Status: ABI Unverified.
+    // Default: null.
     "StableRpmBaseUrl": null,
     // Format: directory path.
     // Null: the system temporary directory is used.
+    // Default: null.
     "TempExtractionDirectory": null,
     // Unit: seconds. Range: > 0. Default: 300.
     // Applies to a single abipkgdiff invocation.
@@ -323,15 +357,19 @@
     "DryRun": true,
     // Reserved. Format: "owner/repo".
     // Empty: sweeps are skipped.
+    // Reserved. Default: "openRuyi-Project/openRuyi".
     "TargetRepository": "openRuyi-Project/openRuyi",
     // Reserved. Format: GitHub login used to author update PRs.
     // Empty: invalid when Enabled=true.
+    // Reserved. Default: "aqua-rium".
     "BotLogin": "aqua-rium",
     // Reserved. Format: PAT with repository write access.
     // Empty: the GitHub App installation token is used instead.
+    // Reserved. Default: empty (the App installation token is used).
     "BotPat": "",
     // Reserved. Format: branch name prefix.
     // Empty: branches are created without a prefix (not recommended).
+    // Reserved. Default: "autoupdate/".
     "BranchPrefix": "autoupdate/",
     // Reserved. Unit: hours. Range: >= 1. Default: 12.
     "CheckIntervalHours": 12,
@@ -341,6 +379,7 @@
       "Enabled": true,
       // Reserved. Format: absolute URL.
       // Empty: Lookout queries cannot run.
+      // Reserved. Default: https://lookout.openruyi.cn.
       "BaseUrl": "https://lookout.openruyi.cn",
       // Reserved. Unit: hours. Range: > 0. Default: 48.
       "StaleThresholdHours": 48
@@ -351,6 +390,7 @@
       "Enabled": true,
       // Reserved. Format: absolute URL.
       // Empty: crates.io queries cannot run.
+      // Reserved. Default: https://index.crates.io.
       "IndexBaseUrl": "https://index.crates.io",
       // Reserved. Range: >= 1. Default: 60.
       "MaxCratesPerSweep": 60,
@@ -360,17 +400,21 @@
     "Obs": {
       // Reserved. Format: absolute URL.
       // Empty: OBS verification is disabled.
+      // Reserved. Default: https://build.openruyi.cn.
       "BaseUrl": "https://build.openruyi.cn",
       // Reserved. Format: OBS project name.
       // Empty: invalid when OBS verification is enabled.
+      // Reserved. Default: "openruyi".
       "Project": "openruyi",
       // Reserved. Format: OBS repository name (not an architecture).
       // Default: riscv64 (the repository name used by the target OBS project).
       "TargetRepository": "riscv64",
       // Reserved. Format: architecture filter.
+      // Reserved. Default: "riscv64".
       "TargetArch": "riscv64",
       // Reserved. Default: false.
       // true: a non-successful post-merge OBS build applies Auto-Update: Blocked.
+      // false: OBS results are reported without applying a label.
       "RequireObsSuccessAfterMerge": false
     },
     // Reserved. Default: false.
@@ -396,6 +440,7 @@
     "GiveUpIssueCooldownDays": 30,
     // Reserved. Format: label name.
     // Empty: falls back to Status: stale-exempt.
+    // Reserved. Default: "Status: stale-exempt".
     "GiveUpIssueLabel": "Status: stale-exempt"
   },
 
@@ -414,6 +459,7 @@
     "DryRun": true,
     // Reserved. Format: "owner/repo".
     // Empty: scans and issue filing are skipped.
+    // Reserved. Default: "openRuyi-Project/openRuyi".
     "TargetRepository": "openRuyi-Project/openRuyi",
     // Reserved. Unit: hours. Range: >= 1. Default: 24.
     "CheckIntervalHours": 24,
@@ -429,6 +475,7 @@
     "NvdRequestDelayMilliseconds": 6500,
     // Reserved. Format: label name.
     // Empty: falls back to Vulnerability: Detected.
+    // Reserved. Default: "Vulnerability: Detected".
     "IssueLabel": "Vulnerability: Detected"
   }
 }

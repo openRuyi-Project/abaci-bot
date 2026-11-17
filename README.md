@@ -55,6 +55,7 @@
 |---|---|---|
 | **Workflow State** | Tracks review progression, WIP titles, draft states, and merge completion. | [`docs/modules/workflow-state.md`](docs/modules/workflow-state.md) |
 | **New PR Triage** | Tags newly opened PRs with `Status: New`; removes upon first human response. | [`docs/modules/workflow-state.md`](docs/modules/workflow-state.md#shiny-new-pr-governance-shinynewprmodule) |
+| **Contributor Classification** | Classifies student and external community contributions by commit author email. | [`docs/modules/user-contribution.md`](docs/modules/user-contribution.md) |
 | **Target Stream** | Classifies release branches into `Target: Rolling` vs `Target: LTS`. | [`docs/modules/target-classification.md`](docs/modules/target-classification.md) |
 | **Stale Lifecycle** | Monitors inactivity, marks `Status: Stale`, and closes abandoned items. | [`docs/modules/stale-lifecycle.md`](docs/modules/stale-lifecycle.md) |
 | **Change Type** | Classifies changes as `Type: Packaging`, `Documentation`, `Infrastructure`, `Frontend`. | [`docs/modules/change-type.md`](docs/modules/change-type.md) |
