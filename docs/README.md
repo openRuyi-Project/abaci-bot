@@ -33,6 +33,7 @@ flowchart TD
 
 ## Core System Guides
 
+
 | Document | Purpose and Scope |
 |---|---|
 | [`architecture.md`](architecture.md) | Pipeline event flow, module execution priority, LabelMutexEngine state machine, and background workers. |

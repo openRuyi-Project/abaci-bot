@@ -76,7 +76,17 @@ If any of these required values are missing or zero, the service terminates imme
 
 ---
 
-## 4. Environment Variable Mapping
+## 4. File Cache
+
+`FileCache` bounds the in-memory cache for fetched Git blobs and spec files.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `MaxSizeBytes` | `long` | `52428800` (50 MiB) | Maximum total bytes held before LRU eviction. `0` disables caching. |
+
+---
+
+## 5. Environment Variable Mapping
 
 Any setting in `appsettings.json` can be overridden using environment variables by replacing `:` or nested object keys with double underscores `__`.
 
@@ -91,7 +101,7 @@ Any setting in `appsettings.json` can be overridden using environment variables 
 
 ---
 
-## 5. Secret Management
+## 6. Secret Management
 
 Do not commit private keys or webhook secrets to version control.
 
@@ -110,7 +120,7 @@ Do not commit private keys or webhook secrets to version control.
 
 ---
 
-## 6. Verifying Effective Configuration
+## 7. Verifying Effective Configuration
 
 Verify active runtime settings through the health endpoint:
 ```bash
