@@ -3,6 +3,7 @@ using abaci_bot.Modules;
 using abaci_bot.Options;
 using abaci_bot.Pipelines;
 using abaci_bot.Services;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using NSubstitute;
 using Octokit.Webhooks.Events.PullRequest;
@@ -259,12 +260,16 @@ public class TargetClassificationModuleTests
     [Fact]
     public void DemoConfiguration_ContainsExpectedTargetClassificationSettings()
     {
-        // Assert that appsettings.demo.json contract defines expected default LTS prefixes and branches
-        var demoConfigPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "appsettings.demo.json");
-        Assert.True(File.Exists(demoConfigPath), $"appsettings.demo.json should exist at {demoConfigPath}");
+        // Assert that appsettings.demo.jsonc contract defines expected default LTS prefixes and branches
+        var demoConfigPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "appsettings.demo.jsonc");
+        Assert.True(File.Exists(demoConfigPath), $"appsettings.demo.jsonc should exist at {demoConfigPath}");
 
         var json = File.ReadAllText(demoConfigPath);
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        using var doc = System.Text.Json.JsonDocument.Parse(json, new System.Text.Json.JsonDocumentOptions
+        {
+            CommentHandling = System.Text.Json.JsonCommentHandling.Skip,
+            AllowTrailingCommas = true
+        });
         var root = doc.RootElement;
 
         Assert.True(root.TryGetProperty("TargetClassification", out var targetSection));
@@ -272,5 +277,29 @@ public class TargetClassificationModuleTests
         var prefixes = ltsPrefixes.EnumerateArray().Select(e => e.GetString()).ToList();
         Assert.Contains("lts/", prefixes);
         Assert.Contains("lts-", prefixes);
+    }
+
+    [Fact]
+    public void DemoConfiguration_CanBeLoadedWithComments_AndBindsSuccessfully()
+    {
+        var demoConfigPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "appsettings.demo.jsonc");
+        Assert.True(File.Exists(demoConfigPath), $"appsettings.demo.jsonc should exist at {demoConfigPath}");
+
+        var config = new ConfigurationBuilder()
+            .AddJsonFile(Path.GetFullPath(demoConfigPath), optional: false, reloadOnChange: false)
+            .Build();
+
+        var targetOptions = config.GetSection("TargetClassification").Get<TargetClassificationOptions>();
+        Assert.NotNull(targetOptions);
+        Assert.Contains("lts/", targetOptions.LtsBranchPrefixes);
+        Assert.Contains("main", targetOptions.RollingBranches);
+
+        var staleOptions = config.GetSection("StaleLifecycle").Get<StaleLifecycleOptions>();
+        Assert.NotNull(staleOptions);
+        Assert.Contains(GitHubLabels.StatusPinned, staleOptions.ExemptLabels);
+
+        var abiOptions = config.GetSection("AbiCompliance").Get<AbiComplianceOptions>();
+        Assert.NotNull(abiOptions);
+        Assert.False(abiOptions.AllowManagedFallback);
     }
 }

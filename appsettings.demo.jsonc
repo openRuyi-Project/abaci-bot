@@ -1,0 +1,437 @@
+/*
+ * Reference configuration for abaci-bot.
+ *
+ * Comment convention used in this file:
+ *   - whole-line comments only; no trailing comments after a value
+ *   - every setting states its unit or format, allowed range, default, and what
+ *     happens when it is empty, zero, false, or null
+ *   - "Defaults source" names the Options class (or startup code) that owns the default
+ *
+ * Copy this file to appsettings.json before deployment, then replace the
+ * placeholder credentials and any deployment-specific values.
+ */
+
+{
+  // ==============================================================================
+  // GitHub App authentication
+  // Defaults source: none of these values has a code default; Program.cs validates
+  // them at startup and exits with a configuration error when any is missing.
+  // ==============================================================================
+  "GitHubApp": {
+    // Format: positive integer.
+    // Missing or 0: startup aborts.
+    "AppId": 123456,
+    // Format: positive integer.
+    // Missing or 0: startup aborts. Environment override GitHubApp__InstallationId
+    // takes precedence and is the usual way to repoint an existing install.
+    "InstallationId": 78901234,
+    // Format: PEM-encoded RSA private key. Literal "\n" sequences are converted to
+    // newlines at startup.
+    // Missing or unparsable: startup aborts.
+    "PrivateKey": "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+    // Format: the secret configured on the GitHub App webhook.
+    // Missing: startup aborts. Wrong value: every delivery is rejected with 400.
+    "WebhookSecret": "webhook_secret",
+    // Format: organization team slug.
+    // Missing: startup aborts. Unknown team: captain-only transitions fail.
+    "TeamName": "captains"
+  },
+
+  // ==============================================================================
+  // Kestrel listener
+  // Defaults source: ASP.NET Core defaults, overridden by ASPNETCORE_HTTP_PORTS and
+  // the Docker image (port 3456).
+  // ==============================================================================
+  "Kestrel": {
+    "Endpoints": {
+      "Http": {
+        // Format: scheme://host:port.
+        // 0.0.0.0 is reachable through a container port mapping; 127.0.0.1 is
+        // loopback-only and will not be reachable from outside the container.
+        "Url": "http://0.0.0.0:3456"
+      }
+    }
+  },
+
+  // ==============================================================================
+  // Target branch classification
+  // Defaults source: Options/TargetClassificationOptions.cs
+  // ==============================================================================
+  "TargetClassification": {
+    // Format: repository names ("owner/repo" or bare name).
+    // Empty: LTS is decided only by LtsBranchPrefixes.
+    "LtsRepositories": [],
+    // Format: branch name prefixes.
+    // Empty: no branch is classified as LTS by prefix.
+    "LtsBranchPrefixes": [ "lts/", "lts-" ],
+    // Format: exact base branch names.
+    // Empty: no branch is explicitly Rolling; DefaultTarget applies.
+    "RollingBranches": [ "main", "master", "rolling" ],
+    // Allowed values: "Rolling", "LTS", or null.
+    // Null or unrecognized: an unmatched branch receives no Target label.
+    "DefaultTarget": "Rolling"
+  },
+
+  // ==============================================================================
+  // Change type classification
+  // Defaults source: Options/ChangeTypeClassificationOptions.cs
+  // ==============================================================================
+  "ChangeTypeClassification": {
+    // Format: file extensions including the leading dot.
+    // Empty: extension-based documentation detection is disabled.
+    "DocumentationExtensions": [ ".md", ".txt", ".rst" ],
+    // Format: directory prefixes including the trailing slash.
+    // Empty: directory-based documentation detection is disabled.
+    "DocumentationDirectories": [ "docs/", "doc/" ],
+    // Format: file extensions including the leading dot.
+    // Empty: extension-based packaging detection is disabled.
+    "PackagingExtensions": [ ".spec", ".patch", ".diff" ],
+    // Format: directory prefixes including the trailing slash.
+    // Empty: directory-based packaging detection is disabled.
+    "PackagingDirectories": [ "SPECS/", "SOURCES/" ],
+    // Format: file extensions including the leading dot.
+    // Only evaluated for repositories in HomepageRepositories.
+    // Empty: Type: Frontend is never applied.
+    "FrontendExtensions": [ ".vue", ".ts", ".js", ".jsx", ".tsx", ".html", ".css", ".scss", ".less" ],
+    // Format: repository names.
+    // Empty: no repository uses the package strategy; unlisted repositories fall
+    // back to the generic strategy (documentation/CI heuristics).
+    "PackageRepositories": [ "openRuyi" ],
+    // Format: repository names.
+    // Empty: frontend rules never apply to any repository.
+    "HomepageRepositories": [ "homepage" ]
+  },
+
+  // ==============================================================================
+  // Stale lifecycle worker
+  // Defaults source: Options/StaleLifecycleOptions.cs
+  // Bounds checked by: Options/StaleLifecycleOptionsValidator.cs
+  // ==============================================================================
+  "StaleLifecycle": {
+    // Default: false.
+    // false: the worker logs that it is disabled and performs no scans;
+    // true: sweeps every CheckIntervalHours.
+    "Enabled": false,
+    // Default: true.
+    // true: candidates are only logged; false: labels, comments, and closes are applied.
+    "DryRun": true,
+    // Format: "owner/repo" entries.
+    // Empty: no repository is scanned, so the worker is effectively idle.
+    "MonitoredRepositories": [],
+    // Format: "owner/repo" entries.
+    // Empty: nothing is excluded; entries here win over MonitoredRepositories.
+    "ExcludedRepositories": [],
+    // Unit: days. Range: > 0. Default: 30.
+    // Only used when Enabled=true and DryRun=false.
+    "StaleDays": 30,
+    // Unit: days. Range: > 0. Default: 7.
+    // Only used after Status: Stale was applied; the stale comment anchors the timer.
+    "CloseDays": 7,
+    // Default: Status: stale-exempt, Workflow: Blocked, Security, Epic.
+    // Empty: no label protects an item from stale processing.
+    "ExemptLabels": [
+      "Status: stale-exempt",
+      "Workflow: Blocked",
+      "Security",
+      "Epic"
+    ],
+    // Placeholders: {StaleDays}, {CloseDays}.
+    // Empty: the built-in default message is posted.
+    "StaleCommentTemplate": "This issue or pull request has been automatically marked as stale because it has not had recent activity within the last {StaleDays} days. It will be closed in {CloseDays} days if no further activity occurs. If this is still relevant, please comment or push a commit to keep it active. Thank you for your contributions!",
+    // Placeholders: {CloseDays}.
+    // Empty: the built-in default message is posted.
+    "CloseCommentTemplate": "This issue or pull request was closed because it has been stalled for over {CloseDays} days with no activity after being marked as stale. Feel free to reopen it or file a new one if you would like to continue the work.",
+    // Unit: hours. Range: > 0. Default: 24.
+    // Controls how often an enabled worker starts a new sweep.
+    "CheckIntervalHours": 24,
+    // Unit: milliseconds. Range: >= 0. Default: 500.
+    // 0: no delay between GitHub API calls.
+    "RequestThrottleMilliseconds": 500,
+    // Unit: API requests remaining. Range: >= 0. Default: 100.
+    // 0: the quota gate is disabled and a sweep starts regardless of remaining quota.
+    "MinRateLimitRemaining": 100
+  },
+
+  // ==============================================================================
+  // Bot detection and triage whitelist
+  // Defaults source: Options/BotDetectionOptions.cs
+  // ==============================================================================
+  "BotDetection": {
+    // Format: GitHub logins or "[bot]" slugs.
+    // Empty: only GitHub's own bot markers ("type=Bot" and the "[bot]" suffix) are
+    // recognized; listed accounts no longer suppress triage-label removal.
+    "Whitelist": [
+      "github-actions",
+      "github-actions[bot]",
+      "abaci-bot",
+      "abaci-bot[bot]",
+      "dependabot",
+      "dependabot[bot]",
+      "aqua-rium",
+      "aqua-rium[bot]",
+      "web-flow"
+    ]
+  },
+
+  // ==============================================================================
+  // SPDX license compliance
+  // Defaults source: Options/SpdxComplianceOptions.cs
+  // ==============================================================================
+  "SpdxCompliance": {
+    // Default: true.
+    // false: the module is skipped entirely; no spec license validation or label.
+    "Enabled": true,
+    // Format: absolute URL.
+    // Empty: the embedded license list is used and no remote refresh is attempted.
+    "UpdateRemoteUrl": "https://spdx.org/licenses/licenses.json",
+    // Format: absolute URL.
+    // Empty: the embedded exception list is used and no remote refresh is attempted.
+    "UpdateExceptionsRemoteUrl": "https://spdx.org/licenses/exceptions.json",
+    // Unit: hours. Range: > 0. Default: 24.
+    // 0: periodic refresh is disabled; the last loaded list stays in memory.
+    "AutoUpdateIntervalHours": 24,
+    // Default: true.
+    // true: known legacy aliases (GPLv2+, ASL 2.0, ...) are accepted;
+    // false: legacy aliases are reported as Compliance: License Issue.
+    "AllowLegacyAliases": true,
+    // Range: >= 1. Default: 8.
+    // Controls parallel spec evaluation; higher values use more CPU.
+    "MaxDegreeOfParallelism": 8
+  },
+
+  // ==============================================================================
+  // CVE detection and lifecycle
+  // Defaults source: Options/CveSecurityOptions.cs
+  // ==============================================================================
+  "CveSecurity": {
+    // Default: true.
+    // false: the module is skipped; no CVE lookup, severity, or lifecycle label.
+    "Enabled": true,
+    // Format: absolute URL.
+    // Empty: OSV lookup is skipped; the NVD fallback is still attempted.
+    "OsvApiBaseUrl": "https://api.osv.dev/v1/vulns/",
+    // Format: absolute URL.
+    // Empty: NVD lookup is skipped; only OSV is used.
+    "NvdApiBaseUrl": "https://services.nvd.nist.gov/rest/json/cves/2.0",
+    // Format: NVD API key string.
+    // Null or empty: unauthenticated NVD rate limits apply.
+    "NvdApiKey": null,
+    // Unit: hours. Range: > 0. Default: 12.
+    // 0: resolved CVE records are not cached (higher API usage).
+    "CacheExpirationHours": 12,
+    // Unit: hours. Range: > 0. Default: 1.
+    // 0: unknown/unindexed CVEs are not cached.
+    "UnknownCacheExpirationHours": 1,
+    // Unit: seconds. Range: > 0. Default: 15.
+    // Applies to each OSV/NVD HTTP request.
+    "RequestTimeoutSeconds": 15
+  },
+
+  // ==============================================================================
+  // Rebuild impact analysis
+  // Defaults source: Options/RebuildImpactOptions.cs
+  // ==============================================================================
+  "RebuildImpact": {
+    // Default: true.
+    // false: the module is skipped and the background refresh stops unless an ABI
+    // baseline URL is configured.
+    "Enabled": true,
+    // Format: URL to repomd.xml or to a primary.xml(.gz/.zst) file.
+    // Null: falls back to the repository derived from AbiCompliance:StableRpmBaseUrl;
+    // if neither is set, no dependency graph is loaded and no Rebuild label is applied.
+    "PrimaryXmlUrl": null,
+    // Format: path to a local primary metadata FILE (.xml or .xml.gz), not a directory.
+    // Null: no local snapshot is read.
+    "LocalCachePath": null,
+    // Unit: hours. Range: > 0. Default: 6.
+    // Values below 0.1 are clamped to 0.1.
+    "RefreshIntervalHours": 6,
+    // Allowed values: "Transitive" (full reverse closure) or "Direct" (immediate dependents).
+    // Default: Transitive.
+    "CalculationMode": "Transitive",
+    // Unit: dependency hops. Range: >= 1 or null.
+    // Null: unlimited depth.
+    "MaxDepth": null,
+    // Unit: affected packages. Range: >= 0. Default: 1001.
+    // Blocking applies when the affected count is >= this value on TargetBranchToBlock;
+    // 0 blocks every change on that branch.
+    "BlockThreshold": 1001,
+    // Allowed values: "Rolling" or "LTS". Default: Rolling.
+    "TargetBranchToBlock": "Rolling"
+  },
+
+  // ==============================================================================
+  // Binary ABI compliance
+  // Defaults source: Options/AbiComplianceOptions.cs
+  // ==============================================================================
+  "AbiCompliance": {
+    // Default: true.
+    // false: the module is skipped; no workflow_run analysis or Impact label.
+    "Enabled": true,
+    // Format: executable name or absolute path.
+    // Empty or missing: the startup probe fails and the deployment gate decides whether
+    // startup continues.
+    "AbipkgdiffExecutablePath": "abipkgdiff",
+    // Default: true.
+    // false: the managed engine is never used, even when AllowManagedFallback is true.
+    "EnableFallback": true,
+    // Default: false.
+    // false: startup aborts when native tools are unavailable; true: the managed
+    // symbol-level engine is permitted.
+    "AllowManagedFallback": false,
+    // Default: false.
+    // true: startup aborts when native tools are unavailable, ignoring
+    // AllowManagedFallback and the environment/file overrides.
+    "StrictEngine": false,
+    // Format: workflow name or path substrings.
+    // Empty: built-in defaults build/package/rpm are used.
+    "WorkflowNames": [ "build", "package", "rpm" ],
+    // Format: absolute URL to the stable RPM repository root.
+    // Null: no baseline is available, so every check ends as Status: ABI Unverified.
+    "StableRpmBaseUrl": null,
+    // Format: directory path.
+    // Null: the system temporary directory is used.
+    "TempExtractionDirectory": null,
+    // Unit: seconds. Range: > 0. Default: 300.
+    // Applies to a single abipkgdiff invocation.
+    "TimeoutSeconds": 300,
+    // Unit: bytes. Range: > 0. Default: 1073741824 (1 GiB).
+    // Bounds the uncompressed payload processed by the managed engine; exceeding it
+    // fails the check instead of exhausting memory.
+    "MaxTotalPayloadBytes": 1073741824
+  },
+
+  // ==============================================================================
+  // In-memory file cache
+  // Defaults source: Options/FileCacheOptions.cs
+  // ==============================================================================
+  "FileCache": {
+    // Unit: bytes. Range: > 0. Default: 52428800 (50 MiB).
+    // 0: every entry is evicted immediately, effectively disabling the cache.
+    "MaxSizeBytes": 52428800
+  },
+
+  // ==============================================================================
+  // RESERVED: automated package update service
+  // Not implemented in this release. The configuration is accepted but no service
+  // consumes it yet; it will be activated by the upcoming ecosystem release.
+  // Values below are the intended defaults and are not exercised by this build.
+  // ==============================================================================
+  "PackageUpdate": {
+    // Reserved. Default: false.
+    // false: no update sweeps; true: sweep every CheckIntervalHours.
+    "Enabled": false,
+    // Reserved. Default: true.
+    // true: discover candidates and prepare plans without pushing branches or opening PRs.
+    "DryRun": true,
+    // Reserved. Format: "owner/repo".
+    // Empty: sweeps are skipped.
+    "TargetRepository": "openRuyi-Project/openRuyi",
+    // Reserved. Format: GitHub login used to author update PRs.
+    // Empty: invalid when Enabled=true.
+    "BotLogin": "aqua-rium",
+    // Reserved. Format: PAT with repository write access.
+    // Empty: the GitHub App installation token is used instead.
+    "BotPat": "",
+    // Reserved. Format: branch name prefix.
+    // Empty: branches are created without a prefix (not recommended).
+    "BranchPrefix": "autoupdate/",
+    // Reserved. Unit: hours. Range: >= 1. Default: 12.
+    "CheckIntervalHours": 12,
+    "Lookout": {
+      // Reserved. Default: true.
+      // false: the Lookout candidate source is skipped.
+      "Enabled": true,
+      // Reserved. Format: absolute URL.
+      // Empty: Lookout queries cannot run.
+      "BaseUrl": "https://lookout.openruyi.cn",
+      // Reserved. Unit: hours. Range: > 0. Default: 48.
+      "StaleThresholdHours": 48
+    },
+    "RustCratePoller": {
+      // Reserved. Default: true.
+      // false: the crates.io candidate source is skipped.
+      "Enabled": true,
+      // Reserved. Format: absolute URL.
+      // Empty: crates.io queries cannot run.
+      "IndexBaseUrl": "https://index.crates.io",
+      // Reserved. Range: >= 1. Default: 60.
+      "MaxCratesPerSweep": 60,
+      // Reserved. Unit: milliseconds. Range: >= 0. Default: 300.
+      "RequestDelayMilliseconds": 300
+    },
+    "Obs": {
+      // Reserved. Format: absolute URL.
+      // Empty: OBS verification is disabled.
+      "BaseUrl": "https://build.openruyi.cn",
+      // Reserved. Format: OBS project name.
+      // Empty: invalid when OBS verification is enabled.
+      "Project": "openruyi",
+      // Reserved. Format: OBS repository name (not an architecture).
+      // Default: riscv64 (the repository name used by the target OBS project).
+      "TargetRepository": "riscv64",
+      // Reserved. Format: architecture filter.
+      "TargetArch": "riscv64",
+      // Reserved. Default: false.
+      // true: a non-successful post-merge OBS build applies Auto-Update: Blocked.
+      "RequireObsSuccessAfterMerge": false
+    },
+    // Reserved. Default: false.
+    // false: updates crossing a major version boundary are skipped.
+    "AllowCrossMajorVersion": false,
+    // Reserved. Default: true.
+    // true: packages carrying downstream patch files are skipped.
+    "SkipPackagesWithPatches": true,
+    // Reserved. Range: >= 1. Default: 5.
+    "MaxCandidatesPerSweep": 5,
+    // Reserved. Range: >= 1. Default: 5.
+    "MaxConcurrentPullRequests": 5,
+    // Reserved. Unit: days. Range: >= 1. Default: 7.
+    "FailedPrTtlDays": 7,
+    // Reserved. Unit: hours. Range: >= 0. Default: 72.
+    "CooldownHours": 72,
+    // Reserved. Range: >= 1. Default: 3.
+    "MaxConsecutiveFailures": 3,
+    // Reserved. Default: true.
+    // true: a tracking issue is filed when the failure limit is reached.
+    "IssueOnGivingUp": true,
+    // Reserved. Unit: days. Range: >= 1. Default: 30.
+    "GiveUpIssueCooldownDays": 30,
+    // Reserved. Format: label name.
+    // Empty: falls back to Status: stale-exempt.
+    "GiveUpIssueLabel": "Status: stale-exempt"
+  },
+
+  // ==============================================================================
+  // RESERVED: proactive CVE watch service
+  // Not implemented in this release. The configuration is accepted but no service
+  // consumes it yet; it will be activated by the upcoming ecosystem release.
+  // Values below are the intended defaults and are not exercised by this build.
+  // ==============================================================================
+  "CveActiveWatch": {
+    // Reserved. Default: false.
+    // false: no proactive scans; true: scan every CheckIntervalHours.
+    "Enabled": false,
+    // Reserved. Default: true.
+    // true: findings are logged without creating or closing issues.
+    "DryRun": true,
+    // Reserved. Format: "owner/repo".
+    // Empty: scans and issue filing are skipped.
+    "TargetRepository": "openRuyi-Project/openRuyi",
+    // Reserved. Unit: hours. Range: >= 1. Default: 24.
+    "CheckIntervalHours": 24,
+    // Reserved. Range: >= 1. Default: 1000.
+    "OsvBatchSize": 1000,
+    // Reserved. Range: >= 0. Default: 0.
+    // 0: every package in the catalog is evaluated during a sweep.
+    "PackagesPerSweep": 0,
+    // Reserved. Unit: queries per day. Range: >= 0. Default: 200.
+    // 0: no NVD fallback queries are issued.
+    "MaxNvdQueriesPerDay": 200,
+    // Reserved. Unit: milliseconds. Range: >= 0. Default: 6500.
+    "NvdRequestDelayMilliseconds": 6500,
+    // Reserved. Format: label name.
+    // Empty: falls back to Vulnerability: Detected.
+    "IssueLabel": "Vulnerability: Detected"
+  }
+}

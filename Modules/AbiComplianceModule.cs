@@ -25,7 +25,7 @@ public class AbiComplianceModule : IPullRequestModule
     {
         GitHubLabels.ImpactAbi,
         GitHubLabels.ImpactBreakingChange,
-        GitHubLabels.ImpactAbiCheckFailed
+        GitHubLabels.StatusAbiUnverified
     };
 
     public AbiComplianceModule(
@@ -74,11 +74,11 @@ public class AbiComplianceModule : IPullRequestModule
         }
 
         context.ReconcileLabels(ManagedLabels, label =>
-            (hasFailed && string.Equals(label, GitHubLabels.ImpactAbiCheckFailed, StringComparison.OrdinalIgnoreCase)) ||
+            (hasFailed && string.Equals(label, GitHubLabels.StatusAbiUnverified, StringComparison.OrdinalIgnoreCase)) ||
             (hasBreaking && string.Equals(label, GitHubLabels.ImpactBreakingChange, StringComparison.OrdinalIgnoreCase)) ||
             (hasAbi && !hasFailed && string.Equals(label, GitHubLabels.ImpactAbi, StringComparison.OrdinalIgnoreCase)));
 
-        if (hasFailed && !context.ExistingLabels.Contains(GitHubLabels.ImpactAbiCheckFailed))
+        if (hasFailed && !context.ExistingLabels.Contains(GitHubLabels.StatusAbiUnverified))
         {
             var reason = !string.IsNullOrWhiteSpace(result.ErrorMessage)
                 ? result.ErrorMessage

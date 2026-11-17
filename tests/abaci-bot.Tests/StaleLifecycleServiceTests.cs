@@ -259,12 +259,12 @@ public class StaleLifecycleServiceTests
         var options = Microsoft.Extensions.Options.Options.Create(new StaleLifecycleOptions
         {
             MonitoredRepositories = new List<string> { "openRuyi-Project/openRuyi" },
-            ExemptLabels = new List<string> { "Status: Pinned", "Workflow: Blocked" },
+            ExemptLabels = new List<string> { GitHubLabels.StatusPinned, "Workflow: Blocked" },
             RequestThrottleMilliseconds = 0,
             DryRun = false
         });
 
-        var pinnedIssue = CreateMockIssue(103, "Important Pinned Issue", DateTimeOffset.UtcNow.AddDays(-60), "Status: Pinned");
+        var pinnedIssue = CreateMockIssue(103, "Important Pinned Issue", DateTimeOffset.UtcNow.AddDays(-60), GitHubLabels.StatusPinned);
         _gitHub.SearchStaleCandidatesAsync("openRuyi-Project", "openRuyi", Arg.Any<DateTimeOffset>(), isPr: false, Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<Issue> { pinnedIssue });
         _gitHub.SearchStaleCandidatesAsync("openRuyi-Project", "openRuyi", Arg.Any<DateTimeOffset>(), isPr: true, Arg.Any<string?>(), Arg.Any<CancellationToken>())
@@ -762,7 +762,7 @@ public class StaleLifecycleServiceTests
         _gitHub.SearchStaleCandidatesAsync("openRuyi-Project", "openRuyi", Arg.Any<DateTimeOffset>(), isPr: true, Arg.Is<string?>(s => s != null && s.StartsWith("label:")), Arg.Any<CancellationToken>())
             .Returns(new List<Issue>());
 
-        // Maintainer concurrently added exemption label "Status: Pinned" before lock acquisition
+        // Maintainer concurrently added exemption label "Status: stale-exempt" before lock acquisition
         var exemptedIssue = CreateMockIssue(202, "Stale Issue", DateTimeOffset.UtcNow.AddDays(-40), GitHubLabels.StatusStale, GitHubLabels.StatusPinned);
         _issuesByNumber[202] = exemptedIssue;
 

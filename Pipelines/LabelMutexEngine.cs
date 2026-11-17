@@ -52,8 +52,7 @@ public class LabelMutexEngine
             GitHubLabels.VulnerabilityDetected,
             GitHubLabels.VulnerabilityFixedPending,
             GitHubLabels.VulnerabilityResolved,
-            GitHubLabels.VulnerabilityDismissed,
-            GitHubLabels.VulnerabilityPendingVerification
+            GitHubLabels.VulnerabilityDismissed
         },
         // 6. Downstream rebuild package count tier (forward-looking single-choice)
         new(StringComparer.OrdinalIgnoreCase)

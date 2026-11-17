@@ -1576,8 +1576,8 @@ public class GitHubWebhookProcessorTests
             // Verify binary RPM was compared exactly once
             await abiDiffService.Received(1).CompareRpmsAsync(baselineRpm, binRpm, Arg.Any<CancellationToken>());
 
-            // Must NOT fail or add ImpactAbiCheckFailed
-            Assert.DoesNotContain($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+            // Must NOT fail or add StatusAbiUnverified
+            Assert.DoesNotContain($"add:{GitHubLabels.StatusAbiUnverified}", github.LabelOperations);
         }
         finally
         {
@@ -1614,8 +1614,8 @@ public class GitHubWebhookProcessorTests
             await artifactService.DidNotReceiveWithAnyArgs().DownloadBaselineRpmAsync(default!, default!, default, default);
             await abiDiffService.DidNotReceive().CompareRpmsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
 
-            // Fail-closed: Must add Impact: ABI Check Failed
-            Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+            // Fail-closed: Must add Status: ABI Unverified
+            Assert.Contains($"add:{GitHubLabels.StatusAbiUnverified}", github.LabelOperations);
             Assert.Contains(github.CreatedComments, c => c.IssueNumber == 42 && c.Comment.Contains("could not be parsed"));
         }
         finally
@@ -2269,8 +2269,8 @@ public class GitHubWebhookProcessorTests
 
         await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
-        // Verification: Pipeline executed, NotPerformed outcome assigned, Impact: ABI Check Failed label added and failure comment posted
-        Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+        // Verification: Pipeline executed, NotPerformed outcome assigned, Status: ABI Unverified label added and failure comment posted
+        Assert.Contains($"add:{GitHubLabels.StatusAbiUnverified}", github.LabelOperations);
         Assert.Contains(github.CreatedComments, c => c.IssueNumber == 42 && c.Comment.Contains("No RPM artifacts found for workflow run"));
     }
 
@@ -2316,10 +2316,10 @@ public class GitHubWebhookProcessorTests
 
             await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
-            // Verification: Result was treated as failure, Impact: ABI Check Failed label added, stale labels stripped
-            Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+            // Verification: Result was treated as failure, Status: ABI Unverified label added, stale labels stripped
+            Assert.Contains($"add:{GitHubLabels.StatusAbiUnverified}", github.LabelOperations);
             Assert.Contains($"remove:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
-            Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, github.RemoteLabels);
+            Assert.Contains(GitHubLabels.StatusAbiUnverified, github.RemoteLabels);
             Assert.DoesNotContain(GitHubLabels.ImpactBreakingChange, github.RemoteLabels);
             Assert.DoesNotContain(GitHubLabels.ImpactAbi, github.RemoteLabels);
         }
@@ -2413,7 +2413,7 @@ public class GitHubWebhookProcessorTests
             await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
             // Incomplete check must NOT be marked clean: it must aggregate to ABI Check Failed
-            Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+            Assert.Contains($"add:{GitHubLabels.StatusAbiUnverified}", github.LabelOperations);
             Assert.DoesNotContain($"add:{GitHubLabels.ImpactAbi}", github.LabelOperations);
         }
         finally
@@ -2462,7 +2462,7 @@ public class GitHubWebhookProcessorTests
             await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
             // Failure must NOT be masked by non-breaking change: it must aggregate to ABI Check Failed
-            Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+            Assert.Contains($"add:{GitHubLabels.StatusAbiUnverified}", github.LabelOperations);
             Assert.DoesNotContain($"add:{GitHubLabels.ImpactAbi}", github.LabelOperations);
         }
         finally
@@ -2512,7 +2512,7 @@ public class GitHubWebhookProcessorTests
 
             // Breaking change must NOT mask failure: both Breaking Change and Check Failed labels must be applied
             Assert.Contains($"add:{GitHubLabels.ImpactBreakingChange}", github.LabelOperations);
-            Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+            Assert.Contains($"add:{GitHubLabels.StatusAbiUnverified}", github.LabelOperations);
             Assert.DoesNotContain($"add:{GitHubLabels.ImpactAbi}", github.LabelOperations);
 
             // Both comments must be submitted
@@ -2542,7 +2542,7 @@ public class GitHubWebhookProcessorTests
         // Verification: Artifact download / diff was never invoked, and existing ABI label was untouched
         await artifactService.DidNotReceiveWithAnyArgs().DownloadRunRpmArtifactsAsync(default!, default!, default, default!, default);
         Assert.DoesNotContain($"remove:{GitHubLabels.ImpactAbi}", github.LabelOperations);
-        Assert.DoesNotContain($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+        Assert.DoesNotContain($"add:{GitHubLabels.StatusAbiUnverified}", github.LabelOperations);
     }
 
     [Fact]
@@ -2572,7 +2572,7 @@ public class GitHubWebhookProcessorTests
         await processor.ProcessWorkflowRunAsync(payload, WorkflowRunAction.Completed);
 
         // Wildcard allowed CustomCI workflow to be treated as ABI workflow
-        Assert.Contains($"add:{GitHubLabels.ImpactAbiCheckFailed}", github.LabelOperations);
+        Assert.Contains($"add:{GitHubLabels.StatusAbiUnverified}", github.LabelOperations);
     }
 
     [Theory]

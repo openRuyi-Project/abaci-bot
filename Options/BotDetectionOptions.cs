@@ -15,6 +15,9 @@ public class BotDetectionOptions
         "abaci-bot",
         "abaci-bot[bot]",
         "dependabot",
-        "dependabot[bot]"
+        "dependabot[bot]",
+        "aqua-rium",
+        "aqua-rium[bot]",
+        "web-flow"
     };
 }

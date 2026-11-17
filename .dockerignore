@@ -17,7 +17,6 @@
 **/.DS_Store
 **/Thumbs.db
 
-# Keep appsettings.demo.json but ignore the real config
+# Keep appsettings.demo.jsonc but ignore the real config
 appsettings.json
-!appsettings.demo.json
-
+!appsettings.demo.jsonc

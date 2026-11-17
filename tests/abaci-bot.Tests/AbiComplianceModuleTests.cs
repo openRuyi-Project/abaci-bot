@@ -84,7 +84,7 @@ public class AbiComplianceModuleTests
     }
 
     [Fact]
-    public async Task ProcessAsync_AbidiffFailedOrSkipped_AddsImpactAbiCheckFailedLabel()
+    public async Task ProcessAsync_AbidiffFailedOrSkipped_AddsStatusAbiUnverifiedLabel()
     {
         var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
         var module = new AbiComplianceModule(_abiService, options);
@@ -100,7 +100,9 @@ public class AbiComplianceModuleTests
 
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.Equal("Status: ABI Unverified", GitHubLabels.StatusAbiUnverified);
+        Assert.Contains(GitHubLabels.StatusAbiUnverified, context.LabelsToAdd);
+        Assert.DoesNotContain("Impact: ABI Check Failed", context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.ImpactAbi, context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
         Assert.NotEmpty(context.PendingComments);
@@ -126,7 +128,7 @@ public class AbiComplianceModuleTests
 
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.StatusAbiUnverified, context.LabelsToAdd);
         Assert.Contains(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.ImpactAbi, context.LabelsToAdd);
 
@@ -152,7 +154,7 @@ public class AbiComplianceModuleTests
 
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.DoesNotContain(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.StatusAbiUnverified, context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.ImpactAbi, context.LabelsToAdd);
         Assert.Empty(context.PendingComments);
@@ -176,7 +178,7 @@ public class AbiComplianceModuleTests
         await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Contains(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
-        Assert.DoesNotContain(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.StatusAbiUnverified, context.LabelsToAdd);
         Assert.Contains(GitHubLabels.ImpactAbi, context.LabelsToAdd);
 
         Assert.Single(context.PendingComments);
@@ -202,7 +204,7 @@ public class AbiComplianceModuleTests
 
         Assert.Contains(GitHubLabels.ImpactAbi, context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.ImpactBreakingChange, context.LabelsToAdd);
-        Assert.DoesNotContain(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.StatusAbiUnverified, context.LabelsToAdd);
         Assert.Empty(context.PendingComments);
     }
 
@@ -229,7 +231,7 @@ public class AbiComplianceModuleTests
             senderLogin: "contributor",
             authorLogin: "contributor",
             action: "synchronize",
-            existingLabels: new[] { GitHubLabels.ImpactAbiCheckFailed },
+            existingLabels: new[] { GitHubLabels.StatusAbiUnverified },
             prAction: PullRequestAction.Synchronize);
 
         var diffResult = new AbiDiffResult(
@@ -268,7 +270,7 @@ public class AbiComplianceModuleTests
             senderLogin: "contributor",
             authorLogin: "contributor",
             action: "synchronize",
-            existingLabels: new[] { GitHubLabels.ImpactAbi, GitHubLabels.ImpactBreakingChange, GitHubLabels.ImpactAbiCheckFailed },
+            existingLabels: new[] { GitHubLabels.ImpactAbi, GitHubLabels.ImpactBreakingChange, GitHubLabels.StatusAbiUnverified },
             prAction: PullRequestAction.Synchronize);
 
         var diffResult = new AbiDiffResult(
@@ -283,7 +285,7 @@ public class AbiComplianceModuleTests
         Assert.Empty(context.LabelsToAdd);
         Assert.Contains(GitHubLabels.ImpactAbi, context.LabelsToRemove);
         Assert.Contains(GitHubLabels.ImpactBreakingChange, context.LabelsToRemove);
-        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToRemove);
+        Assert.Contains(GitHubLabels.StatusAbiUnverified, context.LabelsToRemove);
     }
 
     [Theory]
@@ -433,7 +435,7 @@ public class AbiComplianceModuleTests
 
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.StatusAbiUnverified, context.LabelsToAdd);
     }
 
     [Fact]
@@ -475,11 +477,11 @@ public class AbiComplianceModuleTests
 
         await module.ProcessAsync(context, CancellationToken.None);
 
-        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.StatusAbiUnverified, context.LabelsToAdd);
     }
 
     [Fact]
-    public async Task ProcessAsync_ToolMissingOrNotPerformed_AddsImpactAbiCheckFailedAndRemovesOldImpactLabels()
+    public async Task ProcessAsync_ToolMissingOrNotPerformed_AddsStatusAbiUnverifiedAndRemovesOldImpactLabels()
     {
         var options = Microsoft.Extensions.Options.Options.Create(new AbiComplianceOptions());
         var module = new AbiComplianceModule(_abiService, options);
@@ -497,7 +499,7 @@ public class AbiComplianceModuleTests
 
         await module.ProcessAsync(context1, CancellationToken.None);
 
-        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context1.LabelsToAdd);
+        Assert.Contains(GitHubLabels.StatusAbiUnverified, context1.LabelsToAdd);
         Assert.Contains(GitHubLabels.ImpactAbi, context1.LabelsToRemove);
 
         // Case 2: NotPerformed (e.g. no artifacts or baseline)
@@ -507,7 +509,7 @@ public class AbiComplianceModuleTests
 
         await module.ProcessAsync(context2, CancellationToken.None);
 
-        Assert.Contains(GitHubLabels.ImpactAbiCheckFailed, context2.LabelsToAdd);
+        Assert.Contains(GitHubLabels.StatusAbiUnverified, context2.LabelsToAdd);
         Assert.Contains(GitHubLabels.ImpactBreakingChange, context2.LabelsToRemove);
     }
 }

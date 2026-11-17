@@ -132,7 +132,7 @@ public class GovernanceCommentFormatterTests
         Assert.StartsWith("> [!WARNING]", output);
         Assert.Contains("ABI Compliance Check Incomplete", output);
         Assert.Contains("Baseline RPM package not available", output);
-        Assert.Contains("Impact: ABI Check Failed", output);
+        Assert.Contains("Status: ABI Unverified", output);
         AssertNoEmojis(output);
         AssertNoInternalTaskCodes(output);
     }
@@ -145,7 +145,7 @@ public class GovernanceCommentFormatterTests
         Assert.StartsWith("> [!WARNING]", output);
         Assert.Contains("ABI 合规比对未能完成", output);
         Assert.Contains("未找到依赖 baseline", output);
-        Assert.Contains("Impact: ABI Check Failed", output);
+        Assert.Contains("Status: ABI Unverified", output);
         AssertNoEmojis(output);
     }
 
