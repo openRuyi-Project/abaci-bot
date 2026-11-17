@@ -139,5 +139,44 @@ public class GitHubSpecCatalogTests
         Assert.NotNull(spec);
         Assert.Equal("curl", spec.PackageName);
     }
+
+    [Fact]
+    public async Task GetSpecAsync_UsesSharedFileContentCache_WhenAvailable()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            TargetRepository = "openRuyi-Project/openRuyi"
+        });
+
+        const string blobSha = "abc123456789";
+        var treeItem = (TreeItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeItem));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Type))?.SetValue(treeItem, new StringEnum<TreeType>(TreeType.Blob));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Path))?.SetValue(treeItem, "SPECS/curl/curl.spec");
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Sha))?.SetValue(treeItem, blobSha);
+
+        var treeResponse = (TreeResponse)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeResponse));
+        typeof(TreeResponse).GetProperty(nameof(TreeResponse.Tree))?.SetValue(treeResponse, new List<TreeItem> { treeItem });
+
+        gitHubMock.GetTreeRecursiveAsync("openRuyi-Project", "openRuyi", "main", Arg.Any<CancellationToken>())
+            .Returns(treeResponse);
+
+        var fileCacheMock = Substitute.For<IFileContentCache>();
+        string cachedContent = "Name: curl\nVersion: 8.21.0\n# from file cache\n";
+        fileCacheMock.GetOrCreateAsync(blobSha, Arg.Any<Func<Task<string>>>())
+            .Returns(Task.FromResult(cachedContent));
+
+        using var catalog = new GitHubSpecCatalog(gitHubMock, options, null, fileCacheMock);
+
+        var spec = await catalog.GetSpecAsync("curl");
+
+        Assert.NotNull(spec);
+        Assert.Equal("curl", spec.PackageName);
+        Assert.Contains("# from file cache", spec.Content);
+
+        // Verify remote API was never queried since content was retrieved from shared blob cache
+        await gitHubMock.DidNotReceive().GetFileContentAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
 }
 

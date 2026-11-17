@@ -19,6 +19,8 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
 
     private readonly ConcurrentDictionary<string, (SpecContext Context, DateTimeOffset Expiry)> _specCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _specPathMap = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _specBlobMap = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IFileContentCache? _fileCache;
     private DateTimeOffset _lastCatalogRefresh = DateTimeOffset.MinValue;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
@@ -26,10 +28,20 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
         IGitHubService gitHubService,
         IOptions<PackageUpdateOptions> options,
         ILogger<GitHubSpecCatalog>? logger = null)
+        : this(gitHubService, options, logger, null)
+    {
+    }
+
+    public GitHubSpecCatalog(
+        IGitHubService gitHubService,
+        IOptions<PackageUpdateOptions> options,
+        ILogger<GitHubSpecCatalog>? logger,
+        IFileContentCache? fileCache)
     {
         _gitHubService = gitHubService;
         _options = options;
         _logger = logger;
+        _fileCache = fileCache;
     }
 
     private (string Owner, string Repo) GetTargetOwnerRepo()
@@ -71,7 +83,16 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
 
             try
             {
-                var content = await _gitHubService.GetFileContentAsync(owner, repo, remotePath, baseBranch, ct);
+                string content;
+                if (_fileCache != null && _specBlobMap.TryGetValue(packageName, out var sha) && !string.IsNullOrWhiteSpace(sha))
+                {
+                    content = await _fileCache.GetOrCreateAsync(sha, () => _gitHubService.GetFileContentAsync(owner, repo, remotePath, baseBranch, ct));
+                }
+                else
+                {
+                    content = await _gitHubService.GetFileContentAsync(owner, repo, remotePath, baseBranch, ct);
+                }
+
                 var ctx = new SpecContext(packageName, Path.GetFileName(Path.GetDirectoryName(remotePath)) ?? packageName, content);
                 _specCache[packageName] = (ctx, DateTimeOffset.UtcNow.AddHours(6));
                 return ctx;
@@ -186,6 +207,7 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
                 }
 
                 _specCache.Clear();
+                _specBlobMap.Clear();
                 foreach (var item in tree.Tree)
                 {
                     if (item.Type == Octokit.TreeType.Blob && item.Path.StartsWith("SPECS/", StringComparison.OrdinalIgnoreCase) && item.Path.EndsWith(".spec", StringComparison.OrdinalIgnoreCase))
@@ -195,6 +217,10 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
                         {
                             var pkgName = parts[1];
                             _specPathMap[pkgName] = item.Path;
+                            if (!string.IsNullOrWhiteSpace(item.Sha))
+                            {
+                                _specBlobMap[pkgName] = item.Sha;
+                            }
                         }
                     }
                 }
