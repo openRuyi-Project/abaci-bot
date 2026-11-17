@@ -84,10 +84,12 @@ Your GitHub App must also subscribe to these webhook events:
 - **Vulnerability Tracking (`CveSecurity`)**: Detects CVE identifiers (`CVE-YYYY-NNNN` or longer sequence numbers, e.g. `CVE-2024-12345678`) in pull request titles and descriptions. Queries OSV.dev with NIST NVD CVE 2.0 fallback to assign CVSS severity levels (`Severity: 1` through `Severity: 4`) and track vulnerability resolution lifecycle.
 - **Cascading Rebuild Impact Gate (`RebuildImpact`)**: Downloads and parses repository metadata (`primary.xml.gz`, `primary.xml.zst`, or `repomd.xml`) to build a full reverse dependency DAG. Computes affected downstream packages (`Rebuild: 0` to `Rebuild: 5001+`) and automatically enforces admission gating (`Workflow: Blocked`) when rebuild impact on the `Rolling` branch exceeds the configured threshold.
 - **Binary ABI Compliance (`AbiCompliance`)**: Listens for GitHub `workflow_run.completed` events, downloads CI-built RPM artifacts, fetches baseline stable packages, and executes Libabigail's package comparison tool (`abipkgdiff`) to detect binary shared library incompatibilities (`Impact: ABI`, `Impact: Breaking Change`, `Impact: ABI Check Failed`).
+
   > [!IMPORTANT]
   > **Host System Dependency Requirement**: `abipkgdiff` requires `libabigail` to be built with RPM package support enabled (`--enable-rpm` at configure time).
   > - Fedora, RHEL, and openEuler distributions provide RPM-enabled builds by default in their package repositories.
-  > - Debian and Ubuntu distributions (`abigail-tools`) often omit RPM support by default; running in these environments will be detected at runtime and flagged with `Impact: ABI Check Failed`. For production deployments on Debian/Ubuntu, compile `libabigail` from source with `--enable-rpm` or run within an RPM-enabled container image.
+  > - Debian and Ubuntu distributions (`abigail-tools`) may lack a usable RPM extraction path: `rpm2cpio` can be absent, or the packaged `rpm2cpio` may be too old to read RPM v6 indexed payloads. The engine probe detects this at startup and aborts unless `AllowManagedFallback` is explicitly enabled; when fallback is enabled, analysis is symbol-level only. For production deployments on Debian/Ubuntu, install an RPM 6-capable extraction toolchain, or run within the Fedora-based container image.
+
 - **Git Blob & File Content Cache (`FileCache`)**: Thread-safe in-memory cache for fetched Git file contents and blobs. Employs Git blob SHA content-addressing to eliminate redundant API calls across modules and across multi-commit pull request deliveries. Enforces bounded byte memory limits with least-recently-used (LRU) automatic eviction and anti-poisoning fault isolation.
 
 #### SPDX Compliance & Periodic Refresh Configuration (`SpdxCompliance`)
