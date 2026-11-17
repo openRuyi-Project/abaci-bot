@@ -4,6 +4,7 @@
 **/.vs
 **/.vscode
 **/.idea
+**/.workbuddy
 **/bin
 **/obj
 **/Dockerfile*
