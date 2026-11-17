@@ -204,7 +204,7 @@ public class GovernanceCommentFormatter : IGovernanceCommentFormatter
                 sb.AppendLine(CultureInfo.InvariantCulture, $"> - 原因：{sanitizedReason}");
             }
             sb.AppendLine(">");
-            sb.Append("> PR 已标记 `Impact: ABI Check Failed`，请维护者检查构建产物或依赖 baseline。");
+            sb.Append("> PR 已标记 `Status: ABI Unverified`，请维护者检查构建产物或依赖 baseline。");
         }
         else
         {
@@ -226,7 +226,7 @@ public class GovernanceCommentFormatter : IGovernanceCommentFormatter
                 sb.AppendLine(CultureInfo.InvariantCulture, $"> - Reason: {sanitizedReason}");
             }
             sb.AppendLine(">");
-            sb.Append("> The pull request has been tagged with `Impact: ABI Check Failed`. Please verify RPM artifacts or baseline packages.");
+            sb.Append("> The pull request has been tagged with `Status: ABI Unverified`. Please verify RPM artifacts or baseline packages.");
         }
 
         return sb.ToString();

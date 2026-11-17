@@ -87,7 +87,7 @@ public class AbiEngineProbe : IHostedService
         string executablePath,
         CancellationToken cancellationToken = default)
     {
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
         var ct = linkedCts.Token;
 

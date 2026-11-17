@@ -68,7 +68,9 @@ public class ShinyNewPrModuleTests
         Assert.True(module.ShouldProcess(context));
         await module.ProcessAsync(context, CancellationToken.None);
 
+        Assert.Equal("Status: New", GitHubLabels.New);
         Assert.Contains(GitHubLabels.New, context.LabelsToAdd);
+        Assert.Contains("Status: New", context.LabelsToAdd);
         Assert.Empty(context.LabelsToRemove);
     }
 

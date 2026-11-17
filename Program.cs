@@ -28,7 +28,7 @@ if (missingFields.Count > 0)
         Console.Error.WriteLine($"  - {field}");
     Console.Error.WriteLine();
     Console.Error.WriteLine("Did you forget to create appsettings.json?");
-    Console.Error.WriteLine("  cp appsettings.demo.json appsettings.json");
+    Console.Error.WriteLine("  cp appsettings.demo.jsonc appsettings.json");
     Console.Error.WriteLine("Then fill in your GitHub App credentials.");
     Console.ResetColor();
     Environment.ExitCode = 1;

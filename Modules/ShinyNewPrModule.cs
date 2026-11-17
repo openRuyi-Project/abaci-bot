@@ -12,8 +12,8 @@ namespace abaci_bot.Modules;
 
 /// <summary>
 /// Shiny New Pull Request governance module (Priority: 15).
-/// Tags newly opened PRs with the "new" label to highlight them for reviewer triage.
-/// Automatically schedules removal of the "new" label as soon as the first valid human review
+/// Tags newly opened PRs with the "Status: New" label to highlight them for reviewer triage.
+/// Automatically schedules removal of the "Status: New" label as soon as the first valid human review
 /// or comment (from someone other than the author and bots) is submitted.
 /// </summary>
 public class ShinyNewPrModule : IPullRequestModule
@@ -51,7 +51,7 @@ public class ShinyNewPrModule : IPullRequestModule
 
     public Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
-        // 1. Tag newly opened PRs with the "new" indicator
+        // 1. Tag newly opened PRs with the "Status: New" indicator
         if (context.EventType == PullRequestEventType.PullRequest &&
             context.PullRequestAction == PullRequestAction.Opened)
         {
@@ -59,7 +59,7 @@ public class ShinyNewPrModule : IPullRequestModule
             return Task.CompletedTask;
         }
 
-        // 2. On review or comment: if the PR currently carries "new", remove it upon first human non-author engagement
+        // 2. On review or comment: if the PR currently carries "Status: New", remove it upon first human non-author engagement
         if (context.ExistingLabels.Contains(GitHubLabels.New))
         {
             if (!context.IsSenderAuthorOrBot(_botOptions.Whitelist))

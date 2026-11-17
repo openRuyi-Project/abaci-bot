@@ -1,265 +1,96 @@
 # abaci-bot
 
-## Getting Started
+`abaci-bot` is a webhook-driven governance daemon and compliance bot built for `openRuyi-Project` package repositories and related infrastructure.
 
-### 1. Configure appsettings.json
+---
 
-This repository does **not** include a config file. You must create one yourself based on the provided template:
+## Capabilities & Modules
 
-```bash
-cp appsettings.demo.json appsettings.json
-```
-
-Then edit `appsettings.json` and fill in your actual values:
-
-| Field | Description |
-|---|---|
-| `GitHubApp.AppId` | Your GitHub App's numeric ID |
-| `GitHubApp.InstallationId` | The installation ID for the target org/repo |
-| `GitHubApp.PrivateKey` | The RSA private key generated for your GitHub App (PEM format, newlines as `\n`) |
-| `GitHubApp.WebhookSecret` | Shared secret for validating `X-Hub-Signature-256`. Must exactly match your GitHub webhook secret. |
-| `GitHubApp.TeamName` | Team slug used for review workflow (for example: `captains`). Review labels are updated only when review is submitted by a member of this team. |
-| `Kestrel.Endpoints.Http.Url` | The address and port the server listens on (default: `http://0.0.0.0:3456`) |
-
-### 2. Daily Governance Modules & Options
-
-`abaci-bot` includes an extensible, prioritized governance pipeline enforcing daily lifecycle rules:
-
-- **Instant Indicator (`new`)**: Automatically tags newly opened pull requests with `new`. Removes it as soon as a non-author human leaves a review or comment.
-- **Target Release Classification**: Tags PRs targeting rolling branches (e.g. `main`, `master`) with `Target: Rolling`, and LTS branches (e.g. `lts/24.03`, `lts-24.03`) with `Target: LTS`.
-- **Build System & CI Analysis**: Inspects PR files to assign build system tags (`BuildSystem: autotools`, `cmake`, `meson`, etc.) and `CI`.
-- **Multi-Repo Change Type Classification**: Analyzes modified file paths to assign change categories (`Type: Packaging`, `Type: Documentation`, `Type: Frontend`, `Type: Infrastructure`).
-- **Automated Stale Lifecycle & Auto-Close**: Periodically monitors inactive issues/PRs, marks them with `Status: Stale` after 30 days of inactivity, and auto-closes after a 7-day grace period. Human activity (push, comment, review) immediately removes `Status: Stale`.
-- **Bot Detection & Protection**: Filters bot actions (`[bot]`, whitelist, account type) so automated activity does not disrupt governance states.
-
-#### Stale Lifecycle Configuration (`StaleLifecycle`)
-
-The stale lifecycle background service is configured in `appsettings.json` under the `StaleLifecycle` section:
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `Enabled` | `bool` | `false` | Master toggle for the stale lifecycle background service. Must be set to `true` to run sweeps. |
-| `DryRun` | `bool` | `true` | When `true`, scans and logs intended label additions and closures without mutating GitHub. Must be set to `false` for live execution. |
-| `MonitoredRepositories` | `string[]` | `[]` | Explicit list of repositories to scan in `"owner/repo"` format (e.g. `["openRuyi-Project/openRuyi"]`). Required; empty list skips sweeps to prevent accidental mutations. |
-| `ExcludedRepositories` | `string[]` | `[]` | Repositories explicitly excluded from sweeps. |
-| `StaleDays` | `int` | `30` | Inactive days before an item is marked with `Status: Stale` and notified via comment. |
-| `CloseDays` | `int` | `7` | Grace period days after the stale notification comment before an item is automatically closed. |
-| `ExemptLabels` | `string[]` | `["Status: Pinned", ...]` | Labels that protect an issue or PR from being marked or closed as stale. |
-| `StaleCommentTemplate` | `string` | *(friendly notice)* | Notification comment posted when marked stale (anchors the grace period). |
-| `CloseCommentTemplate` | `string` | *(closing notice)* | Comment posted when automatically closing an expired stale item. |
-
-### 3. Configure GitHub App Permissions and Webhook Events
-
-Your GitHub App must be configured with the following permissions:
-
-**Organization permissions**
-
-- Members: **Read-only**
-
-**Repository permissions**
-
-- Pull requests: **Read and write**
-- Issues: **Read and write**
-- Contents: **Read-only**
-- Actions: **Read-only** *(Required for ABI compliance analysis to receive CI build completion events and download workflow run artifacts)*
-
-Your GitHub App must also subscribe to these webhook events:
-
-- Issue comments
-- Issues
-- Pull request review comments
-- Pull request review threads
-- Pull request reviews
-- Pull requests
-- Workflow runs *(Required for ABI compliance: triggers `ProcessWorkflowRunWebhookAsync` on CI job completion)*
-
-> [!IMPORTANT]
-> When adding the **Actions: Read-only** permission to an existing GitHub App, GitHub requires repository administrators to approve the updated permission grant. The app's `InstallationId` may also change during re-installation; verify that `GitHubApp:InstallationId` in `appsettings.json` matches the active installation ID.
-
-### 4. Distribution Quality & Compliance Modules
-
-`abaci-bot` includes distribution-grade automated compliance, security, and gating checks:
-
-- **SPDX License Compliance (`SpdxCompliance`)**: Inspects RPM spec files modified in pull requests, parses compound license expressions (`OR`, `AND`, `WITH`), normalizes legacy RPM aliases, and flags non-compliant or unknown licenses with `Compliance: License Issue` and GFM warning notices. Includes a background periodic synchronization service (`SpdxMetadataRefreshService`) that hot-reloads license and exception definitions from official indices.
-- **Vulnerability Tracking (`CveSecurity`)**: Detects CVE identifiers (`CVE-YYYY-NNNN` or longer sequence numbers, e.g. `CVE-2024-12345678`) in pull request titles and descriptions. Queries OSV.dev with NIST NVD CVE 2.0 fallback to assign CVSS severity levels (`Severity: 1` through `Severity: 4`) and track vulnerability resolution lifecycle.
-- **Cascading Rebuild Impact Gate (`RebuildImpact`)**: Downloads and parses repository metadata (`primary.xml.gz`, `primary.xml.zst`, or `repomd.xml`) to build a full reverse dependency DAG. Computes affected downstream packages (`Rebuild: 0` to `Rebuild: 5001+`) and automatically enforces admission gating (`Workflow: Blocked`) when rebuild impact on the `Rolling` branch exceeds the configured threshold.
-- **Binary ABI Compliance (`AbiCompliance`)**: Listens for GitHub `workflow_run.completed` events, downloads CI-built RPM artifacts, fetches baseline stable packages, and executes Libabigail's package comparison tool (`abipkgdiff`) to detect binary shared library incompatibilities (`Impact: ABI`, `Impact: Breaking Change`, `Impact: ABI Check Failed`).
-
-  > [!IMPORTANT]
-  > **Host System Dependency Requirement**: `abipkgdiff` requires `libabigail` to be built with RPM package support enabled (`--enable-rpm` at configure time).
-  > - Fedora, RHEL, and openEuler distributions provide RPM-enabled builds by default in their package repositories.
-  > - Debian and Ubuntu distributions (`abigail-tools`) may lack a usable RPM extraction path: `rpm2cpio` can be absent, or the packaged `rpm2cpio` may be too old to read RPM v6 indexed payloads. The engine probe detects this at startup and aborts unless `AllowManagedFallback` is explicitly enabled; when fallback is enabled, analysis is symbol-level only. For production deployments on Debian/Ubuntu, install an RPM 6-capable extraction toolchain, or run within the Fedora-based container image.
-
-- **Git Blob & File Content Cache (`FileCache`)**: Thread-safe in-memory cache for fetched Git file contents and blobs. Employs Git blob SHA content-addressing to eliminate redundant API calls across modules and across multi-commit pull request deliveries. Enforces bounded byte memory limits with least-recently-used (LRU) automatic eviction and anti-poisoning fault isolation.
-
-#### SPDX Compliance & Periodic Refresh Configuration (`SpdxCompliance`)
-
-The SPDX license compliance module and its periodic background synchronization service (`SpdxMetadataRefreshService`) are configured in `appsettings.json` under the `SpdxCompliance` section:
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `Enabled` | `bool` | `true` | Master toggle for SPDX compliance validation and background synchronization. |
-| `UpdateRemoteUrl` | `string` | `"https://spdx.org/licenses/licenses.json"` | Remote URL for official SPDX licenses JSON index. |
-| `UpdateExceptionsRemoteUrl` | `string` | `"https://spdx.org/licenses/exceptions.json"` | Remote URL for official SPDX exceptions JSON index. |
-| `AutoUpdateIntervalHours` | `double` | `24` | Background synchronization interval in hours. Set to `0` to disable remote network polling (offline embedded baseline only). |
-| `AllowLegacyAliases` | `bool` | `true` | Whether to accept legacy RPM license identifiers (e.g., `GPLv2+`, `LGPLv2+`). |
-| `MaxDegreeOfParallelism` | `int` | `8` | Maximum number of concurrent GitHub API requests when fetching spec file contents for a pull request. |
-
-#### Binary ABI Compliance Configuration (`AbiCompliance`)
-
-The ABI compliance module and its runner are configured in `appsettings.json` under the `AbiCompliance` section:
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `Enabled` | `bool` | `true` | Master toggle for the ABI compliance module. |
-| `AbipkgdiffExecutablePath` | `string` | `"abipkgdiff"` | Path or command name of the Libabigail package-level comparison binary. Must be an RPM-enabled build. |
-| `EnableFallback` | `bool` | `true` | Enables automatic fallback to pure managed C# ELF/RPM symbol diff engine when native `abipkgdiff` is unavailable or lacks RPM support. |
-| `AllowManagedFallback` | `bool` | `false` | Explicit operator permission gate allowing application startup and operation with pure managed C# fallback when native `abipkgdiff` is unavailable. |
-| `StrictEngine` | `bool` | `false` | When true, aborts startup if native `abipkgdiff` with RPM support is not found on the host system. |
-| `WorkflowNames` | `List<string>` | `["build", "package", "rpm"]` | Whitelist of workflow name or path substrings authorized to trigger ABI analysis on `workflow_run` events. Non-matching workflows skip ABI analysis without modifying ABI labels. |
-| `StableRpmBaseUrl` | `string?` | `null` | Base URL used to download the baseline/stable RPM for each built package. When unset, no baseline is available and the module reports `Impact: ABI Check Failed`. |
-| `TempExtractionDirectory` | `string?` | `null` | Working directory for artifact extraction and temporary RPM files. Defaults to the system temp directory. |
-| `TimeoutSeconds` | `int` | `300` | Timeout for a single `abipkgdiff` invocation, in seconds. |
-| `MaxTotalPayloadBytes` | `long` | `1073741824` (1 GB) | Maximum cumulative uncompressed payload size processed by the managed ELF/RPM engine before aborting for DoS safety. |
-
-#### ABI Engine Tiers and Limitations
-
-`abaci-bot` supports two ABI comparison engines:
-
-| Capability | Tier 1: Native Engine (`abipkgdiff` / Libabigail) | Tier 3: Managed C# Engine (`ManagedElfDiffRunner`) |
+| Module | Scope & Function | Documentation |
 |---|---|---|
-| **Scope** | DWARF type layout, struct member offsets, and ELF dynamic symbols | ELF dynamic symbol table (`.dynsym`), exported symbols, SONAME |
-| **Removed / Changed Symbols** | Yes | Yes |
-| **SONAME Compatibility** | Yes | Yes |
-| **DWARF Type Layout Checking** | Yes | No (symbols only; does not parse DWARF or struct layouts) |
-| **Environment Dependencies** | `abipkgdiff` / `libabigail`, `rpm` (`rpm2cpio`), `cpio`, `libicu` | Pure .NET runtime |
-| **Supported Packages** | RPM v4, RPM v6 | RPM v4, RPM v6 indexed payloads (gzip, zstd, xz, bzip2, lzma) |
-| **Policy** | Default for distribution PR gating | Fallback workaround; requires explicit operator configuration |
+| **Workflow State** | Tracks review progression, WIP titles, draft states, and merge completion. | [`docs/modules/workflow-state.md`](docs/modules/workflow-state.md) |
+| **New PR Triage** | Tags newly opened PRs with `Status: New`; removes upon first human response. | [`docs/modules/workflow-state.md`](docs/modules/workflow-state.md#shiny-new-pr-governance-shinynewprmodule) |
+| **Target Stream** | Classifies release branches into `Target: Rolling` vs `Target: LTS`. | [`docs/modules/target-classification.md`](docs/modules/target-classification.md) |
+| **Stale Lifecycle** | Monitors inactivity, marks `Status: Stale`, and closes abandoned items. | [`docs/modules/stale-lifecycle.md`](docs/modules/stale-lifecycle.md) |
+| **Change Type** | Classifies changes as `Type: Packaging`, `Documentation`, `Infrastructure`, `Frontend`. | [`docs/modules/change-type.md`](docs/modules/change-type.md) |
+| **Build System** | Detects build tools in specs (`autotools`, `cmake`, `meson`, `rust`, etc.) and tags `CI`. | [`docs/modules/build-system.md`](docs/modules/build-system.md) |
+| **AI Assistance** | Detects author disclosures regarding AI assistance in pull request descriptions. | [`docs/modules/ai-assistance.md`](docs/modules/ai-assistance.md) |
+| **SPDX Compliance** | Validates that spec `License:` headers conform to canonical SPDX identifiers. | [`docs/modules/spdx-compliance.md`](docs/modules/spdx-compliance.md) |
+| **CVE Security** | Scans PRs for CVE mentions, queries OSV/NVD, and manages severity and lifecycle. | [`docs/modules/vulnerability.md`](docs/modules/vulnerability.md) |
+| **Rebuild Impact** | Computes transitive reverse build dependencies via RPM repodata; gates heavy PRs. | [`docs/modules/rebuild-impact.md`](docs/modules/rebuild-impact.md) |
+| **ABI Compliance** | Compares compiled RPMs using Libabigail `abipkgdiff` to detect binary breaking changes. | [`docs/modules/abi-compliance.md`](docs/modules/abi-compliance.md) |
 
-> [!IMPORTANT]
-> Run `abaci-bot` in a supported environment equipped with native Libabigail and RPM tooling, such as the container image (`ghcr.io/openruyi-project/abaci-bot:latest` or `docker compose up`) or supported distributions (Fedora, openEuler, RHEL).
+---
 
-> [!NOTE]
-> The managed C# engine is a fallback workaround for environments lacking native tools. It compares ELF dynamic symbol tables and SONAMEs. It does not inspect DWARF debuginfo and cannot detect struct layout or member offset changes.
->
-> Enabling managed fallback requires explicit operator configuration via one of:
-> 1. `AbiCompliance:AllowManagedFallback: true` in `appsettings.json`
-> 2. Environment variable `ABACI_ALLOW_MANAGED_FALLBACK=1`
-> 3. File `/etc/abaci-bot/ALLOW_MANAGED_SURFACE_ABIGATE` on Linux hosts
+## Quick Start
 
-> **Deployment Note on Native Engine Permissions**: When running the bot under a dedicated non-root service account (e.g. systemd `User=abaci` or container UID `1654`), ensure the account has a writable `$HOME` directory (or configure `$XDG_CACHE_HOME`). Native `abipkgdiff` writes cache files to `~/.cache/libabigail`; if unwritable, execution fails.
-
-#### File Content Cache Configuration (`FileCache`)
-
-The in-memory file content and Git blob cache service is configured in `appsettings.json` under the `FileCache` section:
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `MaxSizeBytes` | `long` | `52428800` (50 MB) | Maximum total estimated bytes allowed in the in-memory cache before least-recently-used (LRU) eviction occurs. |
-
-### 5. Repository Labels Prerequisite
-
-Before deploying the bot, ensure that target repositories have created the required workflow and status labels (GitHub API does not automatically create missing labels when applying them):
-
-- **Workflow states**: `Workflow: In Dev`, `Workflow: Ready For Review`, `Workflow: In Review`, `Workflow: Blocked`, `Workflow: Complete`
-- **Contributor & Status**: `Community: Contribution`, `Community: Student contribution`, `Commits: Updated`, `AI Assistance`
-- **Build & CI**: `CI`, `Target: Rolling`, `Target: LTS`
-- **Build Systems**: `BuildSystem: autotools`, `BuildSystem: cmake`, `BuildSystem: golang`, `BuildSystem: golangmodule`, `BuildSystem: meson`, `BuildSystem: misc`, `BuildSystem: pyproject`, `BuildSystem: rust`, `BuildSystem: rustcrate`
-- **SPDX License Compliance**: `Compliance: License Issue`
-- **Vulnerability Severity & Lifecycle**: `Severity: 1`, `Severity: 2`, `Severity: 3`, `Severity: 4`, `Vulnerability: Detected`, `Vulnerability: Fixed-Pending`, `Vulnerability: Resolved`, `Vulnerability: Dismissed`, `Vulnerability: Pending Verification`
-- **Rebuild Impact**: `Rebuild: 0`, `Rebuild: 1-10`, `Rebuild: 11-100`, `Rebuild: 101-500`, `Rebuild: 501-1000`, `Rebuild: 1001-2500`, `Rebuild: 2501-5000`, `Rebuild: 5001+`
-- **ABI & Breaking Changes**: `Impact: ABI`, `Impact: Breaking Change`, `Impact: ABI Check Failed`
-
-> **Note**: For the complete, authoritative list of runtime label constants managed by the governance engine, refer to [`Services/GitHubLabels.cs`](Services/GitHubLabels.cs).
-
-### 6. Run
-
-#### Option A: Run directly
+### 1. Configure the Application
+Copy the documented template and populate the 6 required settings:
 
 ```bash
-dotnet run
+cp appsettings.demo.jsonc appsettings.json
 ```
 
-Or run the published binary directly:
+Required parameters:
+- `GitHubApp:AppId`: Numeric GitHub App ID.
+- `GitHubApp:InstallationId`: Target GitHub App installation ID.
+- `GitHubApp:PrivateKey`: RSA Private Key (PEM format).
+- `GitHubApp:WebhookSecret`: Webhook HMAC-SHA256 secret.
+- `GitHubApp:TeamName`: Maintainer team slug (e.g. `captains`).
+- `Kestrel:Endpoints:Http:Url`: HTTP listening address (`http://0.0.0.0:3456`).
+
+### 2. Launch with Docker Compose
+Run the official Fedora 45 production container:
 
 ```bash
-./abaci-bot
+docker compose up -d
 ```
 
-#### Option B: Run with Docker Compose (Recommended)
+### Minimal Configuration Example
+```json
+{
+  "GitHubApp": {
+    "AppId": 123456,
+    "InstallationId": 78901234,
+    "PrivateKey": "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+    "WebhookSecret": "your_webhook_secret",
+    "TeamName": "captains"
+  },
+  "Kestrel": {
+    "Endpoints": { "Http": { "Url": "http://0.0.0.0:3456" } }
+  }
+}
+```
 
-1. Create your configuration file:
-   ```bash
-   cp appsettings.demo.json appsettings.json
-   # Edit appsettings.json with your GitHub App credentials
-   ```
+---
 
-2. Start the bot:
-   ```bash
-   docker compose up -d
-   ```
+## Health Checks & Diagnostics
 
-3. View logs:
-   ```bash
-   docker compose logs -f
-   ```
-
-4. Stop the bot:
-   ```bash
-   docker compose down
-   ```
-
-#### Option C: Run with Docker directly
+Verify that the service is running and native tools are operational:
 
 ```bash
-# Pull the image
-docker pull ghcr.io/openruyi-project/abaci-bot:latest
-
-# Run with mounted config
-docker run -d \
-  --name abaci-bot \
-  -p 3456:3456 \
-  -v $(pwd)/appsettings.json:/app/appsettings.json:ro \
-  ghcr.io/openruyi-project/abaci-bot:latest
+curl -f http://localhost:3456/health
 ```
 
-### 7. Build Docker Image Locally (Optional)
+The response indicates operational health and whether the binary ABI engine is operating in native mode (`native`) or managed fallback (`managed`).
 
-If you want to build the image yourself:
+If native Libabigail or RPM extraction tools (`abipkgdiff`, `rpm2cpio`, `cpio`) are missing on startup, the application terminates immediately unless `AllowManagedFallback` is explicitly enabled. Refer to [`docs/modules/abi-compliance.md`](docs/modules/abi-compliance.md).
 
-```bash
-docker build -t abaci-bot .
-```
+---
 
-Or with docker compose:
+## Documentation Center
 
-```bash
-docker compose build
-```
+Comprehensive operational, architecture, and module references are organized in the [`docs/`](docs/README.md) directory:
 
-## Configuration via Environment Variables
+- [`docs/README.md`](docs/README.md) — Documentation index and reading paths.
+- [`docs/architecture.md`](docs/architecture.md) — Pipeline architecture, module priorities, and mutex state machine.
+- [`docs/deployment.md`](docs/deployment.md) — System requirements, Docker, systemd unit templates, reverse proxy setup, and rollback.
+- [`docs/configuration.md`](docs/configuration.md) — Configuration hierarchy, whole-line comment rules, secrets, and environment variables.
+- [`docs/labels.md`](docs/labels.md) — Exhaustive label taxonomy, mutex groups, upstream `gh` setup commands, and sandbox migration.
+- [`docs/testing.md`](docs/testing.md) — Test harness, webhook trigger matrix, local testing, and CI verification.
 
-You can also configure the bot using environment variables (useful for container orchestration):
+---
 
-```yaml
-environment:
-  - GitHubApp__AppId=123456
-  - GitHubApp__InstallationId=78901234
-  - GitHubApp__PrivateKey=-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----
-  - GitHubApp__WebhookSecret=webhook_secret
-  - GitHubApp__TeamName=captains
-```
+## License
 
-> Note: Use double underscores (`__`) to represent nested configuration keys.
-
-## Health Check
-
-The bot exposes a health check endpoint at `/health` for monitoring:
-
-```bash
-curl http://localhost:3456/health
-```
-
-## LICENSE
-
-MIT License
+This project is licensed under the MIT License. See the `LICENSE` file for details.

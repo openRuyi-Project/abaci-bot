@@ -16,9 +16,10 @@ public static class GitHubLabels
     // 2. Notifications, compliance & indicators
     public const string CommitsUpdated = "Commits: Updated";
     public const string AiAssistance = "AI Assistance";
-    public const string New = "new";
+    public const string New = "Status: New";
     public const string StatusStale = "Status: Stale";
-    public const string StatusPinned = "Status: Pinned";
+    public const string StatusPinned = "Status: stale-exempt";
+    public const string StatusAbiUnverified = "Status: ABI Unverified";
     public const string ComplianceLicenseIssue = "Compliance: License Issue";
 
     // 3. Build & CI
@@ -62,7 +63,6 @@ public static class GitHubLabels
     public const string VulnerabilityFixedPending = "Vulnerability: Fixed-Pending";
     public const string VulnerabilityResolved = "Vulnerability: Resolved";
     public const string VulnerabilityDismissed = "Vulnerability: Dismissed";
-    public const string VulnerabilityPendingVerification = "Vulnerability: Pending Verification";
 
     // 10. Forward-looking: Downstream rebuild package count tier
     public const string Rebuild0 = "Rebuild: 0";
@@ -77,5 +77,4 @@ public static class GitHubLabels
     // 11. Forward-looking: ABI and Breaking Change impact
     public const string ImpactAbi = "Impact: ABI";
     public const string ImpactBreakingChange = "Impact: Breaking Change";
-    public const string ImpactAbiCheckFailed = "Impact: ABI Check Failed";
 }
