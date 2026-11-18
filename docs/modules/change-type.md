@@ -17,21 +17,37 @@ Helps maintainers quickly distinguish packaging updates from documentation impro
 
 ```mermaid
 flowchart TD
-    Files["Analyze Changed Files"] --> RepoCheck{"Is repository in HomepageRepositories?"}
-    RepoCheck -- Yes --> Fe{"Contains frontend extensions (.vue, .ts, .css)?"}
-    Fe -- Yes --> TagFe["Type: Frontend"]
-    Fe -- No --> DocCheck
-    RepoCheck -- No --> Pkg{"Contains .spec, .patch, or SPECS/ files?"}
+    Files["Changed files"] --> Pick{"First applicable strategy<br/>(priority, then registration order)"}
+    Pick -- "repo in PackageRepositories" --> Pkg{"Contains .spec, .patch, SPECS/ or SOURCES/?"}
     Pkg -- Yes --> TagPkg["Type: Packaging"]
-    Pkg -- No --> DocCheck{"Are ALL changed files documentation?"}
-    DocCheck -- Yes --> TagDoc["Type: Documentation"]
-    DocCheck -- No --> Infra{"Touches .github/ workflows without specs?"}
-    Infra -- Yes --> TagInfra["Type: Infrastructure"]
+    Pkg -- No --> PkgDocs{"Are ALL changed files documentation?"}
+    PkgDocs -- Yes --> TagDoc["Type: Documentation"]
+    PkgDocs -- No --> PkgCi{"Touches .github/ workflows?"}
+    PkgCi -- Yes --> TagInfra["Type: Infrastructure"]
+    Pick -- "repo in HomepageRepositories" --> Fe{"Contains frontend extensions?"}
+    Fe -- Yes --> TagFe["Type: Frontend"]
+    Fe -- No --> HomeDocs{"Are ALL changed files documentation?"}
+    HomeDocs -- Yes --> TagDoc2["Type: Documentation"]
+    Pick -- "any other repository" --> DefDocs{"Are ALL changed files documentation?"}
+    DefDocs -- Yes --> TagDoc3["Type: Documentation"]
+    DefDocs -- No --> DefCi{"Touches .github/ workflows?"}
+    DefCi -- Yes --> TagInfra2["Type: Infrastructure"]
+    TagPkg --> Reconcile["Reconcile the four managed Type labels"]
+    TagDoc --> Reconcile
+    TagDoc2 --> Reconcile
+    TagDoc3 --> Reconcile
+    TagFe --> Reconcile
+    TagInfra --> Reconcile
+    TagInfra2 --> Reconcile
 ```
+
+Exactly one strategy runs: the first in priority order whose `AppliesTo` accepts the repository, with `DefaultChangeTypeStrategy` (priority 1000) as the catch-all. `OpenRuyiPackageRepoStrategy` and `HomepageRepoStrategy` share priority 10, so registration order decides if a repository appears in both lists. A repository that is neither a package repository nor a homepage repository only ever receives `Type: Documentation` or `Type: Infrastructure`: a `.spec` change there does not produce `Type: Packaging`.
+
+The selected strategy is a pure classifier. It returns the labels implied by the file list, and the module reconciles the four managed labels against that result, which is what retires a stale classification and what empties the set on a zero-file diff.
 
 ---
 
-## 3. Managed Labels and Mutex Group
+## 3. Managed Labels (Single-Choice, Module-Owned)
 
 ### Change Type Labels
 - `Type: Packaging`: Modifies RPM spec files, patches, or package source directories.
