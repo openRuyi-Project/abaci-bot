@@ -63,6 +63,7 @@ Configured under the `ChangeTypeClassification` JSON section:
 - **Repository Isolation**: `Type: Frontend` is never applied to the main package repository (`openRuyi`).
 - **Zero-File Diff**: When the branch tree becomes identical to the base, no change type applies and every managed `Type:` label is removed. An empty file list is authoritative because the GitHub file listing raises on API failure instead of returning empty.
 - **Reclassification**: The module reconciles the full managed set, so a diff that moves from packaging to documentation removes `Type: Packaging` in the same run instead of leaving both labels. `LabelMutexEngine` does not arbitrate this group, so the module is responsible for the exclusivity.
+- **Managed Set Only**: a strategy result outside the four managed labels (including `Type: Build Failure`, which another component owns) is ignored. A managed `Type:` label applied by hand is not sticky: the next `opened`, `synchronize`, `reopened`, `ready_for_review`, or `converted_to_draft` event reconciles it away when the current diff does not imply it.
 
 ---
 
