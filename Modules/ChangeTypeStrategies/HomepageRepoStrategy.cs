@@ -1,4 +1,3 @@
-using abaci_bot.Contexts;
 using abaci_bot.Options;
 using abaci_bot.Services;
 using Microsoft.Extensions.Options;
@@ -26,11 +25,12 @@ public class HomepageRepoStrategy : IChangeTypeStrategy
         return _options.HomepageRepositories.Any(r => string.Equals(r, repositoryName, StringComparison.OrdinalIgnoreCase));
     }
 
-    public Task EvaluateChangeTypesAsync(PullRequestContext context, IReadOnlyList<PullRequestFile> files)
+    public Task<IReadOnlyCollection<string>> ClassifyAsync(IReadOnlyList<PullRequestFile> files)
     {
         if (files.Count == 0)
-            return Task.CompletedTask;
+            return Task.FromResult<IReadOnlyCollection<string>>(Array.Empty<string>());
 
+        var labels = new List<string>();
         bool hasFrontendChanges = false;
         bool allDocs = true;
 
@@ -52,15 +52,15 @@ public class HomepageRepoStrategy : IChangeTypeStrategy
 
         if (hasFrontendChanges)
         {
-            context.LabelsToAdd.Add(GitHubLabels.TypeFrontend);
+            labels.Add(GitHubLabels.TypeFrontend);
         }
 
         // Pure documentation changes (exclusively docs, mutually exclusive with frontend changes)
         if (allDocs && !hasFrontendChanges)
         {
-            context.LabelsToAdd.Add(GitHubLabels.TypeDocumentation);
+            labels.Add(GitHubLabels.TypeDocumentation);
         }
 
-        return Task.CompletedTask;
+        return Task.FromResult<IReadOnlyCollection<string>>(labels);
     }
 }

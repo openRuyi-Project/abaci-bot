@@ -1,4 +1,3 @@
-using abaci_bot.Contexts;
 using Octokit;
 
 namespace abaci_bot.Modules.ChangeTypeStrategies;
@@ -6,6 +5,8 @@ namespace abaci_bot.Modules.ChangeTypeStrategies;
 /// <summary>
 /// Strategy interface for repository-specific change type file-tree classification.
 /// Adheres to the Open/Closed Principle: new repository rules can be introduced without modifying the host module.
+/// A strategy is a pure classifier: it returns the labels implied by the file list and never mutates the
+/// context, which leaves reconciliation of the managed label set to the hosting module.
 /// </summary>
 public interface IChangeTypeStrategy
 {
@@ -21,7 +22,8 @@ public interface IChangeTypeStrategy
     bool AppliesTo(string repositoryName);
 
     /// <summary>
-    /// Evaluates modified file paths and declares appropriate Type:* labels on the context.
+    /// Classifies the changed files and returns the <c>Type:</c> labels they imply.
+    /// An empty file list yields an empty result.
     /// </summary>
-    Task EvaluateChangeTypesAsync(PullRequestContext context, IReadOnlyList<PullRequestFile> files);
+    Task<IReadOnlyCollection<string>> ClassifyAsync(IReadOnlyList<PullRequestFile> files);
 }

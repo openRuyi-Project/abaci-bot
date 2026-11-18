@@ -183,14 +183,13 @@ public class ChangeTypeClassificationModuleTests
     }
 
     [Fact]
-    public async Task HomepageRepo_WhenEmptyFiles_DoesNothing()
+    public async Task HomepageRepo_WhenEmptyFiles_ClassifiesNothing()
     {
         var strategy = new HomepageRepoStrategy();
-        var context = CreateContextWithFiles("homepage", Array.Empty<Octokit.PullRequestFile>());
 
-        await strategy.EvaluateChangeTypesAsync(context, Array.Empty<Octokit.PullRequestFile>());
+        var labels = await strategy.ClassifyAsync(Array.Empty<Octokit.PullRequestFile>());
 
-        Assert.Empty(context.LabelsToAdd);
+        Assert.Empty(labels);
     }
 
     [Fact]
@@ -256,13 +255,8 @@ public class ChangeTypeClassificationModuleTests
     {
         var customStrategy = Substitute.For<IChangeTypeStrategy>();
         customStrategy.AppliesTo("custom-repo").Returns(true);
-        customStrategy.EvaluateChangeTypesAsync(Arg.Any<PullRequestContext>(), Arg.Any<IReadOnlyList<PullRequestFile>>())
-            .Returns(ci =>
-            {
-                var ctx = ci.Arg<PullRequestContext>();
-                ctx.LabelsToAdd.Add(GitHubLabels.TypePackaging);
-                return Task.CompletedTask;
-            });
+        customStrategy.ClassifyAsync(Arg.Any<IReadOnlyList<PullRequestFile>>())
+            .Returns(new[] { GitHubLabels.TypePackaging });
 
         var module = new ChangeTypeClassificationModule(new[] { customStrategy });
         var files = new[] { CreateFile("custom.spec") };
@@ -271,7 +265,7 @@ public class ChangeTypeClassificationModuleTests
         await module.ProcessAsync(context, CancellationToken.None);
 
         Assert.Contains(GitHubLabels.TypePackaging, context.LabelsToAdd);
-        await customStrategy.Received(1).EvaluateChangeTypesAsync(context, Arg.Any<IReadOnlyList<PullRequestFile>>());
+        await customStrategy.Received(1).ClassifyAsync(Arg.Any<IReadOnlyList<PullRequestFile>>());
     }
 
     [Fact]
@@ -312,22 +306,14 @@ public class ChangeTypeClassificationModuleTests
         var lowPriorityStrategy = Substitute.For<IChangeTypeStrategy>();
         lowPriorityStrategy.Priority.Returns(100);
         lowPriorityStrategy.AppliesTo("test-repo").Returns(true);
-        lowPriorityStrategy.EvaluateChangeTypesAsync(Arg.Any<PullRequestContext>(), Arg.Any<IReadOnlyList<PullRequestFile>>())
-            .Returns(ci =>
-            {
-                ci.Arg<PullRequestContext>().LabelsToAdd.Add("Type: LowPriority");
-                return Task.CompletedTask;
-            });
+        lowPriorityStrategy.ClassifyAsync(Arg.Any<IReadOnlyList<PullRequestFile>>())
+            .Returns(new[] { GitHubLabels.TypeFrontend });
 
         var highPriorityStrategy = Substitute.For<IChangeTypeStrategy>();
         highPriorityStrategy.Priority.Returns(10);
         highPriorityStrategy.AppliesTo("test-repo").Returns(true);
-        highPriorityStrategy.EvaluateChangeTypesAsync(Arg.Any<PullRequestContext>(), Arg.Any<IReadOnlyList<PullRequestFile>>())
-            .Returns(ci =>
-            {
-                ci.Arg<PullRequestContext>().LabelsToAdd.Add("Type: HighPriority");
-                return Task.CompletedTask;
-            });
+        highPriorityStrategy.ClassifyAsync(Arg.Any<IReadOnlyList<PullRequestFile>>())
+            .Returns(new[] { GitHubLabels.TypePackaging });
 
         // Pass strategies out of order (low priority first)
         var module = new ChangeTypeClassificationModule(new[] { lowPriorityStrategy, highPriorityStrategy });
@@ -337,7 +323,23 @@ public class ChangeTypeClassificationModuleTests
         await module.ProcessAsync(context, CancellationToken.None);
 
         // First applicable strategy in sorted order is highPriorityStrategy
-        Assert.Contains("Type: HighPriority", context.LabelsToAdd);
-        Assert.DoesNotContain("Type: LowPriority", context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.TypePackaging, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.TypeFrontend, context.LabelsToAdd);
+    }
+
+    [Fact]
+    public async Task PackageRepo_WhenDiffMovesFromPackagingToDocs_RetiresPackaging()
+    {
+        var module = new ChangeTypeClassificationModule();
+        var files = new[] { CreateFile("docs/guide.md") };
+        var context = CreateContextWithFiles(
+            "openRuyi",
+            files,
+            new[] { GitHubLabels.TypePackaging });
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.TypeDocumentation, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.TypePackaging, context.LabelsToRemove);
     }
 }

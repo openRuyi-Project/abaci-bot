@@ -1,4 +1,3 @@
-using abaci_bot.Contexts;
 using abaci_bot.Options;
 using abaci_bot.Services;
 using Microsoft.Extensions.Options;
@@ -22,11 +21,12 @@ public class DefaultChangeTypeStrategy : IChangeTypeStrategy
 
     public bool AppliesTo(string repositoryName) => true; // Always matches as fallback
 
-    public Task EvaluateChangeTypesAsync(PullRequestContext context, IReadOnlyList<PullRequestFile> files)
+    public Task<IReadOnlyCollection<string>> ClassifyAsync(IReadOnlyList<PullRequestFile> files)
     {
         if (files.Count == 0)
-            return Task.CompletedTask;
+            return Task.FromResult<IReadOnlyCollection<string>>(Array.Empty<string>());
 
+        var labels = new List<string>();
         bool hasCiChanges = false;
         bool allDocs = true;
 
@@ -47,13 +47,13 @@ public class DefaultChangeTypeStrategy : IChangeTypeStrategy
 
         if (allDocs)
         {
-            context.LabelsToAdd.Add(GitHubLabels.TypeDocumentation);
+            labels.Add(GitHubLabels.TypeDocumentation);
         }
         else if (hasCiChanges)
         {
-            context.LabelsToAdd.Add(GitHubLabels.TypeInfrastructure);
+            labels.Add(GitHubLabels.TypeInfrastructure);
         }
 
-        return Task.CompletedTask;
+        return Task.FromResult<IReadOnlyCollection<string>>(labels);
     }
 }
