@@ -69,10 +69,8 @@ public class ChangeTypeClassificationModule : IPullRequestModule
     public async Task ProcessAsync(PullRequestContext context, CancellationToken cancellationToken)
     {
         var files = await context.ChangedFiles.Value;
-        if (files == null || files.Count == 0)
+        if (files == null)
         {
-            // A pull request reverted to a zero-file diff has no change type left to report;
-            // retire the classification from the earlier revision instead of leaving it stale.
             context.ReconcileLabels(ManagedLabels, _ => false);
             return;
         }
@@ -81,9 +79,13 @@ public class ChangeTypeClassificationModule : IPullRequestModule
         var strategy = _strategies.FirstOrDefault(s => s.AppliesTo(context.Repo))
                        ?? _strategies.OfType<DefaultChangeTypeStrategy>().FirstOrDefault();
 
-        if (strategy != null)
-        {
-            await strategy.EvaluateChangeTypesAsync(context, files);
-        }
+        // The module owns the managed label set: a strategy only reports the labels the current
+        // diff implies, so a classification that moved from packaging to documentation also
+        // retires the stale Type: Packaging. An empty diff therefore retires everything.
+        var desired = strategy == null
+            ? Array.Empty<string>()
+            : await strategy.ClassifyAsync(files);
+        var desiredSet = new HashSet<string>(desired, StringComparer.OrdinalIgnoreCase);
+        context.ReconcileLabels(ManagedLabels, desiredSet.Contains);
     }
 }

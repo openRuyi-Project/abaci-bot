@@ -1,4 +1,3 @@
-using abaci_bot.Contexts;
 using abaci_bot.Options;
 using abaci_bot.Services;
 using Microsoft.Extensions.Options;
@@ -26,11 +25,12 @@ public class OpenRuyiPackageRepoStrategy : IChangeTypeStrategy
         return _options.PackageRepositories.Any(r => string.Equals(r, repositoryName, StringComparison.OrdinalIgnoreCase));
     }
 
-    public Task EvaluateChangeTypesAsync(PullRequestContext context, IReadOnlyList<PullRequestFile> files)
+    public Task<IReadOnlyCollection<string>> ClassifyAsync(IReadOnlyList<PullRequestFile> files)
     {
         if (files.Count == 0)
-            return Task.CompletedTask;
+            return Task.FromResult<IReadOnlyCollection<string>>(Array.Empty<string>());
 
+        var labels = new List<string>();
         bool hasPackagingChanges = false;
         bool hasCiChanges = false;
         bool allDocs = true;
@@ -61,19 +61,19 @@ public class OpenRuyiPackageRepoStrategy : IChangeTypeStrategy
         // 1. Packaging takes priority
         if (hasPackagingChanges)
         {
-            context.LabelsToAdd.Add(GitHubLabels.TypePackaging);
+            labels.Add(GitHubLabels.TypePackaging);
         }
         // 2. Pure documentation changes (exclusively docs, mutually exclusive with Packaging and Infrastructure)
         else if (allDocs)
         {
-            context.LabelsToAdd.Add(GitHubLabels.TypeDocumentation);
+            labels.Add(GitHubLabels.TypeDocumentation);
         }
         // 3. Infrastructure changes (.github/ without spec or pure documentation changes)
         else if (hasCiChanges)
         {
-            context.LabelsToAdd.Add(GitHubLabels.TypeInfrastructure);
+            labels.Add(GitHubLabels.TypeInfrastructure);
         }
 
-        return Task.CompletedTask;
+        return Task.FromResult<IReadOnlyCollection<string>>(labels);
     }
 }

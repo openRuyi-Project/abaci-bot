@@ -62,6 +62,7 @@ Configured under the `ChangeTypeClassification` JSON section:
 - **Mixed Diffs**: If a PR contains both spec files and documentation files, `Type: Packaging` takes precedence. `Type: Documentation` is applied only when **all** changed files are documentation.
 - **Repository Isolation**: `Type: Frontend` is never applied to the main package repository (`openRuyi`).
 - **Zero-File Diff**: When the branch tree becomes identical to the base, no change type applies and every managed `Type:` label is removed. An empty file list is authoritative because the GitHub file listing raises on API failure instead of returning empty.
+- **Reclassification**: The module reconciles the full managed set, so a diff that moves from packaging to documentation removes `Type: Packaging` in the same run instead of leaving both labels. `LabelMutexEngine` does not arbitrate this group, so the module is responsible for the exclusivity.
 
 ---
 
