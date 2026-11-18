@@ -248,6 +248,24 @@ public class PullRequestContext
     public ISet<string> LabelsToRemove { get; } = new OrderedSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// The label set this run intends after the modules that already ran: existing labels minus
+    /// those staged for removal plus those staged for addition. Lets a later module read a state
+    /// that an earlier, lower-priority module has already decided, instead of the stale pre-run
+    /// snapshot. Mutex arbitration happens after every module, so an addition here is still
+    /// provisional and must be treated as "likely" rather than "confirmed".
+    /// </summary>
+    public IReadOnlyCollection<string> EffectiveLabels
+    {
+        get
+        {
+            var effective = new HashSet<string>(ExistingLabels, StringComparer.OrdinalIgnoreCase);
+            effective.ExceptWith(LabelsToRemove);
+            effective.UnionWith(LabelsToAdd);
+            return effective;
+        }
+    }
+
+    /// <summary>
     /// Pending comments to be posted to the pull request.
     /// </summary>
     public List<string> PendingComments { get; } = new();

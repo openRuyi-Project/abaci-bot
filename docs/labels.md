@@ -51,7 +51,7 @@ The table below lists all labels defined in [`Services/GitHubLabels.cs`](../Serv
 | `Severity: 2` | Official Taxonomy | High CVE severity (CVSS 7.0–8.9). |
 | `Severity: 3` | Official Taxonomy | Medium CVE severity (CVSS 4.0–6.9). |
 | `Severity: 4` | Official Taxonomy | Low CVE severity (CVSS < 4.0, including 0.0). |
-| `Vulnerability: Detected` | Official Taxonomy | CVE mentioned in PR; also applied on OSV/NVD query failures while the pull request is open (fail-safe posture). |
+| `Vulnerability: Detected` | Official Taxonomy | CVE mentioned in an open or closed-without-merge PR; also applied on OSV/NVD query failures (fail-safe posture). |
 | `Vulnerability: Fixed-Pending` | Official Taxonomy | CVE fix undergoing maintainer review (`Ready For Review` or `In Review`). |
 | `Vulnerability: Resolved` | Official Taxonomy | PR addressing CVE merged into repository. Outranks query failures; only `Vulnerability: Dismissed` takes precedence. |
 | `Vulnerability: Dismissed` | Official Taxonomy | CVE tracking dismissed by repository maintainers. |
