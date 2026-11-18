@@ -9,7 +9,7 @@ Classifies pull requests into functional categories based on changed file extens
 Helps maintainers quickly distinguish packaging updates from documentation improvements, infrastructure edits, or frontend changes.
 
 ### Trigger Events
-- `pull_request` (`opened`, `synchronize`, `edited`)
+- `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_review`, `converted_to_draft`)
 
 ---
 

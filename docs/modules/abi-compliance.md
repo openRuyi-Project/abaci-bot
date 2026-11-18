@@ -19,7 +19,7 @@ The ABI subsystem operates in two distinct phases:
 
 ### Phase A: Startup Deployment Gate (`AbiEngineProbe`)
 Before serving webhooks, `AbiEngineProbe` runs as a hosted startup service:
-- Probes for `abipkgdiff`, `rpm2cpio`, and `cpio` in `$PATH` and tests RPM v4 and v6 extraction.
+- Runs `abipkgdiff --version` and a dry-run against embedded v4/v6 fixture RPMs. RPM support and v6 capability are inferred from exit codes and stderr; `rpm2cpio` and `cpio` are not probed directly.
 - **Native Available**: Starts daemon in Tier 1 (Native Libabigail).
 - **Native Missing**:
   - If `AllowManagedFallback == true`: logs warning and starts daemon with Tier 3 managed fallback workaround.
@@ -27,7 +27,7 @@ Before serving webhooks, `AbiEngineProbe` runs as a hosted startup service:
 
 ```mermaid
 flowchart TD
-    Start["Daemon Startup"] --> Probe{"Native Tools Available?<br>(abipkgdiff, rpm2cpio, cpio)"}
+    Start["Daemon Startup"] --> Probe{"abipkgdiff with RPM support?"}
     Probe -- Yes --> Native["Start Daemon in Tier 1 (Native Libabigail)"]
     Probe -- No --> FallbackCheck{"AllowManagedFallback == true?"}
     FallbackCheck -- Yes --> Managed["Start Daemon in Tier 3 (Managed Workaround)"]

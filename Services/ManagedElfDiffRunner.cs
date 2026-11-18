@@ -21,7 +21,7 @@ namespace abaci_bot.Services;
 /// </para>
 /// <para>
 /// For full binary compatibility analysis with DWARF type verification, run in a supported environment with Tier 1 Native Libabigail (<c>abipkgdiff</c>).
-/// See <see href="https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations"/>.
+/// See <see href="https://github.com/openRuyi-Project/abaci-bot/blob/master/docs/modules/abi-compliance.md#5-abi-engine-tiers-and-operational-guidelines"/>.
 /// </para>
 /// </remarks>
 public class ManagedElfDiffRunner : IAbiDiffRunner

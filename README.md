@@ -4,7 +4,7 @@
 
 ---
 
-## Start from Zero
+## Getting Started
 
 1. **Create and install the GitHub App.** Configure the webhook URL
    (`https://<your-host>/api/webhook`), the webhook secret, the repository and

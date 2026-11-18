@@ -70,7 +70,7 @@ Before launching `abaci-bot`, the following settings **must** be populated:
 | `GitHubApp:InstallationId` | `int` | GitHub App Installation ID on target organization/repo. | Environment variable `GitHubApp__InstallationId` |
 | `GitHubApp:PrivateKey` | `string` | RSA Private Key in PEM format. | Secret mount / environment variable `GitHubApp__PrivateKey` |
 | `GitHubApp:WebhookSecret` | `string` | Webhook verification secret. | Environment variable `GitHubApp__WebhookSecret` |
-| `GitHubApp:TeamName` | `string` | GitHub team slug for triage maintainers (default: `captains`). | `appsettings.json` or environment variable |
+| `GitHubApp:TeamName` | `string` | Team slug used for review transitions (required; no code default; example: `captains`). | `appsettings.json` or environment variable |
 
 If any of these required values are missing or zero, the service terminates immediately on startup.
 

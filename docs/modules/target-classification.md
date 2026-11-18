@@ -9,7 +9,7 @@ Classifies pull requests into Long-Term Support (`Target: LTS`) or Rolling relea
 Packages and specifications target different release tracks. This module ensures clear visibility into whether a change affects rolling distributions or stable LTS releases.
 
 ### Trigger Events
-- `pull_request` (`opened`, `edited`)
+- `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_review`, `converted_to_draft`, `edited`)
 
 ---
 

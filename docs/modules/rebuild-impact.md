@@ -63,7 +63,7 @@ Configured under the `RebuildImpact` JSON section:
 
 ## 5. Failure Handling and Fallback Semantics
 
-- **Missing Repodata**: If the repository primary metadata is not configured or unavailable, the module safely falls back to a clean status (`Rebuild: 0`) and logs an informative notice.
+- **Missing Repodata**: If the repository primary metadata is not configured or unavailable, the module logs a warning and leaves all `Rebuild:` labels unchanged. It does not assume `Rebuild: 0`.
 - **Cycle Detection**: The transitive traversal algorithm maintains visited sets to prevent infinite loops in cyclic dependencies.
 
 ---
@@ -86,4 +86,4 @@ Configured under the `RebuildImpact` JSON section:
 ## 7. Relevant Test Suites
 
 - `tests/abaci-bot.Tests/RebuildImpactModuleTests.cs`
-- `tests/abaci-bot.Tests/RpmDependencyServiceTests.cs`
+- `tests/abaci-bot.Tests/RebuildMetadataRefreshServiceTests.cs`

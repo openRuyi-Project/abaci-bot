@@ -57,7 +57,7 @@ public class AbiEngineProbe : IHostedService
         if (_options.StrictEngine || !isExplicitlyAllowed)
         {
             ActiveEngineTier = "unavailable";
-            var fatalMessage = $"ABI compliance engine: native tool '{_options.AbipkgdiffExecutablePath}' is unavailable or lacks RPM support ({diagnostic}). Startup aborted. See https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations";
+            var fatalMessage = $"ABI compliance engine: native tool '{_options.AbipkgdiffExecutablePath}' is unavailable or lacks RPM support ({diagnostic}). Startup aborted. See https://github.com/openRuyi-Project/abaci-bot/blob/master/docs/modules/abi-compliance.md#5-abi-engine-tiers-and-operational-guidelines";
             _logger.LogCritical("{FatalMessage}", fatalMessage);
             throw new InvalidOperationException(fatalMessage);
         }
@@ -65,13 +65,13 @@ public class AbiEngineProbe : IHostedService
         if (_options.EnableFallback)
         {
             ActiveEngineTier = "managed";
-            _logger.LogWarning("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}). Active engine: Tier 3 Pure Managed C# Fallback (symbol-level only, no DWARF type layout validation; workaround enabled by operator override). See https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations",
+            _logger.LogWarning("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}). Active engine: Tier 3 Pure Managed C# Fallback (symbol-level only, no DWARF type layout validation; workaround enabled by operator override). See https://github.com/openRuyi-Project/abaci-bot/blob/master/docs/modules/abi-compliance.md#5-abi-engine-tiers-and-operational-guidelines",
                 diagnostic);
         }
         else
         {
             ActiveEngineTier = "unavailable";
-            _logger.LogError("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}) and fallback is disabled. See https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations",
+            _logger.LogError("ABI compliance engine: Tier 1 Native unavailable ({Diagnostic}) and fallback is disabled. See https://github.com/openRuyi-Project/abaci-bot/blob/master/docs/modules/abi-compliance.md#5-abi-engine-tiers-and-operational-guidelines",
                 diagnostic);
         }
     }

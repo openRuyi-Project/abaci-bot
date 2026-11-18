@@ -26,7 +26,7 @@ public class AbiComplianceOptions
     /// When true, permits the application to start and operate using pure managed fallback
     /// when native abipkgdiff is missing or lacks RPM support.
     /// Managed fallback is a workaround providing symbol-level comparison without DWARF type layout checking.
-    /// See https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations
+    /// See https://github.com/openRuyi-Project/abaci-bot/blob/master/docs/modules/abi-compliance.md#5-abi-engine-tiers-and-operational-guidelines
     /// </summary>
     public bool AllowManagedFallback { get; set; }
 

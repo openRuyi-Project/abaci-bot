@@ -9,7 +9,7 @@ Detects author disclosures regarding AI assistance in pull request descriptions.
 Supports community transparency policies regarding machine-generated or AI-assisted contributions.
 
 ### Trigger Events
-- `pull_request` (`opened`, `edited`)
+- `pull_request` (`opened`, `synchronize`, `reopened`, `converted_to_draft`, `ready_for_review`, `edited`)
 
 ---
 
@@ -41,7 +41,7 @@ This module operates without configuration keys.
 
 ## 5. Failure Handling and Fallback Semantics
 
-- **Empty PR Body**: If the description is empty or null, the module takes no action.
+- **Empty PR Body**: An empty or null body is treated as not AI-assisted; an existing `AI Assistance` label is removed.
 - **Dynamic Uncheck**: Subsequent edits that remove the checkbox safely remove the label.
 
 ---
@@ -54,4 +54,5 @@ No configuration entries required.
 
 ## 7. Relevant Test Suites
 
-- `tests/abaci-bot.Tests/AiAssistanceModuleTests.cs`
+- `tests/abaci-bot.Tests/PipelineAndModulesTests.cs`
+- `tests/abaci-bot.Tests/GitHubWebhookProcessorTests.cs`
