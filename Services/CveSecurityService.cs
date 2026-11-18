@@ -47,6 +47,8 @@ public class CveSecurityService : ICveSecurityService
         }
 
         // 1. Try OSV.dev first
+        var osvConfigured = !string.IsNullOrWhiteSpace(_options.OsvApiBaseUrl);
+        var osvAttempted = osvConfigured;
         bool osvFailed = false;
         CveReport? report = null;
         try
@@ -63,9 +65,12 @@ public class CveSecurityService : ICveSecurityService
         }
 
         // 2. If OSV didn't provide a score, try NVD
+        var nvdConfigured = !string.IsNullOrWhiteSpace(_options.NvdApiBaseUrl);
+        var nvdAttempted = false;
         bool nvdFailed = false;
         if (report == null || report.CvssScore == null)
         {
+            nvdAttempted = nvdConfigured;
             try
             {
                 var nvdReport = await TryQueryNvdAsync(normalizedCve, ct);
@@ -84,10 +89,23 @@ public class CveSecurityService : ICveSecurityService
             }
         }
 
-        // If upstream failed with network/timeout/rate-limiting errors, report transient failure and do not cache long-term
-        if ((report == null || report.CvssScore == null) && (osvFailed || nvdFailed))
+        if (report == null || report.CvssScore == null)
         {
-            return new CveReport(normalizedCve, null, null, CveReport.SourceQueryFailed, "Query timed out or failed to reach vulnerability databases.");
+            var attemptedSources = (osvAttempted ? 1 : 0) + (nvdAttempted ? 1 : 0);
+            var failedSources = (osvFailed ? 1 : 0) + (nvdFailed ? 1 : 0);
+
+            // Every source that was actually queried failed: this is a transient lookup failure.
+            if (attemptedSources > 0 && failedSources == attemptedSources)
+            {
+                return new CveReport(normalizedCve, null, null, CveReport.SourceQueryFailed, "Query timed out or failed to reach vulnerability databases.");
+            }
+
+            // One source failed while another answered (possibly with "no record"): the result is
+            // incomplete, but it is not a total lookup failure and must not be cached as resolved.
+            if (failedSources > 0)
+            {
+                return new CveReport(normalizedCve, null, null, CveReport.SourcePartiallyFailed, "One vulnerability source was unavailable; details may be incomplete.");
+            }
         }
 
         report ??= new CveReport(normalizedCve, null, null, CveReport.SourceUnknown, "Vulnerability details unavailable.");
