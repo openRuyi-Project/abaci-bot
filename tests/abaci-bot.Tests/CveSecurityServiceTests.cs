@@ -197,6 +197,38 @@ public class CveSecurityServiceTests
     }
 
     [Fact]
+    public async Task QueryCveAsync_OsvServerErrorAndNvdNotFound_ReturnsPartiallyFailed()
+    {
+        var service = CreateService(request =>
+            request.RequestUri!.Host.Contains("osv", StringComparison.OrdinalIgnoreCase)
+                ? new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                : new HttpResponseMessage(HttpStatusCode.NotFound));
+
+        var report = await service.QueryCveAsync("CVE-2099-0002");
+
+        Assert.Equal("CVE-2099-0002", report.CveId);
+        Assert.Null(report.CvssScore);
+        Assert.Equal(CveReport.SourcePartiallyFailed, report.Source);
+        Assert.Null(report.SeverityLabel);
+    }
+
+    [Fact]
+    public async Task QueryCveAsync_OsvNotFoundAndNvdServerError_ReturnsPartiallyFailed()
+    {
+        var service = CreateService(request =>
+            request.RequestUri!.Host.Contains("osv", StringComparison.OrdinalIgnoreCase)
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : new HttpResponseMessage(HttpStatusCode.InternalServerError));
+
+        var report = await service.QueryCveAsync("CVE-2099-0003");
+
+        Assert.Equal("CVE-2099-0003", report.CveId);
+        Assert.Null(report.CvssScore);
+        Assert.Equal(CveReport.SourcePartiallyFailed, report.Source);
+        Assert.Null(report.SeverityLabel);
+    }
+
+    [Fact]
     public async Task QueryCveAsync_BothSourcesNotFound_ReturnsUnknown()
     {
         var service = CreateService(req => new HttpResponseMessage(HttpStatusCode.NotFound));

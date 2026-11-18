@@ -11,6 +11,7 @@ public record CveReport(
     string? Summary = null)
 {
     public const string SourceQueryFailed = "QueryFailed";
+    public const string SourcePartiallyFailed = "PartiallyFailed";
     public const string SourceUnknown = "Unknown";
 }
 

@@ -71,6 +71,14 @@ public class GovernanceCommentFormatter : IGovernanceCommentFormatter
                 {
                     sb.AppendLine(CultureInfo.InvariantCulture, $"> - `{cveId}`: CVSS **{cvss.Value:F1}** ({severity}, 来源: {source})");
                 }
+                else if (string.Equals(source, CveReport.SourcePartiallyFailed, StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"> - `{cveId}`: 一个漏洞数据源不可用，结果可能不完整（请安全团队手动核验）");
+                }
+                else if (string.Equals(source, CveReport.SourceQueryFailed, StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"> - `{cveId}`: 漏洞数据源查询失败（请安全团队手动核验）");
+                }
                 else
                 {
                     sb.AppendLine(CultureInfo.InvariantCulture, $"> - `{cveId}`: 未查询到公网 CVSS 评分（请安全团队手动核验）");
@@ -86,6 +94,14 @@ public class GovernanceCommentFormatter : IGovernanceCommentFormatter
                 if (cvss.HasValue)
                 {
                     sb.AppendLine(CultureInfo.InvariantCulture, $"> - `{cveId}`: CVSS **{cvss.Value:F1}** ({severity}, source: {source})");
+                }
+                else if (string.Equals(source, CveReport.SourcePartiallyFailed, StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"> - `{cveId}`: One vulnerability source was unavailable; details may be incomplete (manual security review required)");
+                }
+                else if (string.Equals(source, CveReport.SourceQueryFailed, StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"> - `{cveId}`: Vulnerability sources could not be queried (manual security review required)");
                 }
                 else
                 {
