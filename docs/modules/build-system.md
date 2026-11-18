@@ -9,7 +9,7 @@ Inspects changed RPM `.spec` files to detect and tag the declared build system (
 RPM spec files declare build tools and compilation workflows. This module identifies the underlying build toolchain to assist maintainers and route review assignments.
 
 ### Trigger Events
-- `pull_request` (`opened`, `synchronize`)
+- `pull_request` (`opened`, `synchronize`, `reopened`, `converted_to_draft`, `ready_for_review`)
 
 ---
 
@@ -65,4 +65,5 @@ No configuration entries required. Module runs by default in the pipeline.
 
 ## 7. Relevant Test Suites
 
-- `tests/abaci-bot.Tests/BuildSystemAnalysisModuleTests.cs`
+- `tests/abaci-bot.Tests/PipelineAndModulesTests.cs`
+- `tests/abaci-bot.Tests/GitHubWebhookProcessorTests.cs`

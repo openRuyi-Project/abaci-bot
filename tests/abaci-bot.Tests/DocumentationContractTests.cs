@@ -65,16 +65,90 @@ public class DocumentationContractTests
                     continue;
                 }
 
-                var pathPart = target.Split('#')[0];
+                var parts = target.Split('#', 2);
+                var pathPart = parts[0];
                 var resolved = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(document)!, pathPart));
                 if (!File.Exists(resolved) && !Directory.Exists(resolved))
                 {
                     failures.Add($"{Path.GetRelativePath(RepoRoot, document)} -> {target}");
+                    continue;
+                }
+
+                if (parts.Length == 2 && File.Exists(resolved) && resolved.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!ReadAnchors(resolved).Contains(parts[1], StringComparer.OrdinalIgnoreCase))
+                    {
+                        failures.Add($"{Path.GetRelativePath(RepoRoot, document)} -> {target} (missing anchor)");
+                    }
                 }
             }
         }
 
         Assert.True(failures.Count == 0, "Unresolved documentation links:\n" + string.Join("\n", failures));
+    }
+
+    [Fact]
+    public void CodeLinksToRepositoryDocs_Resolve()
+    {
+        var failures = new List<string>();
+        var urlPattern = new Regex(
+            @"https://github\.com/openRuyi-Project/abaci-bot/blob/master/(?<path>[^""\s#]+)(#(?<anchor>[^""\s]+))?");
+
+        foreach (var file in Directory.GetFiles(RepoRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(RepoRoot, file);
+            if (relative.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
+                || relative.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
+                || relative.Contains($"{Path.DirectorySeparatorChar}.workbuddy{Path.DirectorySeparatorChar}"))
+            {
+                continue;
+            }
+
+            var text = File.ReadAllText(file);
+            foreach (Match match in urlPattern.Matches(text))
+            {
+                var path = Path.Combine(RepoRoot, match.Groups["path"].Value.Replace('/', Path.DirectorySeparatorChar));
+                if (!File.Exists(path))
+                {
+                    failures.Add($"{relative} -> {match.Value} (missing file)");
+                    continue;
+                }
+
+                var anchor = match.Groups["anchor"].Value;
+                if (!string.IsNullOrEmpty(anchor)
+                    && path.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
+                    && !ReadAnchors(path).Contains(anchor, StringComparer.OrdinalIgnoreCase))
+                {
+                    failures.Add($"{relative} -> {match.Value} (missing anchor)");
+                }
+            }
+        }
+
+        Assert.True(failures.Count == 0, "Code documentation links do not resolve:\n" + string.Join("\n", failures));
+    }
+
+    private static HashSet<string> ReadAnchors(string markdownPath)
+    {
+        var anchors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in File.ReadLines(markdownPath))
+        {
+            var match = Regex.Match(line, @"^#{1,6}\s+(?<title>.+?)\s*$");
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            anchors.Add(Slugify(match.Groups["title"].Value));
+        }
+
+        return anchors;
+    }
+
+    private static string Slugify(string title)
+    {
+        var slug = title.ToLowerInvariant();
+        slug = Regex.Replace(slug, @"[^a-z0-9\s_-]", string.Empty);
+        return slug.Replace(' ', '-');
     }
 
     [Fact]
@@ -235,6 +309,100 @@ public class DocumentationContractTests
         }
 
         Assert.True(failures.Count == 0, "Configuration comment template violations:\n" + string.Join("\n", failures));
+    }
+
+    [Fact]
+    public void PullRequestTriggerLists_MatchModuleShouldProcess()
+    {
+        var failures = new List<string>();
+
+        foreach (var file in Directory.GetFiles(Path.Combine(RepoRoot, "Modules"), "*Module.cs", SearchOption.TopDirectoryOnly))
+        {
+            var module = Path.GetFileNameWithoutExtension(file);
+
+            // Modules that share a documentation page or use a non-standard trigger layout
+            // are covered by their own subsection, not the page-level `### Trigger Events`.
+            if (module is "WorkflowStateModule" or "ShinyNewPrModule" or "StaleUnstaleModule"
+                || !ModuleDocs.TryGetValue(module, out var relativePath))
+            {
+                continue;
+            }
+
+            var code = File.ReadAllText(file);
+            var shouldProcess = Regex.Match(
+                code,
+                @"public\s+bool\s+ShouldProcess\([^)]*\)\s*\{(?<body>.*?)\n\s{4}\}",
+                RegexOptions.Singleline);
+            if (!shouldProcess.Success)
+            {
+                continue;
+            }
+
+            var codeActions = Regex.Matches(shouldProcess.Groups["body"].Value, @"PullRequestAction\.(\w+)")
+                .Select(match => ToSnakeCase(match.Groups[1].Value))
+                .ToHashSet(StringComparer.Ordinal);
+            if (codeActions.Count == 0)
+            {
+                continue;
+            }
+
+            var docsPath = Path.Combine(RepoRoot, relativePath);
+            var docs = File.ReadAllText(docsPath);
+            var trigger = Regex.Match(docs, @"### Trigger Events(?<body>.*?)(\n---|\n## )", RegexOptions.Singleline);
+            if (!trigger.Success)
+            {
+                continue;
+            }
+
+            var list = Regex.Match(trigger.Groups["body"].Value, @"`pull_request`\s*\(([^)]*)\)");
+            if (!list.Success)
+            {
+                continue;
+            }
+
+            var documented = Regex.Matches(list.Groups[1].Value, "`([^`]+)`")
+                .Select(match => match.Groups[1].Value.Trim())
+                .ToHashSet(StringComparer.Ordinal);
+
+            if (!documented.SetEquals(codeActions))
+            {
+                failures.Add(
+                    $"{relativePath}: documented [{string.Join(", ", documented.Order())}] != code [{string.Join(", ", codeActions.Order())}]");
+            }
+        }
+
+        Assert.True(failures.Count == 0, "Trigger event drift:\n" + string.Join("\n", failures));
+    }
+
+    [Fact]
+    public void ReferencedTestFiles_Exist()
+    {
+        var documents = new List<string> { Path.Combine(RepoRoot, "README.md") };
+        documents.AddRange(Directory.GetFiles(Path.Combine(RepoRoot, "docs"), "*.md", SearchOption.AllDirectories));
+
+        var existing = Directory.GetFiles(Path.Combine(RepoRoot, "tests"), "*Tests.cs", SearchOption.AllDirectories)
+            .Select(Path.GetFileName)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var missing = new List<string>();
+        foreach (var document in documents)
+        {
+            foreach (Match match in Regex.Matches(File.ReadAllText(document), @"([A-Za-z0-9_]+Tests\.cs)"))
+            {
+                var name = match.Groups[1].Value;
+                if (!existing.Contains(name))
+                {
+                    missing.Add($"{Path.GetRelativePath(RepoRoot, document)} -> {name}");
+                }
+            }
+        }
+
+        Assert.True(missing.Count == 0, "Documentation references missing test files:\n" + string.Join("\n", missing));
+    }
+
+    private static string ToSnakeCase(string value)
+    {
+        return Regex.Replace(value, "(?<!^)([A-Z])", "_$1").ToLowerInvariant();
     }
 
     private static List<string> ManagedLabels()

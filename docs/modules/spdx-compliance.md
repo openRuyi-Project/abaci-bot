@@ -9,7 +9,7 @@ Validates that `License:` declarations in changed RPM `.spec` files conform to c
 Maintains legal and open-source license compliance across package repositories by detecting non-standard, deprecated, or invalid license identifiers in package specifications.
 
 ### Trigger Events
-- `pull_request` (`opened`, `synchronize`, `edited`)
+- `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_review`)
 
 ---
 

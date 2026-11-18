@@ -63,7 +63,7 @@ Configured under the `StaleLifecycle` JSON section:
 
 ## 5. Failure Handling and Fallback Semantics
 
-- **Secondary Rate Limit Handling**: If GitHub returns HTTP 403 secondary rate limit headers, the service aborts the current sweep immediately and schedules an exponential backoff.
+- **Secondary Rate Limit Handling**: If GitHub returns HTTP 403 secondary rate limit headers, the service aborts the current sweep and waits its fixed retry delay (60 s internal). It does not use exponential backoff.
 - **Fail-Safe Dry Run**: Starts in `DryRun = true` and `Enabled = false` by default to prevent unintended bulk mutations upon initial deployment.
 
 ---

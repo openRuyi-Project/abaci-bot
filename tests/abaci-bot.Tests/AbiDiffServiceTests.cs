@@ -405,7 +405,7 @@ public class AbiDiffServiceTests
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => probe.StartAsync(CancellationToken.None));
             Assert.Contains("unavailable or lacks RPM support", ex.Message);
             Assert.Contains("Startup aborted", ex.Message);
-            Assert.Contains("https://github.com/openRuyi-Project/abaci-bot#abi-engine-tiers-and-limitations", ex.Message);
+            Assert.Contains("https://github.com/openRuyi-Project/abaci-bot/blob/master/docs/modules/abi-compliance.md#5-abi-engine-tiers-and-operational-guidelines", ex.Message);
         }
         finally
         {

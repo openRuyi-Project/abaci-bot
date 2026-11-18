@@ -9,8 +9,8 @@ Tracks pull request review lifecycle states, work-in-progress status, maintainer
 `WorkflowStateModule` ensures that every open pull request carries exactly one active workflow status label reflecting its development and review progression.
 
 ### Trigger Events
-- `pull_request` (`opened`, `reopened`, `closed`, `ready_for_review`, `converted_to_draft`, `synchronize`, `edited`)
-- `pull_request_review` (`submitted`, `dismissed`)
+- `pull_request` (`opened`, `reopened`, `closed`, `ready_for_review`, `converted_to_draft`, `synchronize`, `labeled`, `unlabeled`)
+- `pull_request_review` (`submitted`)
 - `issue_comment` (`created`)
 
 ---
@@ -57,17 +57,19 @@ flowchart TD
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `GitHubApp:TeamName` | `string` | `"captains"` | Team slug whose members are recognized as repository maintainers / Captains. |
-| `BotDetection:Whitelist` | `string[]` | See below | List of account usernames ignored during first-response triage evaluations. |
+| `GitHubApp:TeamName` | `string` | Required (no code default; example: `captains`) | Team slug whose members are recognized as repository maintainers / Captains. |
+| `BotDetection:Whitelist` | `string[]` | Six built-in accounts (see below) | List of account usernames ignored during first-response triage evaluations. |
 
 Default bot whitelist:
-`["github-actions", "github-actions[bot]", "abaci-bot", "abaci-bot[bot]", "dependabot", "dependabot[bot]", "aqua-rium", "aqua-rium[bot]", "web-flow"]`
+`["github-actions", "github-actions[bot]", "abaci-bot", "abaci-bot[bot]", "dependabot", "dependabot[bot]"]`
+
+A deployment may add more accounts (for example an update bot) in its own `appsettings.json`; those additions are not code defaults.
 
 ---
 
 ## 5. Failure Handling and Fallback Semantics
 
-- **Team Membership Lookup Failure**: If GitHub API fails to resolve team members, the module avoids advancing PRs to `In Review` based on unverified accounts and logs a warning.
+- **Team Membership Lookup Failure**: `GitHubService.GetTeamMembersAsync` has no catch. An API error propagates out of the module, and `PullRequestPipeline` aborts the whole pipeline fail-fast for that event; no label writes are attempted.
 - **Fail-Fast Label Absence**: If any of the workflow labels do not exist on the target repository, the request aborts fail-fast to alert operators.
 
 ---
@@ -89,6 +91,6 @@ Default bot whitelist:
 
 ## 7. Relevant Test Suites
 
-- `tests/abaci-bot.Tests/WorkflowStateModuleTests.cs`
+- `tests/abaci-bot.Tests/PipelineAndModulesTests.cs`
 - `tests/abaci-bot.Tests/ShinyNewPrModuleTests.cs`
 - `tests/abaci-bot.Tests/GitHubWebhookProcessorTests.cs`

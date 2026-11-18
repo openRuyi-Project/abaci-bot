@@ -26,7 +26,7 @@ The table below lists all labels defined in [`Services/GitHubLabels.cs`](../Serv
 | `Status: ABI Unverified` | Bot Extension | Applied when ABI comparison cannot complete (missing artifact/baseline or tool failure). |
 | `Target: Rolling` | Official Taxonomy | Pull request targets the rolling release stream (`main`, `master`, `rolling`). |
 | `Target: LTS` | Official Taxonomy | Pull request targets a Long-Term Support release branch (`lts/*`, `lts-*`). |
-| `Community: Student contribution` | Official Taxonomy | Contributor email matches verified student domain patterns (`*.isrc.iscas.ac.cn`). |
+| `Community: Student contribution` | Official Taxonomy | Contributor email ends with `.oerv@isrc.iscas.ac.cn`, `.or@isrc.iscas.ac.cn`, or `.riscv@isrc.iscas.ac.cn`. |
 | `Community: Contribution` | Official Taxonomy | General community contribution from external domains. |
 | `Type: Packaging` | Official Taxonomy | Modifies RPM spec files, patches, or package sources. |
 | `Type: Documentation` | Official Taxonomy | Modifies documentation files exclusively. |
@@ -45,7 +45,7 @@ The table below lists all labels defined in [`Services/GitHubLabels.cs`](../Serv
 | `CI` | Official Taxonomy | Pull request touches continuous integration workflows. |
 | `AI Assistance` | Official Taxonomy | Author declared AI assistance in pull request description. |
 | `Compliance: License Issue` | Bot Extension | Spec declares a missing or non-standard SPDX license identifier. |
-| `Impact: ABI` | Official Taxonomy | Binary interface changes detected (applied to all ABI changes; accompanies `Breaking Change` on incompatible changes). |
+| `Impact: ABI` | Official Taxonomy | Binary interface changes detected (applied to all ABI changes; accompanies `Impact: Breaking Change` on incompatible changes). |
 | `Impact: Breaking Change` | Official Taxonomy | Binary interface breaking changes detected (e.g. SONAME change, removed or altered symbols). |
 | `Severity: 1` | Official Taxonomy | Critical CVE severity (CVSS 9.0–10.0). |
 | `Severity: 2` | Official Taxonomy | High CVE severity (CVSS 7.0–8.9). |
