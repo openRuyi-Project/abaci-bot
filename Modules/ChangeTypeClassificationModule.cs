@@ -2,6 +2,7 @@ using abaci_bot.Contexts;
 using abaci_bot.Modules.ChangeTypeStrategies;
 using abaci_bot.Options;
 using abaci_bot.Pipelines;
+using abaci_bot.Services;
 using Microsoft.Extensions.Options;
 using Octokit.Webhooks.Events.PullRequest;
 
@@ -25,6 +26,16 @@ public class ChangeTypeClassificationModule : IPullRequestModule
     public string ModuleName => "ChangeTypeClassificationModule";
 
     public int Priority => 35;
+
+    private static readonly string[] TypeLabels =
+    [
+        GitHubLabels.TypePackaging,
+        GitHubLabels.TypeDocumentation,
+        GitHubLabels.TypeInfrastructure,
+        GitHubLabels.TypeFrontend
+    ];
+
+    public IReadOnlyCollection<string> ManagedLabels => TypeLabels;
 
     public ChangeTypeClassificationModule(
         IEnumerable<IChangeTypeStrategy>? strategies = null,
@@ -59,7 +70,12 @@ public class ChangeTypeClassificationModule : IPullRequestModule
     {
         var files = await context.ChangedFiles.Value;
         if (files == null || files.Count == 0)
+        {
+            // A pull request reverted to a zero-file diff has no change type left to report;
+            // retire the classification from the earlier revision instead of leaving it stale.
+            context.ReconcileLabels(ManagedLabels, _ => false);
             return;
+        }
 
         // Select the first strategy applicable to this repository based on registration order, with fallback to DefaultChangeTypeStrategy
         var strategy = _strategies.FirstOrDefault(s => s.AppliesTo(context.Repo))

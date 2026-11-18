@@ -16,7 +16,8 @@ public class ChangeTypeClassificationModuleTests
 
     private PullRequestContext CreateContextWithFiles(
         string repo,
-        IReadOnlyList<PullRequestFile> files)
+        IReadOnlyList<PullRequestFile> files,
+        IEnumerable<string>? existingLabels = null)
     {
         _gitHub.GetPullRequestFilesAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>())
             .Returns(files);
@@ -38,7 +39,7 @@ public class ChangeTypeClassificationModuleTests
             senderLogin: "author",
             authorLogin: "author",
             action: nameof(PullRequestAction.Opened),
-            existingLabels: Array.Empty<string>(),
+            existingLabels: existingLabels ?? Array.Empty<string>(),
             prAction: PullRequestAction.Opened);
     }
 
@@ -66,6 +67,22 @@ public class ChangeTypeClassificationModuleTests
 
         Assert.Contains(GitHubLabels.TypeDocumentation, context.LabelsToAdd);
         Assert.DoesNotContain(GitHubLabels.TypePackaging, context.LabelsToAdd);
+    }
+
+    [Fact]
+    public async Task ZeroFileDiff_RetiresStaleTypeLabels()
+    {
+        var module = new ChangeTypeClassificationModule();
+        var context = CreateContextWithFiles(
+            "openRuyi",
+            Array.Empty<PullRequestFile>(),
+            new[] { GitHubLabels.TypePackaging, GitHubLabels.TypeDocumentation });
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.TypePackaging, context.LabelsToRemove);
+        Assert.Contains(GitHubLabels.TypeDocumentation, context.LabelsToRemove);
+        Assert.Empty(context.LabelsToAdd);
     }
 
     [Fact]
