@@ -31,7 +31,7 @@ The table below lists all labels defined in [`Services/GitHubLabels.cs`](../Serv
 | `Type: Packaging` | Official Taxonomy | Modifies RPM spec files, patches, or package sources. |
 | `Type: Documentation` | Official Taxonomy | Modifies documentation files exclusively. |
 | `Type: Infrastructure` | Bot Extension | Modifies CI workflows, actions, or repository tooling without spec changes. |
-| `Type: Frontend` | Bot Extension | Modifies web UI files. Active **only** on the `homepage` repository. |
+| `Type: Frontend` | Bot Extension | Modifies web UI files. Active **only** on repositories listed in `ChangeTypeClassification:HomepageRepositories`. |
 | `Type: Build Failure` | Reserved | Reserved constant in `GitHubLabels.cs` for future build error tracking. |
 | `BuildSystem: autotools` | Official Taxonomy | Spec declares `BuildSystem: autotools`. |
 | `BuildSystem: cmake` | Official Taxonomy | Spec declares `BuildSystem: cmake`. |
