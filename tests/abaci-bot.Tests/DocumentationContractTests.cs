@@ -25,7 +25,9 @@ public class DocumentationContractTests
         [typeof(RebuildImpactOptions)] = "docs/modules/rebuild-impact.md",
         [typeof(AbiComplianceOptions)] = "docs/modules/abi-compliance.md",
         [typeof(BotDetectionOptions)] = "docs/modules/workflow-state.md",
-        [typeof(FileCacheOptions)] = "docs/configuration.md"
+        [typeof(FileCacheOptions)] = "docs/configuration.md",
+        [typeof(PackageUpdateOptions)] = "docs/modules/package-update.md",
+        [typeof(CveActiveWatchOptions)] = "docs/modules/cve-active-watch.md"
     };
 
     private static readonly Dictionary<string, string> ModuleDocs = new()

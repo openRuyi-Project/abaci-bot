@@ -77,4 +77,9 @@ public static class GitHubLabels
     // 11. Forward-looking: ABI and Breaking Change impact
     public const string ImpactAbi = "Impact: ABI";
     public const string ImpactBreakingChange = "Impact: Breaking Change";
+
+    // 12. Automated package updates & upstream supply chain
+    public const string AutoUpdate = "Auto-Update";
+    public const string AutoUpdateRust = "Auto-Update: Rust";
+    public const string AutoUpdateBlocked = "Auto-Update: Blocked";
 }

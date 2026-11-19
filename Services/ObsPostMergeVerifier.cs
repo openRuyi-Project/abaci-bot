@@ -32,7 +32,7 @@ public class ObsPostMergeVerifier
         _logger = logger;
     }
 
-    private static readonly string[] BlockedLabels = { "Auto-Update: Blocked" };
+    private static readonly string[] BlockedLabels = { GitHubLabels.AutoUpdateBlocked };
 
     public async Task VerifyMergedPullRequestsAsync(string targetRepo, CancellationToken ct = default)
     {

@@ -82,3 +82,13 @@ In addition to event-driven webhook processing, `abaci-bot` hosts background ser
 ### SpdxMetadataRefreshService
 - Periodically synchronizes canonical license lists and exception identifiers from SPDX upstream endpoints (`https://spdx.org/licenses/`).
 - Updates an in-memory `Dictionary` of license identifiers. The LRU cache used for fetched files lives in `FileContentCache`, not in the SPDX service.
+
+### PackageUpdateService
+- Periodically discovers upstream package releases from Lookout (Release-Monitoring / Anitya) and crates.io.
+- Applies version admission rules, rewrites RPM spec versions, backfills CI checksums, and publishes automated pull requests.
+- Closes abandoned failing pull requests and tracks repeated failures under cooldown tracking issues.
+
+### CveActiveWatchService
+- Periodically performs repository-wide vulnerability sweeps against OSV.dev and NIST NVD.
+- Dispatches serialized requests to stay within rate limits and caches package vulnerability findings.
+- Creates and reconciles prioritized security tracking issues carrying `Vulnerability: Detected`, severity labels, and `Status: stale-exempt`.

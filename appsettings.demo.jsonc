@@ -343,10 +343,9 @@
   },
 
   // ==============================================================================
-  // RESERVED: automated package update service
-  // Not implemented in this release. The configuration is accepted but no service
-  // consumes it yet; it will be activated by the upcoming ecosystem release.
-  // Values below are the intended defaults and are not exercised by this build.
+  // PackageUpdateOptions: automated upstream package update background service
+  // Discovers upstream releases from Lookout and crates.io, admits safe updates,
+  // rewrites SPEC files, backfills CI checksums, and publishes automated PRs.
   // ==============================================================================
   "PackageUpdate": {
     // Reserved. Default: false.
@@ -441,14 +440,19 @@
     // Reserved. Format: label name.
     // Empty: falls back to Status: stale-exempt.
     // Reserved. Default: "Status: stale-exempt".
-    "GiveUpIssueLabel": "Status: stale-exempt"
+    "GiveUpIssueLabel": "Status: stale-exempt",
+    // Unit: requests. Range: >= 0. Default: 500.
+    // When remaining core API quota drops below this value, candidate sweeps pause.
+    "MinRateLimitRemaining": 500,
+    // Unit: milliseconds. Range: >= 0. Default: 2000.
+    // Delay between successive GitHub write API requests to avoid secondary rate limits.
+    "RequestThrottleMilliseconds": 2000
   },
 
   // ==============================================================================
-  // RESERVED: proactive CVE watch service
-  // Not implemented in this release. The configuration is accepted but no service
-  // consumes it yet; it will be activated by the upcoming ecosystem release.
-  // Values below are the intended defaults and are not exercised by this build.
+  // CveActiveWatchOptions: active repository-wide CVE vulnerability watch service
+  // Periodically scans all distribution packages against OSV.dev and NIST NVD,
+  // files prioritized security tracking issues, and closes resolved issues.
   // ==============================================================================
   "CveActiveWatch": {
     // Reserved. Default: false.
@@ -473,9 +477,15 @@
     "MaxNvdQueriesPerDay": 200,
     // Reserved. Unit: milliseconds. Range: >= 0. Default: 6500.
     "NvdRequestDelayMilliseconds": 6500,
+    // Range: >= 1. Default: 8.
+    // Maximum concurrent HTTP requests dispatched when resolving OSV vulnerability details.
+    "MaxConcurrentOsvRequests": 8,
     // Reserved. Format: label name.
     // Empty: falls back to Vulnerability: Detected.
     // Reserved. Default: "Vulnerability: Detected".
-    "IssueLabel": "Vulnerability: Detected"
+    "IssueLabel": "Vulnerability: Detected",
+    // Unit: hours. Range: >= 1. Default: 168.
+    // Duration before cached vulnerability query results expire.
+    "CacheExpirationHours": 168
   }
 }

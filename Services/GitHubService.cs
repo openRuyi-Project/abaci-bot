@@ -676,7 +676,7 @@ public class GitHubService : IGitHubService, IDisposable
         var dateStr = updatedAfter.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture);
         // Search merged auto-update PRs by label and optionally by author to support both GitHub App and PAT
         var authorFilter = !string.IsNullOrWhiteSpace(author) ? $"author:{author} " : "";
-        var query = $"repo:{owner}/{repo} is:pr is:merged label:\"Auto-Update\" {authorFilter}updated:>{dateStr}";
+        var query = $"repo:{owner}/{repo} is:pr is:merged label:\"{GitHubLabels.AutoUpdate}\" {authorFilter}updated:>{dateStr}";
 
         var searchResult = await _client.Search.SearchIssues(new SearchIssuesRequest(query)
         {

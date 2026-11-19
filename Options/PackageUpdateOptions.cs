@@ -50,7 +50,7 @@ public class PackageUpdateOptions
 
     public int GiveUpIssueCooldownDays { get; set; } = 30;
 
-    public string GiveUpIssueLabel { get; set; } = Services.GitHubLabels.StatusPinned;
+    public string GiveUpIssueLabel { get; set; } = Services.GitHubLabels.StatusStaleExempt;
 
     public int MinRateLimitRemaining { get; set; } = 500;
 

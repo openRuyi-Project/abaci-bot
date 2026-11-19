@@ -144,7 +144,7 @@ public class CveActiveWatchService : BackgroundService
         {
             issueLabel,
             maxSeverity,
-            GitHubLabels.StatusPinned
+            GitHubLabels.StatusStaleExempt
         };
 
         try

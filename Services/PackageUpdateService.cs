@@ -98,10 +98,10 @@ public class PackageUpdateService : BackgroundService
         {
             await _gitHubService.EnsureLabelsExistAsync(owner, repo, new[]
             {
-                ("Auto-Update", "0366d6", "Pull requests automatically created for package updates"),
-                ("Auto-Update: Rust", "dea584", "Pull requests automatically created for Rust crate updates"),
-                ("Auto-Update: Blocked", "d73a4a", "Package updates blocked due to repeated failures or missing dependencies"),
-                (GitHubLabels.StatusPinned, "ffffff", "Exempt from automatic stale closure")
+                (GitHubLabels.AutoUpdate, "0366d6", "Pull requests automatically created for package updates"),
+                (GitHubLabels.AutoUpdateRust, "dea584", "Pull requests automatically created for Rust crate updates"),
+                (GitHubLabels.AutoUpdateBlocked, "d73a4a", "Package updates blocked due to repeated failures or missing dependencies"),
+                (GitHubLabels.StatusStaleExempt, "ffffff", "Exempt from automatic stale closure")
             }, ct);
         }
         catch (Exception ex)
@@ -254,7 +254,7 @@ public class PackageUpdateService : BackgroundService
         {
             // Search all open auto-update PRs by label instead of hardcoded author login to support GitHub App bots seamlessly
             var openPrs = await _gitHubService.SearchStaleCandidatesAsync(
-                owner, repo, DateTimeOffset.UtcNow, isPr: true, labelFilter: "label:\"Auto-Update\" is:pr is:open", ct: ct);
+                owner, repo, DateTimeOffset.UtcNow, isPr: true, labelFilter: $"label:\"{GitHubLabels.AutoUpdate}\" is:pr is:open", ct: ct);
 
             foreach (var pr in openPrs)
             {
@@ -449,7 +449,7 @@ public class PackageUpdateService : BackgroundService
         if (enteredCooldown && !_options.DryRun && _options.IssueOnGivingUp)
         {
             var cooldownHours = _options.CooldownHours > 0 ? _options.CooldownHours : _options.GiveUpIssueCooldownDays * 24;
-            var issueTitle = $"[Auto-Update: Blocked] Repeated CI failures on package {packageName}";
+            var issueTitle = $"[{GitHubLabels.AutoUpdateBlocked}] Repeated CI failures on package {packageName}";
             var issueBody = $"""
                 ## Repeated CI Failures Alert
                 Automated updates for package `{packageName}` have encountered repeated CI failures ({_options.MaxConsecutiveFailures} distinct failed PRs).
@@ -463,9 +463,9 @@ public class PackageUpdateService : BackgroundService
             {
                 var issueLabel = !string.IsNullOrWhiteSpace(_options.GiveUpIssueLabel)
                     ? _options.GiveUpIssueLabel
-                    : GitHubLabels.StatusPinned;
+                    : GitHubLabels.StatusStaleExempt;
 
-                await _gitHubService.CreateIssueAsync(owner, repo, issueTitle, issueBody, new[] { "Auto-Update: Blocked", issueLabel }, ct);
+                await _gitHubService.CreateIssueAsync(owner, repo, issueTitle, issueBody, new[] { GitHubLabels.AutoUpdateBlocked, issueLabel }, ct);
             }
             catch (Exception ex)
             {

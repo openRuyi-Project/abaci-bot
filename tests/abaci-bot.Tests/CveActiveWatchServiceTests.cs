@@ -45,7 +45,7 @@ public class CveActiveWatchServiceTests
             "openRuyi",
             "[Security] Outstanding CVEs detected in python-jinja2",
             Arg.Is<string>(b => b.Contains("CVE-2020-28493") && b.Contains("ReDoS in Jinja2")),
-            Arg.Is<string[]>(labels => labels.Contains(GitHubLabels.VulnerabilityDetected) && labels.Contains(GitHubLabels.Severity2) && labels.Contains(GitHubLabels.StatusPinned)),
+            Arg.Is<string[]>(labels => labels.Contains(GitHubLabels.VulnerabilityDetected) && labels.Contains(GitHubLabels.Severity2) && labels.Contains(GitHubLabels.StatusStaleExempt)),
             Arg.Any<CancellationToken>());
     }
 

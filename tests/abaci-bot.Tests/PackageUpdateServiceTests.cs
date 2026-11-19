@@ -21,7 +21,7 @@ public class PackageUpdateServiceTests
         typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(stalePr, 88);
         typeof(Issue).GetProperty(nameof(Issue.UpdatedAt))?.SetValue(stalePr, (DateTimeOffset?)DateTimeOffset.UtcNow.AddDays(-10));
         var autoUpdateLabel = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
-        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(autoUpdateLabel, "Auto-Update");
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(autoUpdateLabel, GitHubLabels.AutoUpdate);
         typeof(Issue).GetProperty(nameof(Issue.Labels))?.SetValue(stalePr, new List<Label> { autoUpdateLabel });
 
         gitHubMock.SearchStaleCandidatesAsync(

@@ -158,10 +158,10 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
             pr = await _gitHubService.CreatePullRequestAsync(owner, repo, prTitle, branchName, baseBranch, prBody, ct);
 
             // Add baseline Auto-Update label and optional source-specific label
-            var labels = new List<string> { "Auto-Update" };
+            var labels = new List<string> { GitHubLabels.AutoUpdate };
             if (candidate.Origin == CandidateOrigin.RustCrate)
             {
-                labels.Add("Auto-Update: Rust");
+                labels.Add(GitHubLabels.AutoUpdateRust);
             }
             await _gitHubService.AddLabelsAsync(owner, repo, pr.Number, labels.ToArray(), ct);
         }

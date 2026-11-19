@@ -65,6 +65,8 @@
 | **CVE Security** | Scans PRs for CVE mentions, queries OSV/NVD, and manages severity and lifecycle. | [`docs/modules/vulnerability.md`](docs/modules/vulnerability.md) |
 | **Rebuild Impact** | Computes transitive reverse build dependencies via RPM repodata; gates heavy PRs. | [`docs/modules/rebuild-impact.md`](docs/modules/rebuild-impact.md) |
 | **ABI Compliance** | Compares compiled RPMs using Libabigail `abipkgdiff` to detect binary breaking changes. | [`docs/modules/abi-compliance.md`](docs/modules/abi-compliance.md) |
+| **Package Updates** | Periodically checks upstream releases, rewrites specs, publishes PRs, and verifies post-merge OBS builds. | [`docs/modules/package-update.md`](docs/modules/package-update.md) |
+| **Active CVE Watch** | Periodically scans package catalog against OSV and NVD to file and update security tracking issues. | [`docs/modules/cve-active-watch.md`](docs/modules/cve-active-watch.md) |
 
 ---
 
