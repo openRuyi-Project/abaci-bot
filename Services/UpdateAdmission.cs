@@ -18,6 +18,46 @@ public static class UpdateAdmission
         @"^Version:\s*(?<ver>\S+)",
         RegexOptions.Compiled | RegexOptions.Multiline);
 
+    private static readonly Regex SafePackageNameRegex = new(
+        @"^[a-zA-Z0-9_\-+.]+$",
+        RegexOptions.Compiled);
+
+    private static readonly Regex SafeVersionRegex = new(
+        @"^[a-zA-Z0-9_.+]+$",
+        RegexOptions.Compiled);
+
+    /// <summary>
+    /// Validates whether a package name conforms to safe RPM package naming rules.
+    /// Rejects path traversal (.. or /), control characters, spaces, and unexpected symbols.
+    /// </summary>
+    public static bool IsValidPackageName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return false;
+
+        var trimmed = name.Trim();
+        if (trimmed.Contains("..") || trimmed.Contains('/') || trimmed.Contains('\\'))
+            return false;
+
+        return SafePackageNameRegex.IsMatch(trimmed);
+    }
+
+    /// <summary>
+    /// Validates whether a version string conforms to safe RPM version rules.
+    /// Rejects newlines, carriage returns, spaces, slashes, hyphens, and unexpected symbols.
+    /// </summary>
+    public static bool IsValidTargetVersion(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version))
+            return false;
+
+        var trimmed = version.Trim();
+        if (trimmed.Contains('\n') || trimmed.Contains('\r') || trimmed.Contains('/') || trimmed.Contains('\\') || trimmed.Contains('-'))
+            return false;
+
+        return SafeVersionRegex.IsMatch(trimmed);
+    }
+
     /// <summary>
     /// Deduce branch name for a Rust crate package given the directory name and crate name.
     /// Handles underscore to hyphen normalization (e.g. rand_core -> rust-rand-core-0.10).

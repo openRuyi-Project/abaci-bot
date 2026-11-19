@@ -112,4 +112,102 @@ public class CveActiveWatchServiceTests
         Assert.Contains("[GHSA-xxxx-yyyy-zzzz](https://github.com/advisories/GHSA-xxxx-yyyy-zzzz)", body);
         Assert.DoesNotContain("nvd.nist.gov/vuln/detail/GHSA", body);
     }
+
+    [Fact]
+    public void CalculateMaxSeverity_ReturnsNull_WhenNoReportsHaveSeverity()
+    {
+        var emptyReports = Array.Empty<CveReport>();
+        Assert.Null(CveActiveWatchService.CalculateMaxSeverity(emptyReports));
+
+        var unratedReports = new[]
+        {
+            new CveReport("CVE-2024-9999", null, null, "OSV", "Unrated vuln")
+        };
+        Assert.Null(CveActiveWatchService.CalculateMaxSeverity(unratedReports));
+    }
+
+    [Fact]
+    public async Task RunScanSweepAsync_ReconcilesSeverityLabels_RemovingObsoleteLabelsOnUpdate()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
+
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            DryRun = false,
+            TargetRepository = "openRuyi-Project/openRuyi"
+        });
+
+        // 1. Existing issue carrying old Severity: 3 label
+        var existingIssue = (Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Issue));
+        typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(existingIssue, 202);
+        typeof(Issue).GetProperty(nameof(Issue.Title))?.SetValue(existingIssue, "[Security] Outstanding CVEs detected in python-jinja2");
+        var oldSeverityLabel = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(oldSeverityLabel, GitHubLabels.Severity3);
+        typeof(Issue).GetProperty(nameof(Issue.Labels))?.SetValue(existingIssue, new[] { oldSeverityLabel });
+
+        gitHubMock.SearchStaleCandidatesAsync(
+            "openRuyi-Project", "openRuyi", Arg.Any<DateTimeOffset>(), false, Arg.Is<string>(f => f.Contains("[Security]")), Arg.Any<CancellationToken>())
+            .Returns(new[] { existingIssue });
+
+        // 2. New scan detects upgraded Severity: 1
+        var report = new CveReport("CVE-2024-9999", 9.8, GitHubLabels.Severity1, "OSV", "Critical RCE");
+        var finding = new PackageVulnerabilityFinding("python-jinja2", "2.4.1", new[] { "CVE-2024-9999" }, new[] { report });
+
+        scannerMock.ScanPackagesAsync(Arg.Any<IEnumerable<(string, string)>>(), Arg.Any<CancellationToken>())
+            .Returns(new PackageVulnerabilityScanResult(new[] { finding }, new HashSet<string> { "python-jinja2" }));
+
+        var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<(string, string)>>(new[]
+        {
+            ("python-jinja2", "2.4.1")
+        });
+
+        var service = new CveActiveWatchService(gitHubMock, scannerMock, options, catalogProvider: fakeCatalog);
+        await service.RunScanSweepAsync();
+
+        // 3. Verify Severity: 3 was removed and Severity: 1 was added
+        await gitHubMock.Received(1).RemoveLabelAsync("openRuyi-Project", "openRuyi", 202, GitHubLabels.Severity3, Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).AddLabelsAsync(
+            "openRuyi-Project", "openRuyi", 202, Arg.Is<string[]>(l => l.Contains(GitHubLabels.Severity1)), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunScanSweepAsync_DoesNotAddSeverityLabel_WhenFindingIsUnrated()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
+
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            DryRun = false,
+            TargetRepository = "openRuyi-Project/openRuyi"
+        });
+
+        gitHubMock.SearchStaleCandidatesAsync(
+            "openRuyi-Project", "openRuyi", Arg.Any<DateTimeOffset>(), false, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<Issue>());
+
+        var report = new CveReport("CVE-2024-0000", null, null, "OSV", "Unrated");
+        var finding = new PackageVulnerabilityFinding("curl", "8.2.1", new[] { "CVE-2024-0000" }, new[] { report });
+
+        scannerMock.ScanPackagesAsync(Arg.Any<IEnumerable<(string, string)>>(), Arg.Any<CancellationToken>())
+            .Returns(new PackageVulnerabilityScanResult(new[] { finding }, new HashSet<string> { "curl" }));
+
+        var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<(string, string)>>(new[]
+        {
+            ("curl", "8.2.1")
+        });
+
+        var service = new CveActiveWatchService(gitHubMock, scannerMock, options, catalogProvider: fakeCatalog);
+        await service.RunScanSweepAsync();
+
+        // Verify issue was created with VulnerabilityDetected and StatusStaleExempt, but NO Severity label
+        await gitHubMock.Received(1).CreateIssueAsync(
+            "openRuyi-Project", "openRuyi",
+            Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Is<string[]>(labels => labels.Contains(GitHubLabels.VulnerabilityDetected) &&
+                                       labels.Contains(GitHubLabels.StatusStaleExempt) &&
+                                       !labels.Any(l => l.StartsWith("Severity:"))),
+            Arg.Any<CancellationToken>());
+    }
 }

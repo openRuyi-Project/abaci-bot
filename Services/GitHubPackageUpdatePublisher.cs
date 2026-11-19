@@ -151,14 +151,15 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
         {
             _logger?.LogInformation("Updating existing PR #{PrNumber} for branch {Branch}", existingPr.Number, branchName);
             pr = await _gitHubService.UpdatePullRequestAsync(owner, repo, existingPr.Number, prTitle, prBody, ct);
+            await _gitHubService.AddLabelsAsync(owner, repo, existingPr.Number, new[] { GitHubLabels.StatusStaleExempt }, ct);
         }
         else
         {
             _logger?.LogInformation("Creating new PR for branch {Branch}", branchName);
             pr = await _gitHubService.CreatePullRequestAsync(owner, repo, prTitle, branchName, baseBranch, prBody, ct);
 
-            // Add baseline Auto-Update label and optional source-specific label
-            var labels = new List<string> { GitHubLabels.AutoUpdate };
+            // Add baseline Auto-Update label, status stale-exempt, and optional source-specific label
+            var labels = new List<string> { GitHubLabels.AutoUpdate, GitHubLabels.StatusStaleExempt };
             if (candidate.Origin == CandidateOrigin.RustCrate)
             {
                 labels.Add(GitHubLabels.AutoUpdateRust);

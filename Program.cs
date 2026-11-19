@@ -80,8 +80,14 @@ builder.Services.Configure<RebuildImpactOptions>(config.GetSection("RebuildImpac
 builder.Services.Configure<AbiComplianceOptions>(config.GetSection("AbiCompliance"));
 builder.Services.Configure<FileCacheOptions>(config.GetSection("FileCache"));
 builder.Services.AddSingleton<IFileContentCache, FileContentCache>();
-builder.Services.Configure<PackageUpdateOptions>(config.GetSection("PackageUpdate"));
-builder.Services.Configure<CveActiveWatchOptions>(config.GetSection("CveActiveWatch"));
+builder.Services.AddOptions<PackageUpdateOptions>()
+    .Bind(config.GetSection("PackageUpdate"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<PackageUpdateOptions>, PackageUpdateOptionsValidator>();
+builder.Services.AddOptions<CveActiveWatchOptions>()
+    .Bind(config.GetSection("CveActiveWatch"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<CveActiveWatchOptions>, CveActiveWatchOptionsValidator>();
 
 // Register pipeline infrastructure and mutual-exclusion engine
 builder.Services.AddSingleton<PullRequestLockManager>();

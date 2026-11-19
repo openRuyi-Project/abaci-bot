@@ -39,4 +39,36 @@ public class UpdateAdmissionTests
         Assert.True(UpdateAdmission.IsVersionAtTarget(spec, "8.2.1+build1"));
         Assert.False(UpdateAdmission.IsVersionAtTarget(spec, "8.2.2"));
     }
+
+    [Theory]
+    [InlineData("curl", true)]
+    [InlineData("gcc-14", true)]
+    [InlineData("rust_core", true)]
+    [InlineData("libfoo.bar", true)]
+    [InlineData("../curl", false)]
+    [InlineData("curl/malicious", false)]
+    [InlineData("curl\\foo", false)]
+    [InlineData("curl;rm -rf", false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    public void IsValidPackageName_ValidatesPackageNamesCorrectly(string name, bool expected)
+    {
+        Assert.Equal(expected, UpdateAdmission.IsValidPackageName(name));
+    }
+
+    [Theory]
+    [InlineData("1.2.3", true)]
+    [InlineData("2026.05.26", true)]
+    [InlineData("1.0_beta", true)]
+    [InlineData("1.0+build1", true)]
+    [InlineData("1.2-3", false)]
+    [InlineData("1.0\nName: hacked", false)]
+    [InlineData("1.0\r\nName: hacked", false)]
+    [InlineData("1.0/2", false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    public void IsValidTargetVersion_ValidatesTargetVersionsCorrectly(string version, bool expected)
+    {
+        Assert.Equal(expected, UpdateAdmission.IsValidTargetVersion(version));
+    }
 }

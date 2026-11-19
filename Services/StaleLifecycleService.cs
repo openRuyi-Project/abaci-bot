@@ -436,6 +436,10 @@ public class StaleLifecycleService : BackgroundService
         if (item.Labels.Any(l => options.ExemptLabels.Contains(l.Name, StringComparer.OrdinalIgnoreCase)))
             return true;
 
+        // Protection: Automated package update pull requests have dedicated lifecycle rules (FailedPrTtlDays)
+        if (item.Labels.Any(l => string.Equals(l.Name, GitHubLabels.AutoUpdate, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
         // Protection: WIP titles are pre-filtered before lock acquisition and verified authoritatively under lock.
         // Note: Draft PRs cannot be detected here because GitHub Issues API omits 'draft' from embedded pull_request objects;
         // authoritative draft verification is performed via GetPullRequestAsync inside TryVerifyEligibilityAsync.

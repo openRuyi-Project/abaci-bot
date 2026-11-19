@@ -48,4 +48,36 @@ public class ArtifactDiffExtractorTests
 
         Assert.Contains("+#!RemoteAsset: sha256:new", result);
     }
+
+    [Fact]
+    public void ExtractFileRemoteAssetChanges_OnlyExtractsTargetFileHunks()
+    {
+        var multiDiff = """
+            diff --git a/SPECS/curl/curl.spec b/SPECS/curl/curl.spec
+            --- a/SPECS/curl/curl.spec
+            +++ b/SPECS/curl/curl.spec
+            @@ -10,2 +10,2 @@
+            -#!RemoteAsset:sha256:curl_old
+            +#!RemoteAsset:sha256:curl_new
+            diff --git a/SPECS/git/git.spec b/SPECS/git/git.spec
+            --- a/SPECS/git/git.spec
+            +++ b/SPECS/git/git.spec
+            @@ -20,2 +20,2 @@
+            -#!RemoteAsset:sha256:git_old
+            +#!RemoteAsset:sha256:git_new
+            """;
+
+        var curlChanges = ArtifactDiffExtractor.ExtractFileRemoteAssetChanges(multiDiff, "SPECS/curl/curl.spec");
+        Assert.Single(curlChanges);
+        Assert.Equal("#!RemoteAsset:sha256:curl_old", curlChanges[0].OldLine);
+        Assert.Equal("#!RemoteAsset:sha256:curl_new", curlChanges[0].NewLine);
+
+        var gitChanges = ArtifactDiffExtractor.ExtractFileRemoteAssetChanges(multiDiff, "SPECS/git/git.spec");
+        Assert.Single(gitChanges);
+        Assert.Equal("#!RemoteAsset:sha256:git_old", gitChanges[0].OldLine);
+        Assert.Equal("#!RemoteAsset:sha256:git_new", gitChanges[0].NewLine);
+
+        var otherChanges = ArtifactDiffExtractor.ExtractFileRemoteAssetChanges(multiDiff, "SPECS/other/other.spec");
+        Assert.Empty(otherChanges);
+    }
 }

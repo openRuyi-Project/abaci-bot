@@ -143,9 +143,12 @@ public class CveActiveWatchService : BackgroundService
         var labels = new List<string>
         {
             issueLabel,
-            maxSeverity,
             GitHubLabels.StatusStaleExempt
         };
+        if (!string.IsNullOrEmpty(maxSeverity))
+        {
+            labels.Add(maxSeverity);
+        }
 
         try
         {
@@ -160,13 +163,35 @@ public class CveActiveWatchService : BackgroundService
                 if (!_options.DryRun)
                 {
                     await _gitHubService.UpdateIssueAsync(owner, repo, existingIssue.Number, issueTitle, body, ct);
+
+                    // Reconcile severity labels: remove obsolete Severity:* labels
+                    var currentSeverityLabels = existingIssue.Labels
+                        .Where(l => l.Name != null && l.Name.StartsWith("Severity:", StringComparison.OrdinalIgnoreCase))
+                        .Select(l => l.Name)
+                        .ToList();
+
+                    foreach (var oldLabel in currentSeverityLabels)
+                    {
+                        if (!string.Equals(oldLabel, maxSeverity, StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                await _gitHubService.RemoveLabelAsync(owner, repo, existingIssue.Number, oldLabel, ct);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger?.LogDebug(ex, "Failed to remove obsolete severity label {Label} from issue #{Number}", oldLabel, existingIssue.Number);
+                            }
+                        }
+                    }
+
                     await _gitHubService.AddLabelsAsync(owner, repo, existingIssue.Number, labels.ToArray(), ct);
                 }
             }
             else
             {
                 _logger?.LogInformation("Creating new vulnerability issue for {Package} ({Count} CVEs, {Severity})",
-                    finding.PackageName, finding.CveIds.Count, maxSeverity);
+                    finding.PackageName, finding.CveIds.Count, maxSeverity ?? "Unrated");
 
                 if (!_options.DryRun)
                 {
@@ -225,7 +250,7 @@ public class CveActiveWatchService : BackgroundService
         }
     }
 
-    public static string CalculateMaxSeverity(IEnumerable<CveReport> reports)
+    public static string? CalculateMaxSeverity(IEnumerable<CveReport> reports)
     {
         var severities = reports
             .Select(r => r.SeverityLabel)
@@ -235,7 +260,8 @@ public class CveActiveWatchService : BackgroundService
         if (severities.Contains(GitHubLabels.Severity1)) return GitHubLabels.Severity1;
         if (severities.Contains(GitHubLabels.Severity2)) return GitHubLabels.Severity2;
         if (severities.Contains(GitHubLabels.Severity3)) return GitHubLabels.Severity3;
-        return GitHubLabels.Severity4;
+        if (severities.Contains(GitHubLabels.Severity4)) return GitHubLabels.Severity4;
+        return null;
     }
 
     public static string? FormatVulnerabilityUrl(string id)

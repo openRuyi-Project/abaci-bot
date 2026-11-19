@@ -98,7 +98,24 @@ public class ObsPostMergeVerifier
             _logger?.LogInformation("OBS build result for merged PR #{PrNumber} ({Package}): {Status}",
                 pr.Number, packageName, buildResult.Code);
 
-            if (_options.Obs.RequireObsSuccessAfterMerge && buildResult.Code != ObsStatusCode.Succeeded)
+            if (buildResult.Code == ObsStatusCode.Succeeded)
+            {
+                if (!_options.DryRun && pr.Labels != null && pr.Labels.Any(l => string.Equals(l.Name, GitHubLabels.AutoUpdateBlocked, StringComparison.OrdinalIgnoreCase)))
+                {
+                    try
+                    {
+                        await _gitHubService.RemoveLabelAsync(owner, repo, pr.Number, GitHubLabels.AutoUpdateBlocked, ct);
+                        _logger?.LogInformation("Removed {BlockedLabel} from merged PR #{PrNumber} after successful OBS build",
+                            GitHubLabels.AutoUpdateBlocked, pr.Number);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogDebug(ex, "Failed to remove blocked label from PR #{Number}", pr.Number);
+                    }
+                }
+            }
+            else if (_options.Obs.RequireObsSuccessAfterMerge &&
+                     (buildResult.Code == ObsStatusCode.Failed || buildResult.Code == ObsStatusCode.Unresolvable))
             {
                 _logger?.LogWarning("Merged PR #{PrNumber} failed post-merge OBS gate requirement ({Status})", pr.Number, buildResult.Code);
                 if (!_options.DryRun)

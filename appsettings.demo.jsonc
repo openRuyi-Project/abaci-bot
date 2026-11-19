@@ -348,98 +348,98 @@
   // rewrites SPEC files, backfills CI checksums, and publishes automated PRs.
   // ==============================================================================
   "PackageUpdate": {
-    // Reserved. Default: false.
+    // Default: false.
     // false: no update sweeps; true: sweep every CheckIntervalHours.
     "Enabled": false,
-    // Reserved. Default: true.
+    // Default: true.
     // true: discover candidates and prepare plans without pushing branches or opening PRs.
     "DryRun": true,
-    // Reserved. Format: "owner/repo".
+    // Format: "owner/repo".
     // Empty: sweeps are skipped.
-    // Reserved. Default: "openRuyi-Project/openRuyi".
+    // Default: "openRuyi-Project/openRuyi".
     "TargetRepository": "openRuyi-Project/openRuyi",
-    // Reserved. Format: GitHub login used to author update PRs.
+    // Format: GitHub login used to author update PRs.
     // Empty: invalid when Enabled=true.
-    // Reserved. Default: "aqua-rium".
+    // Default: "aqua-rium".
     "BotLogin": "aqua-rium",
-    // Reserved. Format: PAT with repository write access.
+    // Format: PAT with repository write access.
     // Empty: the GitHub App installation token is used instead.
-    // Reserved. Default: empty (the App installation token is used).
+    // Default: empty (the App installation token is used).
     "BotPat": "",
-    // Reserved. Format: branch name prefix.
+    // Format: branch name prefix.
     // Empty: branches are created without a prefix (not recommended).
-    // Reserved. Default: "autoupdate/".
+    // Default: "autoupdate/".
     "BranchPrefix": "autoupdate/",
-    // Reserved. Unit: hours. Range: >= 1. Default: 12.
+    // Unit: hours. Range: >= 1. Default: 12.
     "CheckIntervalHours": 12,
     "Lookout": {
-      // Reserved. Default: true.
+      // Default: true.
       // false: the Lookout candidate source is skipped.
       "Enabled": true,
-      // Reserved. Format: absolute URL.
+      // Format: absolute URL.
       // Empty: Lookout queries cannot run.
-      // Reserved. Default: https://lookout.openruyi.cn.
+      // Default: https://lookout.openruyi.cn.
       "BaseUrl": "https://lookout.openruyi.cn",
-      // Reserved. Unit: hours. Range: > 0. Default: 48.
+      // Unit: hours. Range: > 0. Default: 48.
       "StaleThresholdHours": 48
     },
     "RustCratePoller": {
-      // Reserved. Default: true.
+      // Default: true.
       // false: the crates.io candidate source is skipped.
       "Enabled": true,
-      // Reserved. Format: absolute URL.
+      // Format: absolute URL.
       // Empty: crates.io queries cannot run.
-      // Reserved. Default: https://index.crates.io.
+      // Default: https://index.crates.io.
       "IndexBaseUrl": "https://index.crates.io",
-      // Reserved. Range: >= 1. Default: 60.
+      // Range: >= 1. Default: 60.
       "MaxCratesPerSweep": 60,
-      // Reserved. Unit: milliseconds. Range: >= 0. Default: 300.
+      // Unit: milliseconds. Range: >= 0. Default: 300.
       "RequestDelayMilliseconds": 300
     },
     "Obs": {
-      // Reserved. Format: absolute URL.
+      // Format: absolute URL.
       // Empty: OBS verification is disabled.
-      // Reserved. Default: https://build.openruyi.cn.
+      // Default: https://build.openruyi.cn.
       "BaseUrl": "https://build.openruyi.cn",
-      // Reserved. Format: OBS project name.
+      // Format: OBS project name.
       // Empty: invalid when OBS verification is enabled.
-      // Reserved. Default: "openruyi".
+      // Default: "openruyi".
       "Project": "openruyi",
-      // Reserved. Format: OBS repository name (not an architecture).
+      // Format: OBS repository name (not an architecture).
       // Default: riscv64 (the repository name used by the target OBS project).
       "TargetRepository": "riscv64",
-      // Reserved. Format: architecture filter.
-      // Reserved. Default: "riscv64".
+      // Format: architecture filter.
+      // Default: "riscv64".
       "TargetArch": "riscv64",
-      // Reserved. Default: false.
+      // Default: false.
       // true: a non-successful post-merge OBS build applies Auto-Update: Blocked.
       // false: OBS results are reported without applying a label.
       "RequireObsSuccessAfterMerge": false
     },
-    // Reserved. Default: false.
+    // Default: false.
     // false: updates crossing a major version boundary are skipped.
     "AllowCrossMajorVersion": false,
-    // Reserved. Default: true.
+    // Default: true.
     // true: packages carrying downstream patch files are skipped.
     "SkipPackagesWithPatches": true,
-    // Reserved. Range: >= 1. Default: 5.
+    // Range: >= 1. Default: 5.
     "MaxCandidatesPerSweep": 5,
-    // Reserved. Range: >= 1. Default: 5.
+    // Range: >= 1. Default: 5.
     "MaxConcurrentPullRequests": 5,
-    // Reserved. Unit: days. Range: >= 1. Default: 7.
+    // Unit: days. Range: >= 1. Default: 7.
     "FailedPrTtlDays": 7,
-    // Reserved. Unit: hours. Range: >= 0. Default: 72.
+    // Unit: hours. Range: >= 0. Default: 72.
     "CooldownHours": 72,
-    // Reserved. Range: >= 1. Default: 3.
+    // Range: >= 1. Default: 3.
     "MaxConsecutiveFailures": 3,
-    // Reserved. Default: true.
+    // Default: true.
     // true: a tracking issue is filed when the failure limit is reached.
     "IssueOnGivingUp": true,
-    // Reserved. Unit: days. Range: >= 1. Default: 30.
+    // Unit: days. Range: >= 1. Default: 30.
     "GiveUpIssueCooldownDays": 30,
-    // Reserved. Format: label name.
+    // Format: label name.
     // Empty: falls back to Status: stale-exempt.
-    // Reserved. Default: "Status: stale-exempt".
+    // Default: "Status: stale-exempt".
     "GiveUpIssueLabel": "Status: stale-exempt",
     // Unit: requests. Range: >= 0. Default: 500.
     // When remaining core API quota drops below this value, candidate sweeps pause.
@@ -455,34 +455,34 @@
   // files prioritized security tracking issues, and closes resolved issues.
   // ==============================================================================
   "CveActiveWatch": {
-    // Reserved. Default: false.
+    // Default: false.
     // false: no proactive scans; true: scan every CheckIntervalHours.
     "Enabled": false,
-    // Reserved. Default: true.
+    // Default: true.
     // true: findings are logged without creating or closing issues.
     "DryRun": true,
-    // Reserved. Format: "owner/repo".
+    // Format: "owner/repo".
     // Empty: scans and issue filing are skipped.
-    // Reserved. Default: "openRuyi-Project/openRuyi".
+    // Default: "openRuyi-Project/openRuyi".
     "TargetRepository": "openRuyi-Project/openRuyi",
-    // Reserved. Unit: hours. Range: >= 1. Default: 24.
+    // Unit: hours. Range: >= 1. Default: 24.
     "CheckIntervalHours": 24,
-    // Reserved. Range: >= 1. Default: 1000.
+    // Range: >= 1. Default: 1000.
     "OsvBatchSize": 1000,
-    // Reserved. Range: >= 0. Default: 0.
+    // Range: >= 0. Default: 0.
     // 0: every package in the catalog is evaluated during a sweep.
     "PackagesPerSweep": 0,
-    // Reserved. Unit: queries per day. Range: >= 0. Default: 200.
+    // Unit: queries per day. Range: >= 0. Default: 200.
     // 0: no NVD fallback queries are issued.
     "MaxNvdQueriesPerDay": 200,
-    // Reserved. Unit: milliseconds. Range: >= 0. Default: 6500.
+    // Unit: milliseconds. Range: >= 0. Default: 6500.
     "NvdRequestDelayMilliseconds": 6500,
     // Range: >= 1. Default: 8.
     // Maximum concurrent HTTP requests dispatched when resolving OSV vulnerability details.
     "MaxConcurrentOsvRequests": 8,
-    // Reserved. Format: label name.
+    // Format: label name.
     // Empty: falls back to Vulnerability: Detected.
-    // Reserved. Default: "Vulnerability: Detected".
+    // Default: "Vulnerability: Detected".
     "IssueLabel": "Vulnerability: Detected",
     // Unit: hours. Range: >= 1. Default: 168.
     // Duration before cached vulnerability query results expire.

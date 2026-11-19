@@ -34,8 +34,8 @@ flowchart TD
 ### Key Functional Behaviors
 1. **Admission Rules**: Prevents accidental cross-major SemVer and CalVer breaking changes (`AllowCrossMajorVersion = false`) and skips packages containing downstream `Patch` directives (`SkipPackagesWithPatches = true`). Respects `#!NoAutoUpdate` opt-out tags inside SPEC files.
 2. **Spec Version Rewriters**:
-   - `PlainSpecVersionRewriter`: Updates `Version:` and resets `Release: 1%{?dist}`.
-   - `RustSpecVersionRewriter`: Resolves new crate checksums, rewrites package versions, and maintains vendor cargo configurations.
+   - `PlainSpecVersionRewriter`: Updates `Version:` tokens while keeping `Release:` intact.
+   - `RustCrateSpecRewriter`: Synchronizes `Version:` and `%global full_version` for Rust crates.
 3. **CI Checksum Backfill**: Detects failed pull requests caused by invalid `#!RemoteAsset` checksums and automatically backfills correct SHA-256 digests.
 4. **Failure Cooldown & Tracking**: Tracks consecutive CI failures per package (`MaxConsecutiveFailures`). When the threshold is reached, creates a tracking issue carrying `Auto-Update: Blocked` and `Status: stale-exempt` and enters cooldown (`CooldownHours` / `GiveUpIssueCooldownDays`).
 5. **Post-Merge OBS Verification**: `ObsPostMergeVerifier` polls Open Build Service (`build.openruyi.cn`) to verify that merged pull request commits build successfully. If `RequireObsSuccessAfterMerge` is enabled and OBS fails, applies `Auto-Update: Blocked`.
@@ -47,7 +47,7 @@ flowchart TD
 - `Auto-Update`: Base label applied to all pull requests published by the package update service.
 - `Auto-Update: Rust`: Applied to pull requests updating Rust Cargo crates.
 - `Auto-Update: Blocked`: Applied to tracking issues when repeated failures occur or to merged PRs failing post-merge OBS verification.
-- `Status: stale-exempt`: Applied to tracking issues so automated stale sweeps do not close them.
+- `Status: stale-exempt`: Applied to tracking issues and pull requests so automated stale sweeps do not close them.
 
 ---
 
@@ -58,13 +58,13 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `Enabled` | `bool` | `false` | Master toggle for the package update background service. |
-| `DryRun` | `bool` | `true` | When `true`, discovers candidates and rewrites specs in memory without pushing branches or mutating GitHub. |
+| `DryRun` | `bool` | `true` | When `true`, discovers candidates and rewrites specs in memory without pushing branches, opening PRs, or creating labels on GitHub. |
 | `TargetRepository` | `string` | `"openRuyi-Project/openRuyi"` | Target repository to publish pull requests against in `"owner/repo"` format. |
 | `BotLogin` | `string` | `"aqua-rium"` | GitHub login used to author automated update pull requests. |
 | `BotPat` | `string` | `""` | Optional GitHub Personal Access Token. When empty, falls back to GitHub App authentication. |
 | `BranchPrefix` | `string` | `"autoupdate/"` | Prefix prepended to generated git branches. |
 | `CheckIntervalHours` | `int` | `12` | Frequency in hours between candidate discovery sweeps. |
-| `Lookout` | `LookoutUpdateOptions` | (object) | Configuration for the Release-Monitoring / Anitya upstream bridge. |
+| `Lookout` | `LookoutUpdateOptions` | (object) | Configuration for the Lookout upstream candidate discovery service (`lookout.openruyi.cn`). |
 | `RustCratePoller` | `RustCratePollerOptions` | (object) | Configuration for the crates.io sparse index poller. |
 | `Obs` | `ObsOptions` | (object) | Configuration for post-merge Open Build Service build verification. |
 | `AllowCrossMajorVersion` | `bool` | `false` | Whether to permit updates crossing major version boundaries. |
@@ -85,7 +85,7 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 #### `LookoutUpdateOptions` (`PackageUpdate:Lookout`)
 - `Enabled` (`bool`, default: `true`): Toggles Lookout candidate source.
 - `BaseUrl` (`string`, default: `"https://lookout.openruyi.cn"`): Base endpoint URL for Lookout API.
-- `StaleThresholdHours` (`int`, default: `48`): Cache expiry for Lookout candidate queries.
+- `StaleThresholdHours` (`int`, default: `48`): Freshness threshold in hours for Lookout candidate observations.
 
 #### `RustCratePollerOptions` (`PackageUpdate:RustCratePoller`)
 - `Enabled` (`bool`, default: `true`): Toggles crates.io candidate poller.

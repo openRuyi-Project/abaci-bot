@@ -94,19 +94,22 @@ public class PackageUpdateService : BackgroundService
         _logger?.LogInformation("Starting PackageUpdateService sweep for {TargetRepo} (DryRun={DryRun})", targetRepo, _options.DryRun);
 
         // Ensure required automation and status labels exist in target repository (self-healing idempotency)
-        try
+        if (!_options.DryRun)
         {
-            await _gitHubService.EnsureLabelsExistAsync(owner, repo, new[]
+            try
             {
-                (GitHubLabels.AutoUpdate, "0366d6", "Pull requests automatically created for package updates"),
-                (GitHubLabels.AutoUpdateRust, "dea584", "Pull requests automatically created for Rust crate updates"),
-                (GitHubLabels.AutoUpdateBlocked, "d73a4a", "Package updates blocked due to repeated failures or missing dependencies"),
-                (GitHubLabels.StatusStaleExempt, "ffffff", "Exempt from automatic stale closure")
-            }, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogDebug(ex, "Failed to ensure labels in {TargetRepo}", targetRepo);
+                await _gitHubService.EnsureLabelsExistAsync(owner, repo, new[]
+                {
+                    (GitHubLabels.AutoUpdate, "0366d6", "Pull requests automatically created for package updates"),
+                    (GitHubLabels.AutoUpdateRust, "dea584", "Pull requests automatically created for Rust crate updates"),
+                    (GitHubLabels.AutoUpdateBlocked, "d73a4a", "Package updates blocked due to repeated failures or missing dependencies"),
+                    (GitHubLabels.StatusStaleExempt, "ffffff", "Exempt from automatic stale closure")
+                }, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogDebug(ex, "Failed to ensure labels in {TargetRepo}", targetRepo);
+            }
         }
 
         // 1. Quota & Rate Limit Gate
@@ -149,8 +152,13 @@ public class PackageUpdateService : BackgroundService
         _logger?.LogInformation("Discovered {Count} total candidates across all sources", allCandidates.Count);
 
         // 4. Process candidates respecting gates and sweep limits
+        // Prioritize security advisories so they are not crowded out by routine updates
+        var prioritizedCandidates = allCandidates
+            .OrderByDescending(c => c.IsSecurityAdvisory)
+            .ToList();
+
         int publishedThisSweep = 0;
-        foreach (var candidate in allCandidates)
+        foreach (var candidate in prioritizedCandidates)
         {
             if (ct.IsCancellationRequested)
                 break;
@@ -165,6 +173,14 @@ public class PackageUpdateService : BackgroundService
             {
                 _logger?.LogInformation("Reached MaxConcurrentPullRequests limit; stopping sweep");
                 break;
+            }
+
+            // 0. Whitelist and sanity check candidate package name and target version
+            if (!UpdateAdmission.IsValidPackageName(candidate.PackageName) || !UpdateAdmission.IsValidTargetVersion(candidate.TargetVersion))
+            {
+                _logger?.LogWarning("Invalid candidate package name '{Package}' or target version '{Version}'; skipping",
+                    candidate.PackageName, candidate.TargetVersion);
+                continue;
             }
 
             // A. Check cooldown
@@ -235,6 +251,11 @@ public class PackageUpdateService : BackgroundService
                 publishedThisSweep++;
                 _logger?.LogInformation("Successfully published update for {Package} -> {Version} (PR #{PrNumber})",
                     candidate.PackageName, candidate.TargetVersion, publishResult.PullRequestNumber);
+
+                if (_options.RequestThrottleMilliseconds > 0)
+                {
+                    await Task.Delay(_options.RequestThrottleMilliseconds, ct);
+                }
             }
             else if (publishResult.Skipped)
             {
@@ -305,8 +326,13 @@ public class PackageUpdateService : BackgroundService
                         await _gitHubService.CreateCommentAsync(owner, repo, pr.Number, closeMsg, ct);
                         await _gitHubService.CloseIssueAsync(owner, repo, pr.Number, ct);
 
-                        // Delete remote branch if exists
-                        if (!string.IsNullOrWhiteSpace(branchName))
+                        // Delete remote branch if exists, belongs to target repository, and matches branch prefix
+                        var headRepoFullName = fullPr?.Head?.Repository?.FullName;
+                        var isSameRepo = headRepoFullName == null || string.Equals(headRepoFullName, $"{owner}/{repo}", StringComparison.OrdinalIgnoreCase);
+                        var prefix = !string.IsNullOrEmpty(_options.BranchPrefix) ? _options.BranchPrefix : "autoupdate/";
+                        var hasExpectedPrefix = !string.IsNullOrWhiteSpace(branchName) && branchName.StartsWith(prefix, StringComparison.Ordinal);
+
+                        if (isSameRepo && hasExpectedPrefix && !string.IsNullOrWhiteSpace(branchName))
                         {
                             try
                             {
@@ -400,29 +426,36 @@ public class PackageUpdateService : BackgroundService
             if (string.IsNullOrWhiteSpace(diffContent))
                 return;
 
-            // Extract file path and modified remoteasset lines
-            // Example diff header:
-            // --- a/SPECS/foo/foo.spec
-            // +++ b/SPECS/foo/foo.spec
-            var fileMatch = Regex.Match(diffContent, @"\+\+\+\s+b/(?<path>SPECS/\S+)", RegexOptions.Multiline);
-            if (!fileMatch.Success)
-                return;
-
-            var specPath = fileMatch.Groups["path"].Value.Trim();
-            var currentSpec = await _gitHubService.GetFileContentAsync(owner, repo, specPath, branchName, ct);
-
-            // Extract added RemoteAsset line (+#!RemoteAsset:...)
-            var addedLines = Regex.Matches(diffContent, @"^\+(?<line>#!RemoteAsset:.*)$", RegexOptions.Multiline);
-            var removedLines = Regex.Matches(diffContent, @"^-(?<line>#!RemoteAsset:.*)$", RegexOptions.Multiline);
-
-            if (addedLines.Count > 0 && removedLines.Count > 0 && addedLines.Count == removedLines.Count)
+            // Extract file path from diff header and process each modified spec file safely
+            var fileMatches = Regex.Matches(diffContent, @"\+\+\+\s+b/(?<path>SPECS/\S+)", RegexOptions.Multiline);
+            foreach (Match fileMatch in fileMatches)
             {
-                var updatedSpec = currentSpec;
-                for (int i = 0; i < addedLines.Count; i++)
+                var specPath = fileMatch.Groups["path"].Value.Trim();
+                var changes = ArtifactDiffExtractor.ExtractFileRemoteAssetChanges(diffContent, specPath);
+                if (changes.Count == 0)
+                    continue;
+
+                string currentSpec;
+                try
                 {
-                    var oldLine = removedLines[i].Groups["line"].Value.Trim();
-                    var newLine = addedLines[i].Groups["line"].Value.Trim();
-                    updatedSpec = updatedSpec.Replace(oldLine, newLine);
+                    currentSpec = await _gitHubService.GetFileContentAsync(owner, repo, specPath, branchName, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger?.LogDebug(ex, "Failed to load current spec {Path} from branch {Branch}", specPath, branchName);
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(currentSpec))
+                    continue;
+
+                var updatedSpec = currentSpec;
+                foreach (var (oldLine, newLine) in changes)
+                {
+                    if (updatedSpec.Contains(oldLine, StringComparison.Ordinal))
+                    {
+                        updatedSpec = updatedSpec.Replace(oldLine, newLine);
+                    }
                 }
 
                 if (!string.Equals(updatedSpec, currentSpec, StringComparison.Ordinal))

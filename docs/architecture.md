@@ -84,7 +84,7 @@ In addition to event-driven webhook processing, `abaci-bot` hosts background ser
 - Updates an in-memory `Dictionary` of license identifiers. The LRU cache used for fetched files lives in `FileContentCache`, not in the SPDX service.
 
 ### PackageUpdateService
-- Periodically discovers upstream package releases from Lookout (Release-Monitoring / Anitya) and crates.io.
+- Periodically discovers upstream package releases from Lookout (`lookout.openruyi.cn`) and crates.io.
 - Applies version admission rules, rewrites RPM spec versions, backfills CI checksums, and publishes automated pull requests.
 - Closes abandoned failing pull requests and tracks repeated failures under cooldown tracking issues.
 
