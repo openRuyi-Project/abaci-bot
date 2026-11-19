@@ -195,7 +195,8 @@ public class RustCrateVersionSource : IUpdateCandidateSource
                 CurrentVersion: currentVersion,
                 TargetVersion: targetEntry.Version,
                 Origin: CandidateOrigin.RustCrate,
-                EvidenceUrl: $"https://crates.io/crates/{crateName}/{targetEntry.Version}"));
+                EvidenceUrl: $"https://crates.io/crates/{crateName}/{targetEntry.Version}",
+                PublishedAt: targetEntry.Pubtime));
         }
 
         s_crateCursor = (startIndex + processedCount) % (totalSpecs == 0 ? 1 : totalSpecs);
@@ -311,6 +312,9 @@ public class RustCrateVersionSource : IUpdateCandidateSource
 
         [JsonPropertyName("yanked")]
         public bool Yanked { get; set; }
+
+        [JsonPropertyName("pubtime")]
+        public DateTimeOffset? Pubtime { get; set; }
     }
 }
 

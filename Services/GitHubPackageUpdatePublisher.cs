@@ -40,6 +40,7 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
         SpecRewriteResult rewriteResult,
         string targetRepo,
         string baseBranch = "main",
+        string? specPath = null,
         CancellationToken ct = default)
     {
         if (candidate == null || rewriteResult == null || !rewriteResult.Success || !rewriteResult.HasChanged)
@@ -58,8 +59,8 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
 
         var branchPrefix = string.IsNullOrWhiteSpace(_options.BranchPrefix) ? "autoupdate/" : _options.BranchPrefix;
         var branchName = $"{branchPrefix}{candidate.PackageName}";
-        var specPath = !string.IsNullOrWhiteSpace(rewriteResult.SpecPath)
-            ? rewriteResult.SpecPath
+        var finalSpecPath = !string.IsNullOrWhiteSpace(specPath)
+            ? specPath
             : $"SPECS/{candidate.PackageName}/{candidate.PackageName}.spec";
 
         var existingBranchSha = await _gitHubService.GetRefShaAsync(owner, repo, branchName, ct);
@@ -104,7 +105,7 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
             // 2. Branch SPEC version reading (strong idempotency: skip if already at target version, ignoring +suffix)
             try
             {
-                var branchSpecContent = await _gitHubService.GetFileContentAsync(owner, repo, specPath, branchName, ct);
+                var branchSpecContent = await _gitHubService.GetFileContentAsync(owner, repo, finalSpecPath, branchName, ct);
                 if (UpdateAdmission.IsVersionAtTarget(branchSpecContent, candidate.TargetVersion))
                 {
                     _logger?.LogInformation("Branch {Branch} is already at target version {Version}; skipping push",
@@ -146,7 +147,7 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
 
         // Commit updated SPEC to branch
         await _gitHubService.UpdateFileContentAsync(
-            owner, repo, specPath, commitMessage, rewriteResult.UpdatedContent, branchName, ct);
+            owner, repo, finalSpecPath, commitMessage, rewriteResult.UpdatedContent, branchName, ct);
 
         PullRequest pr;
         if (existingPr != null)

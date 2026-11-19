@@ -42,7 +42,7 @@ public class RustCrateVersionSourceTests
         var ndjson = """
             {"name":"anstream","vers":"0.6.20","yanked":false}
             {"name":"anstream","vers":"0.6.21","yanked":false}
-            {"name":"anstream","vers":"0.6.22","yanked":false}
+            {"name":"anstream","vers":"0.6.22","yanked":false,"pubtime":"2026-03-01T10:00:00Z"}
             {"name":"anstream","vers":"0.6.23-rc.1","yanked":false}
             {"name":"anstream","vers":"0.6.24","yanked":true}
             {"name":"anstream","vers":"1.0.0","yanked":false}
@@ -92,6 +92,8 @@ public class RustCrateVersionSourceTests
         Assert.Equal("0.6.22", cand.TargetVersion);
         Assert.Equal(CandidateOrigin.RustCrate, cand.Origin);
         Assert.Equal("https://crates.io/crates/anstream/0.6.22", cand.EvidenceUrl);
+        Assert.True(cand.PublishedAt.HasValue);
+        Assert.Equal(DateTimeOffset.Parse("2026-03-01T10:00:00Z"), cand.PublishedAt.Value);
     }
 }
 

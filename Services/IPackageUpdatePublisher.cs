@@ -20,6 +20,7 @@ public interface IPackageUpdatePublisher
         SpecRewriteResult rewriteResult,
         string targetRepo,
         string baseBranch = "main",
+        string? specPath = null,
         CancellationToken ct = default);
 }
 

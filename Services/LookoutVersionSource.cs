@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -16,6 +17,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
     private readonly HttpClient _httpClient;
     private readonly LookoutUpdateOptions _options;
     private readonly ILogger<LookoutVersionSource>? _logger;
+    private readonly ConcurrentDictionary<string, (string Version, DateTimeOffset FirstSeen)> _firstSeenVersions = new(StringComparer.OrdinalIgnoreCase);
 
     public string SourceName => "Lookout";
 
@@ -136,6 +138,14 @@ public class LookoutVersionSource : IUpdateCandidateSource
                 var hasSecurity = pkg.HasSecurityAdvisory || 
                                   (annotations != null && annotations.Any(a => string.Equals(a.Monitor, "security", StringComparison.OrdinalIgnoreCase)));
 
+                var observedTime = updatedAt ?? DateTimeOffset.UtcNow;
+                var firstSeen = _firstSeenVersions.AddOrUpdate(
+                    pkg.Name,
+                    _ => (latestVer, observedTime),
+                    (_, existing) => string.Equals(existing.Version, latestVer, StringComparison.Ordinal)
+                        ? existing
+                        : (latestVer, observedTime)).FirstSeen;
+
                 candidates.Add(new UpdateCandidate(
                     PackageName: pkg.Name,
                     CurrentVersion: currentVer,
@@ -143,7 +153,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
                     Origin: CandidateOrigin.Lookout,
                     EvidenceUrl: evidenceUrl,
                     IsSecurityAdvisory: hasSecurity,
-                    PublishedAt: pkg.PublishedAt));
+                    PublishedAt: firstSeen));
             }
 
             if (items.Count < perPage)

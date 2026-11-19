@@ -59,6 +59,7 @@ public class PackageUpdateServiceTests
             Array.Empty<ISpecVersionRewriter>(),
             publisherMock,
             obsVerifier,
+            Substitute.For<ISpecCatalog>(),
             options);
 
         await service.RunSweepAsync();
@@ -85,6 +86,7 @@ public class PackageUpdateServiceTests
             Array.Empty<ISpecVersionRewriter>(),
             Substitute.For<IPackageUpdatePublisher>(),
             obsVerifier,
+            Substitute.For<ISpecCatalog>(),
             options);
 
         // Initial state: not in cooldown
@@ -157,6 +159,7 @@ public class PackageUpdateServiceTests
             Array.Empty<ISpecVersionRewriter>(),
             Substitute.For<IPackageUpdatePublisher>(),
             obsVerifier,
+            Substitute.For<ISpecCatalog>(),
             options);
 
         await service.RunSweepAsync();
@@ -187,6 +190,7 @@ public class PackageUpdateServiceTests
             Array.Empty<ISpecVersionRewriter>(),
             Substitute.For<IPackageUpdatePublisher>(),
             obsVerifier,
+            Substitute.For<ISpecCatalog>(),
             options);
 
         await service.RunSweepAsync();
@@ -257,11 +261,12 @@ public class PackageUpdateServiceTests
             .Returns(new SpecRewriteResult(true, "Name: openssl\nVersion: 3.0.1\n", null, true));
 
         var publisherMock = Substitute.For<IPackageUpdatePublisher>();
-        publisherMock.PublishUpdateAsync(Arg.Any<UpdateCandidate>(), Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+        publisherMock.PublishUpdateAsync(Arg.Any<UpdateCandidate>(), Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(new PublishResult(true, false, PullRequestNumber: 101));
 
-        gitHubMock.GetFileContentAsync("openRuyi-Project", "openRuyi", "SPECS/openssl/openssl.spec", "main", Arg.Any<CancellationToken>())
-            .Returns("Name: openssl\nVersion: 3.0.0\nRelease: 1\n");
+        var specCatalogMock = Substitute.For<ISpecCatalog>();
+        specCatalogMock.GetSpecAsync("openssl", Arg.Any<CancellationToken>())
+            .Returns(new SpecContext("openssl", "openssl", "Name: openssl\nVersion: 3.0.0\nRelease: 1\n", "SPECS/openssl/openssl.spec"));
 
         var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
         {
@@ -279,17 +284,18 @@ public class PackageUpdateServiceTests
             new[] { rewriterMock },
             publisherMock,
             obsVerifier,
+            specCatalogMock,
             options);
 
         await service.RunSweepAsync();
 
         // curl was skipped due to 72h cooldown
         await publisherMock.DidNotReceive().PublishUpdateAsync(
-            routineCandidate, Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+            routineCandidate, Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
 
         // openssl was published because IsSecurityAdvisory bypassed stabilization cooldown
         await publisherMock.Received(1).PublishUpdateAsync(
-            securityCandidate, Arg.Any<SpecRewriteResult>(), "openRuyi-Project/openRuyi", "main", Arg.Any<CancellationToken>());
+            securityCandidate, Arg.Any<SpecRewriteResult>(), "openRuyi-Project/openRuyi", "main", "SPECS/openssl/openssl.spec", Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -304,17 +310,17 @@ public class PackageUpdateServiceTests
         sourceMock.GetCandidatesAsync(Arg.Any<CancellationToken>()).Returns(new[] { candidate });
 
         var specCatalogMock = Substitute.For<ISpecCatalog>();
-        var specContext = new SpecContext("rust-aho-corasick", "rust-aho-corasick-0.7", "Name: rust-aho-corasick\nVersion: 0.7.18\n");
+        var specContext = new SpecContext("rust-aho-corasick", "rust-aho-corasick-0.7", "Name: rust-aho-corasick\nVersion: 0.7.18\n", "SPECS/rust-aho-corasick-0.7/rust-aho-corasick.spec");
         specCatalogMock.GetSpecAsync("rust-aho-corasick", Arg.Any<CancellationToken>())
             .Returns(specContext);
 
         var rewriterMock = Substitute.For<ISpecVersionRewriter>();
         rewriterMock.CanHandle(specContext).Returns(true);
         rewriterMock.Rewrite(specContext, "0.7.20")
-            .Returns(new SpecRewriteResult(true, "Name: rust-aho-corasick\nVersion: 0.7.20\n", null, true, "SPECS/rust-aho-corasick-0.7/rust-aho-corasick.spec"));
+            .Returns(new SpecRewriteResult(true, "Name: rust-aho-corasick\nVersion: 0.7.20\n", null, true));
 
         var publisherMock = Substitute.For<IPackageUpdatePublisher>();
-        publisherMock.PublishUpdateAsync(candidate, Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+        publisherMock.PublishUpdateAsync(candidate, Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(new PublishResult(true, false, PullRequestNumber: 102));
 
         var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
@@ -333,15 +339,15 @@ public class PackageUpdateServiceTests
             new[] { rewriterMock },
             publisherMock,
             obsVerifier,
-            options,
-            specCatalog: specCatalogMock);
+            specCatalogMock,
+            options);
 
         await service.RunSweepAsync();
 
         await specCatalogMock.Received(1).GetSpecAsync("rust-aho-corasick", Arg.Any<CancellationToken>());
         await publisherMock.Received(1).PublishUpdateAsync(
-            candidate, Arg.Is<SpecRewriteResult>(r => r.SpecPath == "SPECS/rust-aho-corasick-0.7/rust-aho-corasick.spec"),
-            "openRuyi-Project/openRuyi", "main", Arg.Any<CancellationToken>());
+            candidate, Arg.Any<SpecRewriteResult>(),
+            "openRuyi-Project/openRuyi", "main", "SPECS/rust-aho-corasick-0.7/rust-aho-corasick.spec", Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -361,6 +367,7 @@ public class PackageUpdateServiceTests
             Array.Empty<ISpecVersionRewriter>(),
             Substitute.For<IPackageUpdatePublisher>(),
             obsVerifier,
+            Substitute.For<ISpecCatalog>(),
             options);
 
         // Record 2 failures to enter cooldown
@@ -425,11 +432,149 @@ public class PackageUpdateServiceTests
             Array.Empty<ISpecVersionRewriter>(),
             Substitute.For<IPackageUpdatePublisher>(),
             obsVerifier,
+            Substitute.For<ISpecCatalog>(),
             options);
 
         await service.RunSweepAsync();
 
         await gitHubMock.Received(1).CloseIssueAsync("openRuyi-Project", "openRuyi", 95, Arg.Any<CancellationToken>());
         await gitHubMock.Received(1).DeleteRefAsync("openRuyi-Project", "openRuyi", "autoupdate/curl", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunSweepAsync_ResetsCooldown_WhenTrackingIssueIsClosed()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        var candidate = new UpdateCandidate("curl", "8.2.1", "8.2.2", CandidateOrigin.Lookout, "https://lookout", false,
+            PublishedAt: DateTimeOffset.UtcNow.AddDays(-5));
+        var sourceMock = Substitute.For<IUpdateCandidateSource>();
+        sourceMock.GetCandidatesAsync(Arg.Any<CancellationToken>()).Returns(new[] { candidate });
+
+        var specCatalogMock = Substitute.For<ISpecCatalog>();
+        specCatalogMock.GetSpecAsync("curl", Arg.Any<CancellationToken>())
+            .Returns(new SpecContext("curl", "curl", "Name: curl\nVersion: 8.2.1\n", "SPECS/curl/curl.spec"));
+
+        var rewriterMock = Substitute.For<ISpecVersionRewriter>();
+        rewriterMock.CanHandle(Arg.Any<SpecContext>()).Returns(true);
+        rewriterMock.Rewrite(Arg.Any<SpecContext>(), Arg.Any<string>())
+            .Returns(new SpecRewriteResult(true, "Name: curl\nVersion: 8.2.2\n", null, true));
+
+        var publisherMock = Substitute.For<IPackageUpdatePublisher>();
+        publisherMock.PublishUpdateAsync(Arg.Any<UpdateCandidate>(), Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new PublishResult(true, false, PullRequestNumber: 201));
+
+        // Mock issue created when entering cooldown
+        var createdIssue = (Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Issue));
+        typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(createdIssue, 888);
+        typeof(Issue).GetProperty(nameof(Issue.State))?.SetValue(createdIssue, new StringEnum<ItemState>(ItemState.Open));
+
+        gitHubMock.CreateIssueAsync("openRuyi-Project", "openRuyi", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(createdIssue);
+        gitHubMock.GetIssueAsync("openRuyi-Project", "openRuyi", 888, Arg.Any<CancellationToken>())
+            .Returns(createdIssue);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "openRuyi-Project/openRuyi",
+            MaxConsecutiveFailures = 1,
+            IssueOnGivingUp = true,
+            CooldownHours = 0,
+            RequestThrottleMilliseconds = 0
+        });
+
+        var obsVerifier = new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), options);
+        var service = new PackageUpdateService(
+            gitHubMock,
+            new[] { sourceMock },
+            new[] { rewriterMock },
+            publisherMock,
+            obsVerifier,
+            specCatalogMock,
+            options);
+
+        // 1. Record a failure to trigger cooldown and file tracking issue #888
+        var stalePr = (Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Issue));
+        typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(stalePr, 88);
+        typeof(Issue).GetProperty(nameof(Issue.UpdatedAt))?.SetValue(stalePr, (DateTimeOffset?)DateTimeOffset.UtcNow);
+        var autoUpdateLabel = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(autoUpdateLabel, GitHubLabels.AutoUpdate);
+        typeof(Issue).GetProperty(nameof(Issue.Labels))?.SetValue(stalePr, new List<Label> { autoUpdateLabel });
+
+        gitHubMock.SearchStaleCandidatesAsync("openRuyi-Project", "openRuyi", Arg.Any<DateTimeOffset>(), true, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { stalePr });
+
+        var fullPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var headRef = (GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(GitReference));
+        typeof(GitReference).GetProperty(nameof(GitReference.Ref))?.SetValue(headRef, "autoupdate/curl");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Head))?.SetValue(fullPr, headRef);
+        gitHubMock.GetPullRequestAsync("openRuyi-Project", "openRuyi", 88, Arg.Any<CancellationToken>()).Returns(fullPr);
+
+        var failedRun = (WorkflowRun)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WorkflowRun));
+        typeof(WorkflowRun).GetProperty(nameof(WorkflowRun.CreatedAt))?.SetValue(failedRun, DateTimeOffset.UtcNow);
+        typeof(WorkflowRun).GetProperty(nameof(WorkflowRun.Conclusion))?.SetValue(failedRun, new StringEnum<WorkflowRunConclusion>(WorkflowRunConclusion.Failure));
+        gitHubMock.ListWorkflowRunsAsync("openRuyi-Project", "openRuyi", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns(new[] { failedRun });
+
+        // Trigger failure processing
+        await service.RunSweepAsync();
+        Assert.True(service.IsInCooldown("curl"));
+
+        // 2. Next sweep: tracking issue #888 is closed by human -> should reset cooldown and publish update
+        typeof(Issue).GetProperty(nameof(Issue.State))?.SetValue(createdIssue, new StringEnum<ItemState>(ItemState.Closed));
+        await service.RunSweepAsync();
+
+        Assert.False(service.IsInCooldown("curl"));
+        await publisherMock.Received(1).PublishUpdateAsync(
+            candidate, Arg.Any<SpecRewriteResult>(), "openRuyi-Project/openRuyi", "main", "SPECS/curl/curl.spec", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunSweepAsync_ResetsCooldown_WhenManuallyUpdatedOnMain()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        var candidate = new UpdateCandidate("curl", "8.2.1", "8.2.2", CandidateOrigin.Lookout, "https://lookout", false);
+        var sourceMock = Substitute.For<IUpdateCandidateSource>();
+        sourceMock.GetCandidatesAsync(Arg.Any<CancellationToken>()).Returns(new[] { candidate });
+
+        // Spec on main already at 8.2.2 (human manually upgraded!)
+        var specCatalogMock = Substitute.For<ISpecCatalog>();
+        specCatalogMock.GetSpecAsync("curl", Arg.Any<CancellationToken>())
+            .Returns(new SpecContext("curl", "curl", "Name: curl\nVersion: 8.2.2\nRelease: 1\n", "SPECS/curl/curl.spec"));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "openRuyi-Project/openRuyi",
+            MaxConsecutiveFailures = 1,
+            CooldownHours = 0
+        });
+
+        var obsVerifier = new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), options);
+        var service = new PackageUpdateService(
+            gitHubMock,
+            new[] { sourceMock },
+            Array.Empty<ISpecVersionRewriter>(),
+            Substitute.For<IPackageUpdatePublisher>(),
+            obsVerifier,
+            specCatalogMock,
+            options);
+
+        // Put package in cooldown
+        service.RecordFailure("curl");
+        Assert.True(service.IsInCooldown("curl"));
+
+        // Sweep runs and detects spec already at target version -> resets cooldown
+        await service.RunSweepAsync();
+
+        Assert.False(service.IsInCooldown("curl"));
     }
 }

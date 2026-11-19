@@ -169,6 +169,7 @@ public class LookoutVersionSourceTests
         Assert.Equal("8.22.0", candidates[0].TargetVersion);
         Assert.True(candidates[0].IsSecurityAdvisory);
         Assert.Equal("https://lookout.openruyi.cn/package/curl", candidates[0].EvidenceUrl);
+        Assert.True(candidates[0].PublishedAt.HasValue);
     }
 
     [Fact]

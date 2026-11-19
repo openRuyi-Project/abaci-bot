@@ -69,7 +69,8 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
             if (specFiles.Length > 0)
             {
                 var content = await File.ReadAllTextAsync(specFiles[0], ct);
-                var ctx = new SpecContext(packageName, packageName, content);
+                var relPath = specFiles[0].Replace('\\', '/');
+                var ctx = new SpecContext(packageName, packageName, content, relPath);
                 _specCache[packageName] = (ctx, DateTimeOffset.UtcNow.AddHours(6));
                 return ctx;
             }
@@ -93,7 +94,8 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
                     content = await _gitHubService.GetFileContentAsync(owner, repo, remotePath, baseBranch, ct);
                 }
 
-                var ctx = new SpecContext(packageName, Path.GetFileName(Path.GetDirectoryName(remotePath)) ?? packageName, content);
+                var dirName = Path.GetFileName(Path.GetDirectoryName(remotePath)) ?? packageName;
+                var ctx = new SpecContext(packageName, dirName, content, remotePath);
                 _specCache[packageName] = (ctx, DateTimeOffset.UtcNow.AddHours(6));
                 return ctx;
             }
@@ -127,7 +129,8 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
                 try
                 {
                     var content = await File.ReadAllTextAsync(specFiles[0], ct);
-                    list.Add(new SpecContext(dirName, dirName, content));
+                    var relPath = specFiles[0].Replace('\\', '/');
+                    list.Add(new SpecContext(dirName, dirName, content, relPath));
                 }
                 catch (Exception ex)
                 {

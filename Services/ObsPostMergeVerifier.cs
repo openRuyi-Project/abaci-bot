@@ -124,6 +124,23 @@ public class ObsPostMergeVerifier
 
                     if (isSameRepo && !string.IsNullOrWhiteSpace(branchName) && branchName.StartsWith(prefix, StringComparison.Ordinal))
                     {
+                        // 1. Check whether a newer open PR is already reusing this branch
+                        var openPr = await _gitHubService.FindOpenPullRequestByHeadAsync(owner, repo, branchName, ct);
+                        if (openPr != null)
+                        {
+                            _logger?.LogDebug("Skipping branch {Branch} deletion: active open PR #{OpenPr} is currently reusing it", branchName, openPr.Number);
+                            continue;
+                        }
+
+                        // 2. Check whether the branch reference has moved forward past the merged PR's head SHA
+                        var currentSha = await _gitHubService.GetRefShaAsync(owner, repo, branchName, ct);
+                        if (!string.IsNullOrEmpty(pr.Head?.Sha) && !string.Equals(currentSha, pr.Head.Sha, StringComparison.Ordinal))
+                        {
+                            _logger?.LogDebug("Skipping branch {Branch} deletion: branch head has moved (current: {CurrentSha}, merged PR: {PrSha})",
+                                branchName, currentSha, pr.Head.Sha);
+                            continue;
+                        }
+
                         try
                         {
                             await _gitHubService.DeleteRefAsync(owner, repo, branchName, ct);

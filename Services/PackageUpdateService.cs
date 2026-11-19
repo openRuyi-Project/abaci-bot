@@ -19,7 +19,7 @@ public class PackageUpdateService : BackgroundService
     private readonly IEnumerable<ISpecVersionRewriter> _specRewriters;
     private readonly IPackageUpdatePublisher _publisher;
     private readonly ObsPostMergeVerifier _obsPostMergeVerifier;
-    private readonly ISpecCatalog? _specCatalog;
+    private readonly ISpecCatalog _specCatalog;
     private readonly PackageUpdateOptions _options;
     private readonly ILogger<PackageUpdateService>? _logger;
 
@@ -27,6 +27,7 @@ public class PackageUpdateService : BackgroundService
     private readonly ConcurrentDictionary<string, int> _failureCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _cooldowns = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<int, bool> _recordedFailedPrs = new();
+    private readonly ConcurrentDictionary<string, int> _trackedBlockedIssues = new(StringComparer.OrdinalIgnoreCase);
 
     public PackageUpdateService(
         IGitHubService gitHubService,
@@ -34,18 +35,18 @@ public class PackageUpdateService : BackgroundService
         IEnumerable<ISpecVersionRewriter> specRewriters,
         IPackageUpdatePublisher publisher,
         ObsPostMergeVerifier obsPostMergeVerifier,
+        ISpecCatalog specCatalog,
         IOptions<PackageUpdateOptions> options,
-        ILogger<PackageUpdateService>? logger = null,
-        ISpecCatalog? specCatalog = null)
+        ILogger<PackageUpdateService>? logger = null)
     {
         _gitHubService = gitHubService;
         _candidateSources = candidateSources;
         _specRewriters = specRewriters;
         _publisher = publisher;
         _obsPostMergeVerifier = obsPostMergeVerifier;
+        _specCatalog = specCatalog ?? throw new ArgumentNullException(nameof(specCatalog));
         _options = options.Value;
         _logger = logger;
-        _specCatalog = specCatalog;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -200,52 +201,66 @@ public class PackageUpdateService : BackgroundService
                 }
             }
 
-            // B. Check repeated CI failure cooldown
-            if (IsInCooldown(candidate.PackageName))
+            // B. Read existing SPEC from base branch (main) using required ISpecCatalog
+            SpecContext? specContext = null;
+            try
             {
-                _logger?.LogDebug("Package {Package} is in failure cooldown; skipping", candidate.PackageName);
+                specContext = await _specCatalog.GetSpecAsync(candidate.PackageName, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogDebug(ex, "Could not load SPEC for candidate {Package} via SpecCatalog", candidate.PackageName);
+            }
+
+            if (specContext == null || string.IsNullOrWhiteSpace(specContext.Content))
+                continue;
+
+            var specContent = specContext.Content;
+
+            // Check if main branch was already manually updated to or past target version (closed-loop reset)
+            if (UpdateAdmission.IsVersionAtTarget(specContent, candidate.TargetVersion))
+            {
+                _logger?.LogInformation("Package {Package} on main is already at or past target version {Version}; resetting cooldown",
+                    candidate.PackageName, candidate.TargetVersion);
+                ResetCooldown(candidate.PackageName);
                 continue;
             }
 
-            // C. Read existing SPEC from base branch (main) using ISpecCatalog when available, falling back to direct GitHub fetch
-            SpecContext? specContext = null;
-            if (_specCatalog != null)
+            // C. Check repeated CI failure cooldown and closed-loop issue reset
+            if (IsInCooldown(candidate.PackageName))
             {
-                try
+                bool issueWasClosed = false;
+                if (_trackedBlockedIssues.TryGetValue(candidate.PackageName, out var issueNum))
                 {
-                    specContext = await _specCatalog.GetSpecAsync(candidate.PackageName, ct);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger?.LogDebug(ex, "Could not load SPEC for candidate {Package} via SpecCatalog", candidate.PackageName);
-                }
-            }
-
-            string specContent;
-            if (specContext != null)
-            {
-                specContent = specContext.Content;
-            }
-            else
-            {
-                var fallbackPath = $"SPECS/{candidate.PackageName}/{candidate.PackageName}.spec";
-                try
-                {
-                    specContent = await _gitHubService.GetFileContentAsync(owner, repo, fallbackPath, "main", ct);
-                    if (!string.IsNullOrWhiteSpace(specContent))
+                    try
                     {
-                        specContext = new SpecContext(candidate.PackageName, candidate.PackageName, specContent);
+                        var issue = await _gitHubService.GetIssueAsync(owner, repo, issueNum, ct);
+                        if (issue != null && issue.State.Value == Octokit.ItemState.Closed)
+                        {
+                            _logger?.LogInformation("Tracking issue #{IssueNum} for package {Package} was closed; resetting cooldown", issueNum, candidate.PackageName);
+                            ResetCooldown(candidate.PackageName);
+                            _trackedBlockedIssues.TryRemove(candidate.PackageName, out _);
+                            issueWasClosed = true;
+                        }
+                        else
+                        {
+                            _logger?.LogDebug("Package {Package} remains blocked by open issue #{IssueNum}; skipping", candidate.PackageName, issueNum);
+                            continue;
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger?.LogDebug(ex, "Failed to query tracking issue #{IssueNum} for {Package}; maintaining cooldown", issueNum, candidate.PackageName);
+                        continue;
                     }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+
+                if (!issueWasClosed && IsInCooldown(candidate.PackageName))
                 {
-                    _logger?.LogDebug(ex, "Could not load SPEC for candidate {Package} from main; skipping", candidate.PackageName);
+                    _logger?.LogDebug("Package {Package} is in failure cooldown; skipping", candidate.PackageName);
                     continue;
                 }
             }
-
-            if (specContext == null || string.IsNullOrWhiteSpace(specContent))
-                continue;
 
             // D. Check #!NoAutoUpdate directive
             if (NoAutoUpdateMarker.HasNoAutoUpdate(specContent, out var optOutReason))
@@ -284,8 +299,8 @@ public class PackageUpdateService : BackgroundService
                 continue;
             }
 
-            // E. Publish PR
-            var publishResult = await _publisher.PublishUpdateAsync(candidate, rewriteResult, targetRepo, "main", ct);
+            // F. Publish PR with authoritative spec path from SpecContext
+            var publishResult = await _publisher.PublishUpdateAsync(candidate, rewriteResult, targetRepo, "main", specContext.RelativePath, ct);
             if (publishResult.Success && !publishResult.Skipped)
             {
                 publishedThisSweep++;
@@ -549,7 +564,11 @@ public class PackageUpdateService : BackgroundService
                     ? _options.GiveUpIssueLabel
                     : GitHubLabels.StatusStaleExempt;
 
-                await _gitHubService.CreateIssueAsync(owner, repo, issueTitle, issueBody, new[] { GitHubLabels.AutoUpdateBlocked, issueLabel }, ct);
+                var createdIssue = await _gitHubService.CreateIssueAsync(owner, repo, issueTitle, issueBody, new[] { GitHubLabels.AutoUpdateBlocked, issueLabel }, ct);
+                if (createdIssue != null)
+                {
+                    _trackedBlockedIssues[packageName] = createdIssue.Number;
+                }
             }
             catch (Exception ex)
             {

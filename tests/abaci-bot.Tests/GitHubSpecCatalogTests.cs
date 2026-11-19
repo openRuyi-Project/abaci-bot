@@ -39,6 +39,7 @@ public class GitHubSpecCatalogTests
 
         Assert.NotNull(spec);
         Assert.Equal("curl", spec.PackageName);
+        Assert.Equal("SPECS/curl/curl.spec", spec.RelativePath);
         Assert.Contains("Version: 8.21.0", spec.Content);
     }
 
