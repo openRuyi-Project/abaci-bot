@@ -227,7 +227,7 @@ public class PackageUpdateServiceTests
         gitHubMock.CreatePullRequestAsync("openRuyi-Project", "openRuyi", Arg.Any<string>(), "autoupdate/curl", "main", Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(createdPr);
 
-        var result = await publisher.PublishUpdateAsync(candidate, rewriteResult, "openRuyi-Project/openRuyi");
+        var result = await publisher.PublishUpdateAsync(candidate, rewriteResult, "openRuyi-Project/openRuyi", "main", "SPECS/curl/curl.spec");
 
         Assert.True(result.Success);
         // Verify StatusStaleExempt and AutoUpdate were attached
@@ -576,5 +576,85 @@ public class PackageUpdateServiceTests
         await service.RunSweepAsync();
 
         Assert.False(service.IsInCooldown("curl"));
+    }
+
+    [Fact]
+    public async Task RunSweepAsync_AllowsSecurityAdvisories_WhenRoutineConcurrentLimitReached()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        // 1 open active PR currently running
+        var activePr = (Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Issue));
+        typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(activePr, 101);
+        typeof(Issue).GetProperty(nameof(Issue.UpdatedAt))?.SetValue(activePr, (DateTimeOffset?)DateTimeOffset.UtcNow);
+        var autoUpdateLabel = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(autoUpdateLabel, GitHubLabels.AutoUpdate);
+        typeof(Issue).GetProperty(nameof(Issue.Labels))?.SetValue(activePr, new List<Label> { autoUpdateLabel });
+
+        gitHubMock.SearchStaleCandidatesAsync("openRuyi-Project", "openRuyi", Arg.Any<DateTimeOffset>(), true, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { activePr });
+
+        var fullPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var headRef = (GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(GitReference));
+        typeof(GitReference).GetProperty(nameof(GitReference.Ref))?.SetValue(headRef, "autoupdate/active-pkg");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Head))?.SetValue(fullPr, headRef);
+        gitHubMock.GetPullRequestAsync("openRuyi-Project", "openRuyi", 101, Arg.Any<CancellationToken>())
+            .Returns(fullPr);
+        gitHubMock.ListWorkflowRunsAsync("openRuyi-Project", "openRuyi", "autoupdate/active-pkg", Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<WorkflowRun>()); // Still active/pending, not failed
+
+        // Two candidates: one security advisory, one routine update
+        var securityCandidate = new UpdateCandidate("openssl", "3.0.0", "3.0.1", CandidateOrigin.Lookout, "https://lookout", true);
+        var routineCandidate = new UpdateCandidate("curl", "8.2.0", "8.2.1", CandidateOrigin.Lookout, "https://lookout", false);
+
+        var sourceMock = Substitute.For<IUpdateCandidateSource>();
+        sourceMock.GetCandidatesAsync(Arg.Any<CancellationToken>())
+            .Returns(new[] { routineCandidate, securityCandidate });
+
+        var specCatalogMock = Substitute.For<ISpecCatalog>();
+        specCatalogMock.GetSpecAsync("openssl", Arg.Any<CancellationToken>())
+            .Returns(new SpecContext("openssl", "openssl", "Name: openssl\nVersion: 3.0.0\nRelease: 1\n", "SPECS/openssl/openssl.spec"));
+        specCatalogMock.GetSpecAsync("curl", Arg.Any<CancellationToken>())
+            .Returns(new SpecContext("curl", "curl", "Name: curl\nVersion: 8.2.0\nRelease: 1\n", "SPECS/curl/curl.spec"));
+
+        var rewriterMock = Substitute.For<ISpecVersionRewriter>();
+        rewriterMock.CanHandle(Arg.Any<SpecContext>()).Returns(true);
+        rewriterMock.Rewrite(Arg.Any<SpecContext>(), Arg.Any<string>())
+            .Returns(callInfo => new SpecRewriteResult(true, $"Name: {callInfo.Arg<SpecContext>().PackageName}\nVersion: {callInfo.Arg<string>()}\nRelease: 1\n", null, true));
+
+        var publisherMock = Substitute.For<IPackageUpdatePublisher>();
+        publisherMock.PublishUpdateAsync(Arg.Any<UpdateCandidate>(), Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new PublishResult(true, false, null, 202, "https://pr/202"));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "openRuyi-Project/openRuyi",
+            MaxConcurrentPullRequests = 1, // Only 1 routine PR allowed, which is already occupied by PR #101!
+            CooldownHours = 0
+        });
+
+        var obsVerifier = new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), options);
+        var service = new PackageUpdateService(
+            gitHubMock,
+            new[] { sourceMock },
+            new[] { rewriterMock },
+            publisherMock,
+            obsVerifier,
+            specCatalogMock,
+            options);
+
+        await service.RunSweepAsync();
+
+        // Security advisory MUST be published thanks to dedicated concurrency allowance
+        await publisherMock.Received(1).PublishUpdateAsync(
+            securityCandidate, Arg.Any<SpecRewriteResult>(), "openRuyi-Project/openRuyi", "main", "SPECS/openssl/openssl.spec", Arg.Any<CancellationToken>());
+
+        // Routine candidate MUST NOT be published as routine concurrent limit (1) was reached
+        await publisherMock.DidNotReceive().PublishUpdateAsync(
+            routineCandidate, Arg.Any<SpecRewriteResult>(), "openRuyi-Project/openRuyi", "main", "SPECS/curl/curl.spec", Arg.Any<CancellationToken>());
     }
 }

@@ -78,7 +78,7 @@ public class RustCrateVersionSourceTests
 
         var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<SpecContext>>(new[]
         {
-            new SpecContext("rust-anstream-0.6", "rust-anstream-0.6", specContent)
+            new SpecContext("rust-anstream-0.6", "rust-anstream-0.6", specContent, "SPECS/rust-anstream-0.6/rust-anstream-0.6.spec")
         });
 
         var source = new RustCrateVersionSource(httpClient, options, specCatalogProvider: fakeCatalog);

@@ -57,11 +57,14 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
         var owner = parts[0].Trim();
         var repo = parts[1].Trim();
 
+        if (string.IsNullOrWhiteSpace(specPath))
+        {
+            throw new ArgumentException("Authoritative SPEC file relative path must be provided by the spec catalog.", nameof(specPath));
+        }
+
         var branchPrefix = string.IsNullOrWhiteSpace(_options.BranchPrefix) ? "autoupdate/" : _options.BranchPrefix;
         var branchName = $"{branchPrefix}{candidate.PackageName}";
-        var finalSpecPath = !string.IsNullOrWhiteSpace(specPath)
-            ? specPath
-            : $"SPECS/{candidate.PackageName}/{candidate.PackageName}.spec";
+        var finalSpecPath = specPath;
 
         var existingBranchSha = await _gitHubService.GetRefShaAsync(owner, repo, branchName, ct);
         var existingPr = await _gitHubService.FindOpenPullRequestByHeadAsync(owner, repo, branchName, ct);

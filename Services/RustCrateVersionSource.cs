@@ -294,7 +294,8 @@ public class RustCrateVersionSource : IUpdateCandidateSource
             try
             {
                 var content = await File.ReadAllTextAsync(specFile, ct);
-                list.Add(new SpecContext(dirName, dirName, content));
+                var relPath = specFile.Replace('\\', '/');
+                list.Add(new SpecContext(dirName, dirName, content, relPath));
             }
             catch (Exception ex)
             {

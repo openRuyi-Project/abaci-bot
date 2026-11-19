@@ -109,10 +109,10 @@ public static class UpdateAdmission
     }
 
     /// <summary>
-    /// Evaluates if the current version in a SPEC already satisfies or matches the target version,
+    /// Evaluates if the current version in a SPEC already satisfies, matches, or exceeds the target version,
     /// ignoring '+suffix' vendor metadata.
     /// </summary>
-    public static bool IsVersionAtTarget(string specContent, string targetVersion)
+    public static bool IsVersionAtOrPastTarget(string specContent, string targetVersion)
     {
         if (string.IsNullOrWhiteSpace(specContent) || string.IsNullOrWhiteSpace(targetVersion))
             return false;
@@ -124,7 +124,7 @@ public static class UpdateAdmission
         if (verMatch.Success)
         {
             var cleanVer = StripVersionSuffix(verMatch.Groups["ver"].Value);
-            if (string.Equals(cleanVer, cleanTarget, StringComparison.Ordinal))
+            if (CompareRpmVersions(cleanVer, cleanTarget) >= 0)
                 return true;
         }
 
@@ -133,11 +133,103 @@ public static class UpdateAdmission
         if (fullVerMatch.Success)
         {
             var cleanFullVer = StripVersionSuffix(fullVerMatch.Groups["ver"].Value);
-            if (string.Equals(cleanFullVer, cleanTarget, StringComparison.Ordinal))
+            if (CompareRpmVersions(cleanFullVer, cleanTarget) >= 0)
                 return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Evaluates if the current version in a SPEC already satisfies or matches the target version,
+    /// ignoring '+suffix' vendor metadata. Kept for backwards compatibility.
+    /// </summary>
+    public static bool IsVersionAtTarget(string specContent, string targetVersion)
+        => IsVersionAtOrPastTarget(specContent, targetVersion);
+
+    /// <summary>
+    /// Compares two RPM version strings according to standard rpmvercmp rules.
+    /// Handles digits, alpha segments, '~' (tilde sorts before anything), and '^' (caret sorts after base version).
+    /// Returns 1 if v1 > v2, -1 if v1 &lt; v2, and 0 if equal.
+    /// </summary>
+    public static int CompareRpmVersions(string? v1, string? v2)
+    {
+        var str1 = StripVersionSuffix(v1 ?? string.Empty);
+        var str2 = StripVersionSuffix(v2 ?? string.Empty);
+
+        if (string.Equals(str1, str2, StringComparison.Ordinal))
+            return 0;
+
+        int i1 = 0, i2 = 0;
+        while (i1 < str1.Length || i2 < str2.Length)
+        {
+            // Skip non-alphanumeric, non-tilde, non-caret separators (e.g. '.', '_', '-')
+            while (i1 < str1.Length && !char.IsLetterOrDigit(str1[i1]) && str1[i1] != '~' && str1[i1] != '^')
+                i1++;
+            while (i2 < str2.Length && !char.IsLetterOrDigit(str2[i2]) && str2[i2] != '~' && str2[i2] != '^')
+                i2++;
+
+            // Handle ~ (tilde)
+            if ((i1 < str1.Length && str1[i1] == '~') || (i2 < str2.Length && str2[i2] == '~'))
+            {
+                if (i1 >= str1.Length || str1[i1] != '~') return 1; // v2 has ~, v1 does not -> v1 is newer
+                if (i2 >= str2.Length || str2[i2] != '~') return -1; // v1 has ~, v2 does not -> v2 is newer
+                i1++; i2++;
+                continue;
+            }
+
+            // Handle ^ (caret)
+            if ((i1 < str1.Length && str1[i1] == '^') || (i2 < str2.Length && str2[i2] == '^'))
+            {
+                if (i1 >= str1.Length) return -1; // v1 ended, v2 has ^ -> v2 is newer
+                if (i2 >= str2.Length) return 1;  // v2 ended, v1 has ^ -> v1 is newer
+                if (str1[i1] == '^' && str2[i2] != '^') return -1;
+                if (str1[i1] != '^' && str2[i2] == '^') return 1;
+                i1++; i2++;
+                continue;
+            }
+
+            if (i1 >= str1.Length) return i2 < str2.Length ? -1 : 0;
+            if (i2 >= str2.Length) return 1;
+
+            bool isDigit1 = char.IsDigit(str1[i1]);
+            bool isDigit2 = char.IsDigit(str2[i2]);
+
+            // Number segment vs letter segment
+            if (isDigit1 && !isDigit2) return 1;
+            if (!isDigit1 && isDigit2) return -1;
+
+            if (isDigit1)
+            {
+                int start1 = i1;
+                while (i1 < str1.Length && char.IsDigit(str1[i1])) i1++;
+                int start2 = i2;
+                while (i2 < str2.Length && char.IsDigit(str2[i2])) i2++;
+
+                var seg1 = str1.Substring(start1, i1 - start1).TrimStart('0');
+                var seg2 = str2.Substring(start2, i2 - start2).TrimStart('0');
+
+                if (seg1.Length > seg2.Length) return 1;
+                if (seg1.Length < seg2.Length) return -1;
+                int cmp = string.CompareOrdinal(seg1, seg2);
+                if (cmp != 0) return cmp > 0 ? 1 : -1;
+            }
+            else
+            {
+                int start1 = i1;
+                while (i1 < str1.Length && char.IsLetter(str1[i1])) i1++;
+                int start2 = i2;
+                while (i2 < str2.Length && char.IsLetter(str2[i2])) i2++;
+
+                var seg1 = str1.Substring(start1, i1 - start1);
+                var seg2 = str2.Substring(start2, i2 - start2);
+
+                int cmp = string.CompareOrdinal(seg1, seg2);
+                if (cmp != 0) return cmp > 0 ? 1 : -1;
+            }
+        }
+
+        return 0;
     }
 
     /// <summary>

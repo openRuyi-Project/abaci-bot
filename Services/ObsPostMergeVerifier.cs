@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using abaci_bot.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Octokit;
 
 namespace abaci_bot.Services;
 
@@ -116,58 +117,33 @@ public class ObsPostMergeVerifier
                         }
                     }
 
-                    // Reclaim merged branch if it belongs to this repository and matches the prefix
-                    var branchName = pr.Head?.Ref;
-                    var headRepo = pr.Head?.Repository?.FullName;
-                    var isSameRepo = headRepo != null && string.Equals(headRepo, $"{owner}/{repo}", StringComparison.OrdinalIgnoreCase);
-                    var prefix = !string.IsNullOrEmpty(_options.BranchPrefix) ? _options.BranchPrefix : "autoupdate/";
-
-                    if (isSameRepo && !string.IsNullOrWhiteSpace(branchName) && branchName.StartsWith(prefix, StringComparison.Ordinal))
+                    await TryReclaimMergedBranchAsync(owner, repo, pr, "after successful OBS build verification", ct);
+                }
+            }
+            else
+            {
+                if (_options.Obs.RequireObsSuccessAfterMerge &&
+                    (buildResult.Code == ObsStatusCode.Failed || buildResult.Code == ObsStatusCode.Unresolvable))
+                {
+                    _logger?.LogWarning("Merged PR #{PrNumber} failed post-merge OBS gate requirement ({Status})", pr.Number, buildResult.Code);
+                    if (!_options.DryRun)
                     {
-                        // 1. Check whether a newer open PR is already reusing this branch
-                        var openPr = await _gitHubService.FindOpenPullRequestByHeadAsync(owner, repo, branchName, ct);
-                        if (openPr != null)
-                        {
-                            _logger?.LogDebug("Skipping branch {Branch} deletion: active open PR #{OpenPr} is currently reusing it", branchName, openPr.Number);
-                            continue;
-                        }
-
-                        // 2. Check whether the branch reference has moved forward past the merged PR's head SHA
-                        var currentSha = await _gitHubService.GetRefShaAsync(owner, repo, branchName, ct);
-                        if (!string.IsNullOrEmpty(pr.Head?.Sha) && !string.Equals(currentSha, pr.Head.Sha, StringComparison.Ordinal))
-                        {
-                            _logger?.LogDebug("Skipping branch {Branch} deletion: branch head has moved (current: {CurrentSha}, merged PR: {PrSha})",
-                                branchName, currentSha, pr.Head.Sha);
-                            continue;
-                        }
-
                         try
                         {
-                            await _gitHubService.DeleteRefAsync(owner, repo, branchName, ct);
-                            _logger?.LogInformation("Reclaimed merged branch {Branch} for PR #{PrNumber} after successful OBS build verification",
-                                branchName, pr.Number);
+                            await _gitHubService.AddLabelsAsync(owner, repo, pr.Number, BlockedLabels, ct);
                         }
                         catch (Exception ex)
                         {
-                            _logger?.LogDebug(ex, "Failed to reclaim merged branch {Branch} for PR #{PrNumber}", branchName, pr.Number);
+                            _logger?.LogDebug(ex, "Failed to apply blocked label to merged PR #{Number}", pr.Number);
                         }
                     }
                 }
-            }
-            else if (_options.Obs.RequireObsSuccessAfterMerge &&
-                     (buildResult.Code == ObsStatusCode.Failed || buildResult.Code == ObsStatusCode.Unresolvable))
-            {
-                _logger?.LogWarning("Merged PR #{PrNumber} failed post-merge OBS gate requirement ({Status})", pr.Number, buildResult.Code);
-                if (!_options.DryRun)
+
+                // If PR has been merged past TTL, reclaim branch even if OBS build failed/remained unresolved
+                if (!_options.DryRun && pr.MergedAt.HasValue &&
+                    pr.MergedAt.Value < DateTimeOffset.UtcNow.AddDays(-_options.FailedPrTtlDays))
                 {
-                    try
-                    {
-                        await _gitHubService.AddLabelsAsync(owner, repo, pr.Number, BlockedLabels, ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger?.LogDebug(ex, "Failed to apply blocked label to merged PR #{Number}", pr.Number);
-                    }
+                    await TryReclaimMergedBranchAsync(owner, repo, pr, "after reaching merged TTL", ct);
                 }
             }
 
@@ -229,6 +205,45 @@ public class ObsPostMergeVerifier
                 {
                     _logger?.LogDebug(ex, "Failed to post OBS build verification comment on PR #{PrNumber}", pr.Number);
                 }
+            }
+        }
+    }
+
+    private async Task TryReclaimMergedBranchAsync(string owner, string repo, PullRequest pr, string reason, CancellationToken ct)
+    {
+        var branchName = pr.Head?.Ref;
+        var headRepo = pr.Head?.Repository?.FullName;
+        var isSameRepo = headRepo != null && string.Equals(headRepo, $"{owner}/{repo}", StringComparison.OrdinalIgnoreCase);
+        var prefix = !string.IsNullOrEmpty(_options.BranchPrefix) ? _options.BranchPrefix : "autoupdate/";
+
+        if (isSameRepo && !string.IsNullOrWhiteSpace(branchName) && branchName.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            // 1. Check whether a newer open PR is already reusing this branch
+            var openPr = await _gitHubService.FindOpenPullRequestByHeadAsync(owner, repo, branchName, ct);
+            if (openPr != null)
+            {
+                _logger?.LogDebug("Skipping branch {Branch} deletion: active open PR #{OpenPr} is currently reusing it", branchName, openPr.Number);
+                return;
+            }
+
+            // 2. Check whether the branch reference has moved forward past the merged PR's head SHA
+            var currentSha = await _gitHubService.GetRefShaAsync(owner, repo, branchName, ct);
+            if (!string.IsNullOrEmpty(pr.Head?.Sha) && !string.Equals(currentSha, pr.Head.Sha, StringComparison.Ordinal))
+            {
+                _logger?.LogDebug("Skipping branch {Branch} deletion: branch head has moved (current: {CurrentSha}, merged PR: {PrSha})",
+                    branchName, currentSha, pr.Head.Sha);
+                return;
+            }
+
+            try
+            {
+                await _gitHubService.DeleteRefAsync(owner, repo, branchName, ct);
+                _logger?.LogInformation("Reclaimed merged branch {Branch} for PR #{PrNumber} {Reason}",
+                    branchName, pr.Number, reason);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogDebug(ex, "Failed to reclaim merged branch {Branch} for PR #{PrNumber}", branchName, pr.Number);
             }
         }
     }

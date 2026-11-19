@@ -443,4 +443,60 @@ public class ObsPostMergeVerifierTests
         // MUST NOT delete branch because an open PR is reusing it
         await gitHubMock.DidNotReceive().DeleteRefAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task VerifyMergedPullRequestsAsync_ReclaimsMergedBranch_WhenObsFailedAndPastTtl()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var obsServiceMock = Substitute.For<IObsBuildService>();
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            TargetRepository = "openRuyi-Project/openRuyi",
+            DryRun = false,
+            BranchPrefix = "autoupdate/",
+            FailedPrTtlDays = 7,
+            Obs = new ObsOptions
+            {
+                Project = "openruyi",
+                TargetRepository = "riscv64",
+                TargetArch = "riscv64"
+            }
+        });
+
+        var pr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Number))?.SetValue(pr, 55);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Title))?.SetValue(pr, "SPECS: bump curl to 8.21.0");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.MergeCommitSha))?.SetValue(pr, "mergeSha1");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.MergedAt))?.SetValue(pr, DateTimeOffset.UtcNow.AddDays(-10));
+
+        var headRef = (GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(GitReference));
+        typeof(GitReference).GetProperty(nameof(GitReference.Ref))?.SetValue(headRef, "autoupdate/curl");
+        typeof(GitReference).GetProperty(nameof(GitReference.Sha))?.SetValue(headRef, "headSha1");
+        var repoObj = (Repository)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Repository));
+        typeof(Repository).GetProperty(nameof(Repository.FullName))?.SetValue(repoObj, "openRuyi-Project/openRuyi");
+        typeof(GitReference).GetProperty(nameof(GitReference.Repository))?.SetValue(headRef, repoObj);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Head))?.SetValue(pr, headRef);
+
+        gitHubMock.SearchMergedPullRequestsAsync("openRuyi-Project", "openRuyi", Arg.Any<string>(), Arg.Any<DateTimeOffset>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { pr });
+        gitHubMock.GetRefShaAsync("openRuyi-Project", "openRuyi", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns("headSha1");
+        gitHubMock.FindOpenPullRequestByHeadAsync("openRuyi-Project", "openRuyi", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns((PullRequest?)null);
+
+        obsServiceMock.GetPackageServiceRevisionAsync("openruyi", "curl", Arg.Any<CancellationToken>())
+            .Returns("mergeSha1");
+        obsServiceMock.GetPackageBuildResultAsync("openruyi", "curl", "riscv64", "riscv64", Arg.Any<CancellationToken>())
+            .Returns(new ObsPackageBuildResult("openruyi", "curl", "riscv64", "riscv64", ObsStatusCode.Failed, "failed"));
+
+        gitHubMock.GetIssueCommentsAsync("openRuyi-Project", "openRuyi", 55, Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<IssueComment>());
+
+        var verifier = new ObsPostMergeVerifier(gitHubMock, obsServiceMock, options);
+        await verifier.VerifyMergedPullRequestsAsync("openRuyi-Project/openRuyi");
+
+        // MUST delete branch because it aged past TTL even though OBS failed
+        await gitHubMock.Received(1).DeleteRefAsync("openRuyi-Project", "openRuyi", "autoupdate/curl", Arg.Any<CancellationToken>());
+    }
 }

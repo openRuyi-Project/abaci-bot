@@ -42,7 +42,7 @@ public class SpecVersionRewriterTests
     {
         var original = "Name:           curl\r\nVersion:        8.21.0    # upstream version\r\nRelease:        %autorelease\r\n";
         var rewriter = new PlainSpecVersionRewriter();
-        var context = new SpecContext("curl", "curl", original);
+        var context = new SpecContext("curl", "curl", original, "SPECS/curl/curl.spec");
 
         Assert.True(rewriter.CanHandle(context));
 
@@ -58,7 +58,7 @@ public class SpecVersionRewriterTests
     {
         var original = "Name:           curl\nVersion:        8.21.0\nRelease:        %autorelease\n";
         var rewriter = new PlainSpecVersionRewriter();
-        var context = new SpecContext("curl", "curl", original);
+        var context = new SpecContext("curl", "curl", original, "SPECS/curl/curl.spec");
 
         var result = rewriter.Rewrite(context, "8.21.0");
 
@@ -72,7 +72,7 @@ public class SpecVersionRewriterTests
     {
         var original = "Name:           curl\nVersion:        8.21.0\nRelease:        %autorelease\n";
         var rewriter = new PlainSpecVersionRewriter();
-        var context = new SpecContext("curl", "curl", original);
+        var context = new SpecContext("curl", "curl", original, "SPECS/curl/curl.spec");
 
         var result = rewriter.Rewrite(context, "8.22.0-rc.1");
 
@@ -94,7 +94,7 @@ public class SpecVersionRewriterTests
             """;
 
         var rewriter = new RustCrateSpecRewriter();
-        var context = new SpecContext("rust-anstream-0.6", "rust-anstream-0.6", original);
+        var context = new SpecContext("rust-anstream-0.6", "rust-anstream-0.6", original, "SPECS/rust-anstream-0.6/rust-anstream-0.6.spec");
 
         Assert.True(rewriter.CanHandle(context));
 
@@ -125,7 +125,7 @@ public class SpecVersionRewriterTests
             """;
 
         var rewriter = new RustCrateSpecRewriter();
-        var context = new SpecContext("rust-aes-gcm-0.11", "rust-aes-gcm-0.11", original);
+        var context = new SpecContext("rust-aes-gcm-0.11", "rust-aes-gcm-0.11", original, "SPECS/rust-aes-gcm-0.11/rust-aes-gcm-0.11.spec");
 
         Assert.True(rewriter.CanHandle(context));
 
@@ -151,7 +151,7 @@ public class SpecVersionRewriterTests
             """;
 
         var rewriter = new RustCrateSpecRewriter();
-        var context = new SpecContext("rust-rand-core-0.10", "rust-rand-core-0.10", original);
+        var context = new SpecContext("rust-rand-core-0.10", "rust-rand-core-0.10", original, "SPECS/rust-rand-core-0.10/rust-rand-core-0.10.spec");
 
         Assert.True(rewriter.CanHandle(context));
 
@@ -179,7 +179,7 @@ public class SpecVersionRewriterTests
             """;
 
         var rewriter = new RustCrateSpecRewriter();
-        var context = new SpecContext("rust-libloading", "rust-libloading", original);
+        var context = new SpecContext("rust-libloading", "rust-libloading", original, "SPECS/rust-libloading/rust-libloading.spec");
 
         Assert.True(rewriter.CanHandle(context));
 
@@ -195,7 +195,7 @@ public class SpecVersionRewriterTests
         // Guard asserting why whole-line replacement is defective compared to pure token replacement
         var original = "Version:        8.21.0    # upstream comment\n";
         var rewriter = new PlainSpecVersionRewriter();
-        var context = new SpecContext("curl", "curl", original);
+        var context = new SpecContext("curl", "curl", original, "SPECS/curl/curl.spec");
 
         var result = rewriter.Rewrite(context, "8.22.0");
 
@@ -211,7 +211,7 @@ public class SpecVersionRewriterTests
     public void MutationGuard_DisabledPrereleaseFilter_GeneratesInvalidRpmNevra()
     {
         // Guard asserting why pre-releases must be blocked at rewriter stage
-        var context = new SpecContext("curl", "curl", "Version: 8.21.0\n");
+        var context = new SpecContext("curl", "curl", "Version: 8.21.0\n", "SPECS/curl/curl.spec");
         var rewriter = new PlainSpecVersionRewriter();
 
         var prereleaseResult = rewriter.Rewrite(context, "8.22.0-rc.1");

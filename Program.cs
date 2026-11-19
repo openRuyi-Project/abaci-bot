@@ -121,6 +121,7 @@ builder.Services.AddSingleton<ISpecVersionRewriter, RustCrateSpecRewriter>();
 builder.Services.AddSingleton<IUpdateCandidateSource, LookoutVersionSource>();
 builder.Services.AddSingleton<IUpdateCandidateSource, RustCrateVersionSource>();
 builder.Services.AddSingleton<IObsBuildService, ObsBuildService>();
+builder.Services.AddSingleton<IRemoteAssetBackfiller, RemoteAssetBackfiller>();
 builder.Services.AddSingleton<IPackageUpdatePublisher, GitHubPackageUpdatePublisher>();
 builder.Services.AddSingleton<ObsPostMergeVerifier>();
 builder.Services.AddSingleton<IPackageVulnerabilityScanner, PackageVulnerabilityScanner>();

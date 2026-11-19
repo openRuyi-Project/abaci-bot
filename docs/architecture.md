@@ -92,3 +92,12 @@ In addition to event-driven webhook processing, `abaci-bot` hosts background ser
 - Periodically performs repository-wide vulnerability sweeps against OSV.dev and NIST NVD.
 - Dispatches serialized requests to stay within rate limits and caches package vulnerability findings.
 - Creates and reconciles prioritized security tracking issues carrying `Vulnerability: Detected`, severity labels, and `Status: stale-exempt`.
+
+---
+
+## 5. Technical Debt & Interface Evolution
+
+### Monolithic `IGitHubService` Facade
+- **Current State**: `IGitHubService` acts as a monolithic repository-wide facade providing over 30 API methods across pull requests, issues, labels, workflows, artifacts, and git references.
+- **Rationale**: Preserved across existing governance modules to prevent wide-scale churn and maintain interface stability.
+- **Future Roadmap**: Introduce narrow, domain-focused port interfaces (e.g. `IPackageUpdateGitHubClient`, `IStaleGitHubClient`, `IWorkflowGateGitHubClient`) backed by modular adapter implementations.

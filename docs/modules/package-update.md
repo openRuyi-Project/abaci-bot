@@ -72,7 +72,7 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 | `MaxCandidatesPerSweep` | `int` | `5` | Maximum number of update candidates admitted and published in a single sweep. |
 | `MaxConcurrentPullRequests` | `int` | `5` | Maximum open update pull requests allowed simultaneously. |
 | `FailedPrTtlDays` | `int` | `7` | Days an inactive pull request with failing CI remains open before automated closure. |
-| `CooldownHours` | `int` | `72` | Minimum age in hours an upstream release must reach before submission (security advisories bypass this stabilization window). |
+| `CooldownHours` | `int` | `72` | Minimum age in hours an upstream release must reach before submission. Setting 0 disables the stabilization window. Security advisories bypass this stabilization delay. |
 | `MaxConsecutiveFailures` | `int` | `3` | Consecutive failed pull requests before entering cooldown. |
 | `IssueOnGivingUp` | `bool` | `true` | Whether to file a tracking issue when a package reaches consecutive failure limits. |
 | `GiveUpIssueCooldownDays` | `int` | `30` | Days a package remains in failure cooldown after reaching consecutive CI failure limits. |
@@ -107,6 +107,15 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 - **Quota Starvation**: Sweeps defer automatically when remaining GitHub API quota drops below `MinRateLimitRemaining`.
 - **Merge Commit Synchronization**: OBS verification checks `_service` revision against the PR's `MergeCommitSha` to avoid checking stale build results before synchronization completes.
 - **Fail-Safe Dry Run**: Starts in `DryRun = true` and `Enabled = false` by default.
+- **Security Updates Concurrency & Bypass**: Security advisories bypass the `CooldownHours` release stabilization window and possess a dedicated 5-slot concurrency allowance above `MaxConcurrentPullRequests` to prevent starvation by routine updates.
+- **Closed-Loop Cooldown Reset**: When a package enters failure cooldown due to consecutive CI failures (`MaxConsecutiveFailures`), cooldown is deterministically reset via two authoritative events:
+  1. The tracking issue opened on GitHub is closed by maintainers.
+  2. The SPEC file on `main` is manually updated to or past the target version.
+  Unstructured issue comments do not unfreeze cooldown to avoid false resets during discussion.
+- **Merged Branch Reclamation**: Git branches created for pull requests (`autoupdate/<pkg>`) are safely deleted after PR merge once:
+  1. Post-merge OBS build verification reports `Succeeded`, or
+  2. The merged PR has aged past `FailedPrTtlDays` (preventing branch accumulation for broken OBS builds).
+  Branch deletion strictly validates that the branch belongs to the target repository, matches `BranchPrefix`, has no active open PRs reusing it, and has not progressed past the merged PR's head SHA.
 
 ---
 

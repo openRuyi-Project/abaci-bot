@@ -40,6 +40,31 @@ public class UpdateAdmissionTests
         Assert.False(UpdateAdmission.IsVersionAtTarget(spec, "8.2.2"));
     }
 
+    [Fact]
+    public void IsVersionAtOrPastTarget_DetectsEqualOrHigherVersions()
+    {
+        var spec = "Name: curl\nVersion: 8.2.5\nRelease: 1\n";
+        Assert.True(UpdateAdmission.IsVersionAtOrPastTarget(spec, "8.2.1"));
+        Assert.True(UpdateAdmission.IsVersionAtOrPastTarget(spec, "8.2.5"));
+        Assert.False(UpdateAdmission.IsVersionAtOrPastTarget(spec, "8.2.6"));
+    }
+
+    [Theory]
+    [InlineData("1.2.0", "1.1.0", 1)]
+    [InlineData("1.1.0", "1.2.0", -1)]
+    [InlineData("1.0", "1.0", 0)]
+    [InlineData("1.0~rc1", "1.0", -1)]
+    [InlineData("1.0", "1.0~rc1", 1)]
+    [InlineData("1.0^git1", "1.0", 1)]
+    [InlineData("1.0", "1.0^git1", -1)]
+    [InlineData("2.0.0", "1.99.99", 1)]
+    [InlineData("1.0.1+suffix", "1.0.1", 0)]
+    public void CompareRpmVersions_ComparesCorrectly(string v1, string v2, int expected)
+    {
+        var cmp = UpdateAdmission.CompareRpmVersions(v1, v2);
+        Assert.Equal(expected, cmp);
+    }
+
     [Theory]
     [InlineData("curl", true)]
     [InlineData("gcc-14", true)]

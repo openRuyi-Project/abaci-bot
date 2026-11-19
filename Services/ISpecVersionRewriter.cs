@@ -7,7 +7,7 @@ namespace abaci_bot.Services;
 /// <param name="DirectoryName">SPEC directory name containing branch information (e.g. "rust-anstream-0.6").</param>
 /// <param name="Content">Raw text content of the SPEC file.</param>
 /// <param name="RelativePath">Authoritative repository-relative path to the SPEC file (e.g. "SPECS/rust-anstream-0.6/rust-anstream-0.6.spec").</param>
-public record SpecContext(string PackageName, string DirectoryName, string Content, string RelativePath = "");
+public record SpecContext(string PackageName, string DirectoryName, string Content, string RelativePath);
 
 /// <summary>
 /// Result of an RPM SPEC version rewrite operation.

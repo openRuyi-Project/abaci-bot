@@ -20,6 +20,7 @@ public class PackageUpdateService : BackgroundService
     private readonly IPackageUpdatePublisher _publisher;
     private readonly ObsPostMergeVerifier _obsPostMergeVerifier;
     private readonly ISpecCatalog _specCatalog;
+    private readonly IRemoteAssetBackfiller _remoteAssetBackfiller;
     private readonly PackageUpdateOptions _options;
     private readonly ILogger<PackageUpdateService>? _logger;
 
@@ -37,6 +38,7 @@ public class PackageUpdateService : BackgroundService
         ObsPostMergeVerifier obsPostMergeVerifier,
         ISpecCatalog specCatalog,
         IOptions<PackageUpdateOptions> options,
+        IRemoteAssetBackfiller? remoteAssetBackfiller = null,
         ILogger<PackageUpdateService>? logger = null)
     {
         _gitHubService = gitHubService;
@@ -46,6 +48,7 @@ public class PackageUpdateService : BackgroundService
         _obsPostMergeVerifier = obsPostMergeVerifier;
         _specCatalog = specCatalog ?? throw new ArgumentNullException(nameof(specCatalog));
         _options = options.Value;
+        _remoteAssetBackfiller = remoteAssetBackfiller ?? new RemoteAssetBackfiller(gitHubService);
         _logger = logger;
     }
 
@@ -97,23 +100,9 @@ public class PackageUpdateService : BackgroundService
 
         _logger?.LogInformation("Starting PackageUpdateService sweep for {TargetRepo} (DryRun={DryRun})", targetRepo, _options.DryRun);
 
-        // Ensure required automation and status labels exist in target repository (self-healing idempotency)
         if (!_options.DryRun)
         {
-            try
-            {
-                await _gitHubService.EnsureLabelsExistAsync(owner, repo, new[]
-                {
-                    (GitHubLabels.AutoUpdate, "0366d6", "Pull requests automatically created for package updates"),
-                    (GitHubLabels.AutoUpdateRust, "dea584", "Pull requests automatically created for Rust crate updates"),
-                    (GitHubLabels.AutoUpdateBlocked, "d73a4a", "Package updates blocked due to repeated failures or missing dependencies"),
-                    (GitHubLabels.StatusStaleExempt, "ffffff", "Exempt from automatic stale closure")
-                }, ct);
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogDebug(ex, "Failed to ensure labels in {TargetRepo}", targetRepo);
-            }
+            await EnsureRequiredLabelsAsync(owner, repo, targetRepo, ct);
         }
 
         // 1. Quota & Rate Limit Gate
@@ -127,15 +116,37 @@ public class PackageUpdateService : BackgroundService
 
         // 2. Deadlock Resolution: check open bot PRs for failed CI TTL and count active PRs
         var activePrCount = await CleanUpStaleFailedPrsAsync(owner, repo, ct);
-        if (activePrCount >= _options.MaxConcurrentPullRequests)
-        {
-            _logger?.LogInformation("Active bot PR count ({Count}) reached MaxConcurrentPullRequests ({Max}); skipping candidate discovery",
-                activePrCount, _options.MaxConcurrentPullRequests);
-            await RunPostSweepTasksAsync(targetRepo, ct);
-            return;
-        }
 
-        // 3. Collect candidates from all registered sources in parallel isolation
+        // 3. Collect candidates from all registered sources
+        var candidates = await CollectCandidatesAsync(ct);
+
+        // 4. Process candidates respecting gates and sweep limits
+        await ProcessCandidatesAsync(owner, repo, targetRepo, activePrCount, candidates, ct);
+
+        // 5. Post-sweep tasks (OBS post-merge check)
+        await RunPostSweepTasksAsync(targetRepo, ct);
+    }
+
+    private async Task EnsureRequiredLabelsAsync(string owner, string repo, string targetRepo, CancellationToken ct)
+    {
+        try
+        {
+            await _gitHubService.EnsureLabelsExistAsync(owner, repo, new[]
+            {
+                (GitHubLabels.AutoUpdate, "0366d6", "Pull requests automatically created for package updates"),
+                (GitHubLabels.AutoUpdateRust, "dea584", "Pull requests automatically created for Rust crate updates"),
+                (GitHubLabels.AutoUpdateBlocked, "d73a4a", "Package updates blocked due to repeated failures or missing dependencies"),
+                (GitHubLabels.StatusStaleExempt, "ffffff", "Exempt from automatic stale closure")
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed to ensure labels in {TargetRepo}", targetRepo);
+        }
+    }
+
+    private async Task<List<UpdateCandidate>> CollectCandidatesAsync(CancellationToken ct)
+    {
         var allCandidates = new List<UpdateCandidate>();
         foreach (var source in _candidateSources)
         {
@@ -154,14 +165,20 @@ public class PackageUpdateService : BackgroundService
         }
 
         _logger?.LogInformation("Discovered {Count} total candidates across all sources", allCandidates.Count);
+        return allCandidates.OrderByDescending(c => c.IsSecurityAdvisory).ToList();
+    }
 
-        // 4. Process candidates respecting gates and sweep limits
-        // Prioritize security advisories so they are not crowded out by routine updates
-        var prioritizedCandidates = allCandidates
-            .OrderByDescending(c => c.IsSecurityAdvisory)
-            .ToList();
-
+    private async Task ProcessCandidatesAsync(
+        string owner,
+        string repo,
+        string targetRepo,
+        int activePrCount,
+        IReadOnlyList<UpdateCandidate> prioritizedCandidates,
+        CancellationToken ct)
+    {
+        const int SecurityAdvisoryConcurrencyAllowance = 5;
         int publishedThisSweep = 0;
+
         foreach (var candidate in prioritizedCandidates)
         {
             if (ct.IsCancellationRequested)
@@ -173,153 +190,175 @@ public class PackageUpdateService : BackgroundService
                 break;
             }
 
-            if (activePrCount + publishedThisSweep >= _options.MaxConcurrentPullRequests)
-            {
-                _logger?.LogInformation("Reached MaxConcurrentPullRequests limit; stopping sweep");
-                break;
-            }
+            int maxAllowed = candidate.IsSecurityAdvisory
+                ? _options.MaxConcurrentPullRequests + SecurityAdvisoryConcurrencyAllowance
+                : _options.MaxConcurrentPullRequests;
 
-            // 0. Whitelist and sanity check candidate package name and target version
-            if (!UpdateAdmission.IsValidPackageName(candidate.PackageName) || !UpdateAdmission.IsValidTargetVersion(candidate.TargetVersion))
+            if (activePrCount + publishedThisSweep >= maxAllowed)
             {
-                _logger?.LogWarning("Invalid candidate package name '{Package}' or target version '{Version}'; skipping",
-                    candidate.PackageName, candidate.TargetVersion);
-                continue;
-            }
-
-            // A. Upstream version stabilization window (CooldownHours)
-            // Routine updates wait for CooldownHours to ensure the upstream release is stable.
-            // Security advisories bypass this stabilization window for immediate triage.
-            if (_options.CooldownHours > 0 && candidate.PublishedAt.HasValue && !candidate.IsSecurityAdvisory)
-            {
-                var age = DateTimeOffset.UtcNow - candidate.PublishedAt.Value;
-                if (age < TimeSpan.FromHours(_options.CooldownHours))
+                if (candidate.IsSecurityAdvisory)
                 {
-                    _logger?.LogDebug("Package {Package} version {Version} published {Age:F1}h ago, within {Cooldown}h stabilization window; skipping",
-                        candidate.PackageName, candidate.TargetVersion, age.TotalHours, _options.CooldownHours);
-                    continue;
-                }
-            }
-
-            // B. Read existing SPEC from base branch (main) using required ISpecCatalog
-            SpecContext? specContext = null;
-            try
-            {
-                specContext = await _specCatalog.GetSpecAsync(candidate.PackageName, ct);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger?.LogDebug(ex, "Could not load SPEC for candidate {Package} via SpecCatalog", candidate.PackageName);
-            }
-
-            if (specContext == null || string.IsNullOrWhiteSpace(specContext.Content))
-                continue;
-
-            var specContent = specContext.Content;
-
-            // Check if main branch was already manually updated to or past target version (closed-loop reset)
-            if (UpdateAdmission.IsVersionAtTarget(specContent, candidate.TargetVersion))
-            {
-                _logger?.LogInformation("Package {Package} on main is already at or past target version {Version}; resetting cooldown",
-                    candidate.PackageName, candidate.TargetVersion);
-                ResetCooldown(candidate.PackageName);
-                continue;
-            }
-
-            // C. Check repeated CI failure cooldown and closed-loop issue reset
-            if (IsInCooldown(candidate.PackageName))
-            {
-                bool issueWasClosed = false;
-                if (_trackedBlockedIssues.TryGetValue(candidate.PackageName, out var issueNum))
-                {
-                    try
-                    {
-                        var issue = await _gitHubService.GetIssueAsync(owner, repo, issueNum, ct);
-                        if (issue != null && issue.State.Value == Octokit.ItemState.Closed)
-                        {
-                            _logger?.LogInformation("Tracking issue #{IssueNum} for package {Package} was closed; resetting cooldown", issueNum, candidate.PackageName);
-                            ResetCooldown(candidate.PackageName);
-                            _trackedBlockedIssues.TryRemove(candidate.PackageName, out _);
-                            issueWasClosed = true;
-                        }
-                        else
-                        {
-                            _logger?.LogDebug("Package {Package} remains blocked by open issue #{IssueNum}; skipping", candidate.PackageName, issueNum);
-                            continue;
-                        }
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        _logger?.LogDebug(ex, "Failed to query tracking issue #{IssueNum} for {Package}; maintaining cooldown", issueNum, candidate.PackageName);
-                        continue;
-                    }
+                    _logger?.LogInformation("Reached security advisory concurrency limit ({Max}); stopping sweep", maxAllowed);
+                    break;
                 }
 
-                if (!issueWasClosed && IsInCooldown(candidate.PackageName))
-                {
-                    _logger?.LogDebug("Package {Package} is in failure cooldown; skipping", candidate.PackageName);
-                    continue;
-                }
-            }
-
-            // D. Check #!NoAutoUpdate directive
-            if (NoAutoUpdateMarker.HasNoAutoUpdate(specContent, out var optOutReason))
-            {
-                _logger?.LogInformation("Skipping {Package} due to in-spec opt-out: {Reason}", candidate.PackageName, optOutReason);
+                _logger?.LogDebug("Active PRs ({Active}) reached MaxConcurrentPullRequests ({Max}); skipping routine candidate {Package}",
+                    activePrCount + publishedThisSweep, _options.MaxConcurrentPullRequests, candidate.PackageName);
                 continue;
             }
 
-            // Check SkipPackagesWithPatches option
-            if (_options.SkipPackagesWithPatches && Regex.IsMatch(specContent, @"^Patch\d*:", RegexOptions.Multiline | RegexOptions.IgnoreCase))
-            {
-                _logger?.LogInformation("Skipping {Package} because it contains downstream Patch directives and SkipPackagesWithPatches=true", candidate.PackageName);
-                continue;
-            }
-
-            // Check AllowCrossMajorVersion option
-            if (!_options.AllowCrossMajorVersion && UpdateAdmission.IsCrossMajorVersion(candidate.CurrentVersion, candidate.TargetVersion))
-            {
-                _logger?.LogInformation("Skipping {Package} because {Current} -> {Target} crosses major version boundary and AllowCrossMajorVersion=false",
-                    candidate.PackageName, candidate.CurrentVersion, candidate.TargetVersion);
-                continue;
-            }
-
-            // E. Select compatible rewriter
-            var rewriter = _specRewriters.FirstOrDefault(r => r.CanHandle(specContext));
-            if (rewriter == null)
-            {
-                _logger?.LogDebug("No compatible rewriter found for {Package}", candidate.PackageName);
-                continue;
-            }
-
-            var rewriteResult = rewriter.Rewrite(specContext, candidate.TargetVersion);
-            if (!rewriteResult.Success || !rewriteResult.HasChanged)
-            {
-                _logger?.LogDebug("Rewrite failed or produced no change for {Package}: {Error}", candidate.PackageName, rewriteResult.ErrorMessage);
-                continue;
-            }
-
-            // F. Publish PR with authoritative spec path from SpecContext
-            var publishResult = await _publisher.PublishUpdateAsync(candidate, rewriteResult, targetRepo, "main", specContext.RelativePath, ct);
-            if (publishResult.Success && !publishResult.Skipped)
+            var published = await ProcessSingleCandidateAsync(owner, repo, targetRepo, candidate, ct);
+            if (published)
             {
                 publishedThisSweep++;
-                _logger?.LogInformation("Successfully published update for {Package} -> {Version} (PR #{PrNumber})",
-                    candidate.PackageName, candidate.TargetVersion, publishResult.PullRequestNumber);
-
                 if (_options.RequestThrottleMilliseconds > 0)
                 {
                     await Task.Delay(_options.RequestThrottleMilliseconds, ct);
                 }
             }
-            else if (publishResult.Skipped)
+        }
+    }
+
+    private async Task<bool> ProcessSingleCandidateAsync(
+        string owner,
+        string repo,
+        string targetRepo,
+        UpdateCandidate candidate,
+        CancellationToken ct)
+    {
+        // 0. Whitelist and sanity check candidate package name and target version
+        if (!UpdateAdmission.IsValidPackageName(candidate.PackageName) || !UpdateAdmission.IsValidTargetVersion(candidate.TargetVersion))
+        {
+            _logger?.LogWarning("Invalid candidate package name '{Package}' or target version '{Version}'; skipping",
+                candidate.PackageName, candidate.TargetVersion);
+            return false;
+        }
+
+        // A. Upstream version stabilization window (CooldownHours)
+        if (_options.CooldownHours > 0 && candidate.PublishedAt.HasValue && !candidate.IsSecurityAdvisory)
+        {
+            var age = DateTimeOffset.UtcNow - candidate.PublishedAt.Value;
+            if (age < TimeSpan.FromHours(_options.CooldownHours))
             {
-                _logger?.LogDebug("Publish skipped for {Package}: {Reason}", candidate.PackageName, publishResult.SkipReason);
+                _logger?.LogDebug("Package {Package} version {Version} published {Age:F1}h ago, within {Cooldown}h stabilization window; skipping",
+                    candidate.PackageName, candidate.TargetVersion, age.TotalHours, _options.CooldownHours);
+                return false;
             }
         }
 
-        // 5. Post-sweep tasks (OBS post-merge check)
-        await RunPostSweepTasksAsync(targetRepo, ct);
+        // B. Read existing SPEC from base branch (main) using required ISpecCatalog
+        SpecContext? specContext = null;
+        try
+        {
+            specContext = await _specCatalog.GetSpecAsync(candidate.PackageName, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogDebug(ex, "Could not load SPEC for candidate {Package} via SpecCatalog", candidate.PackageName);
+        }
+
+        if (specContext == null || string.IsNullOrWhiteSpace(specContext.Content))
+            return false;
+
+        var specContent = specContext.Content;
+
+        // Check if main branch was already manually updated to or past target version (closed-loop reset)
+        if (UpdateAdmission.IsVersionAtOrPastTarget(specContent, candidate.TargetVersion))
+        {
+            _logger?.LogInformation("Package {Package} on main is already at or past target version {Version}; resetting cooldown",
+                candidate.PackageName, candidate.TargetVersion);
+            ResetCooldown(candidate.PackageName);
+            return false;
+        }
+
+        // C. Check repeated CI failure cooldown and closed-loop issue reset
+        if (IsInCooldown(candidate.PackageName))
+        {
+            bool issueWasClosed = false;
+            if (_trackedBlockedIssues.TryGetValue(candidate.PackageName, out var issueNum))
+            {
+                try
+                {
+                    var issue = await _gitHubService.GetIssueAsync(owner, repo, issueNum, ct);
+                    if (issue != null && issue.State.Value == Octokit.ItemState.Closed)
+                    {
+                        _logger?.LogInformation("Tracking issue #{IssueNum} for package {Package} was closed; resetting cooldown", issueNum, candidate.PackageName);
+                        ResetCooldown(candidate.PackageName);
+                        _trackedBlockedIssues.TryRemove(candidate.PackageName, out _);
+                        issueWasClosed = true;
+                    }
+                    else
+                    {
+                        _logger?.LogDebug("Package {Package} remains blocked by open issue #{IssueNum}; skipping", candidate.PackageName, issueNum);
+                        return false;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger?.LogDebug(ex, "Failed to query tracking issue #{IssueNum} for {Package}; maintaining cooldown", issueNum, candidate.PackageName);
+                    return false;
+                }
+            }
+
+            if (!issueWasClosed && IsInCooldown(candidate.PackageName))
+            {
+                _logger?.LogDebug("Package {Package} is in failure cooldown; skipping", candidate.PackageName);
+                return false;
+            }
+        }
+
+        // D. Check #!NoAutoUpdate directive
+        if (NoAutoUpdateMarker.HasNoAutoUpdate(specContent, out var optOutReason))
+        {
+            _logger?.LogInformation("Skipping {Package} due to in-spec opt-out: {Reason}", candidate.PackageName, optOutReason);
+            return false;
+        }
+
+        // Check SkipPackagesWithPatches option
+        if (_options.SkipPackagesWithPatches && Regex.IsMatch(specContent, @"^Patch\d*:", RegexOptions.Multiline | RegexOptions.IgnoreCase))
+        {
+            _logger?.LogInformation("Skipping {Package} because it contains downstream Patch directives and SkipPackagesWithPatches=true", candidate.PackageName);
+            return false;
+        }
+
+        // Check AllowCrossMajorVersion option
+        if (!_options.AllowCrossMajorVersion && UpdateAdmission.IsCrossMajorVersion(candidate.CurrentVersion, candidate.TargetVersion))
+        {
+            _logger?.LogInformation("Skipping {Package} because {Current} -> {Target} crosses major version boundary and AllowCrossMajorVersion=false",
+                candidate.PackageName, candidate.CurrentVersion, candidate.TargetVersion);
+            return false;
+        }
+
+        // E. Select compatible rewriter
+        var rewriter = _specRewriters.FirstOrDefault(r => r.CanHandle(specContext));
+        if (rewriter == null)
+        {
+            _logger?.LogDebug("No compatible rewriter found for {Package}", candidate.PackageName);
+            return false;
+        }
+
+        var rewriteResult = rewriter.Rewrite(specContext, candidate.TargetVersion);
+        if (!rewriteResult.Success || !rewriteResult.HasChanged)
+        {
+            _logger?.LogDebug("Rewrite failed or produced no change for {Package}: {Error}", candidate.PackageName, rewriteResult.ErrorMessage);
+            return false;
+        }
+
+        // F. Publish PR with authoritative spec path from SpecContext
+        var publishResult = await _publisher.PublishUpdateAsync(candidate, rewriteResult, targetRepo, "main", specContext.RelativePath, ct);
+        if (publishResult.Success && !publishResult.Skipped)
+        {
+            _logger?.LogInformation("Successfully published update for {Package} -> {Version} (PR #{PrNumber})",
+                candidate.PackageName, candidate.TargetVersion, publishResult.PullRequestNumber);
+            return true;
+        }
+
+        if (publishResult.Skipped)
+        {
+            _logger?.LogDebug("Publish skipped for {Package}: {Reason}", candidate.PackageName, publishResult.SkipReason);
+        }
+
+        return false;
     }
 
     private async Task<int> CleanUpStaleFailedPrsAsync(string owner, string repo, CancellationToken ct)
@@ -356,7 +395,7 @@ public class PackageUpdateService : BackgroundService
                 // Backfill updated #!RemoteAsset checksums when remoteasset workflow fails
                 if (isRemoteAssetFailed && !string.IsNullOrWhiteSpace(branchName) && remoteAssetRun != null && !_options.DryRun)
                 {
-                    await TryBackfillRemoteAssetDiffAsync(owner, repo, branchName, pr.Number, remoteAssetRun.Id, ct);
+                    await _remoteAssetBackfiller.TryBackfillAsync(owner, repo, branchName, pr.Number, remoteAssetRun.Id, ct);
                 }
 
                 // Wire failure detection into cooldown tracking
@@ -472,70 +511,6 @@ public class PackageUpdateService : BackgroundService
         }
 
         return false;
-    }
-
-    private async Task TryBackfillRemoteAssetDiffAsync(
-        string owner, string repo, string branchName, int prNumber, long runId, CancellationToken ct)
-    {
-        try
-        {
-            var artifacts = await _gitHubService.ListWorkflowArtifactsAsync(owner, repo, runId, ct);
-            var diffArtifact = artifacts.FirstOrDefault(a => a.Name != null && a.Name.Contains("remoteasset", StringComparison.OrdinalIgnoreCase));
-            if (diffArtifact == null)
-                return;
-
-            _logger?.LogInformation("Found remoteasset artifact '{Name}' (ID: {Id}) for PR #{PrNumber}; downloading diff to backfill",
-                diffArtifact.Name, diffArtifact.Id, prNumber);
-
-            await using var stream = await _gitHubService.DownloadArtifactAsync(owner, repo, diffArtifact.Id, ct);
-            var diffContent = await ArtifactDiffExtractor.ExtractDiffContentAsync(stream, ct);
-            if (string.IsNullOrWhiteSpace(diffContent))
-                return;
-
-            // Extract file path from diff header and process each modified spec file safely
-            var fileMatches = Regex.Matches(diffContent, @"\+\+\+\s+b/(?<path>SPECS/\S+)", RegexOptions.Multiline);
-            foreach (Match fileMatch in fileMatches)
-            {
-                var specPath = fileMatch.Groups["path"].Value.Trim();
-                var changes = ArtifactDiffExtractor.ExtractFileRemoteAssetChanges(diffContent, specPath);
-                if (changes.Count == 0)
-                    continue;
-
-                string currentSpec;
-                try
-                {
-                    currentSpec = await _gitHubService.GetFileContentAsync(owner, repo, specPath, branchName, ct);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger?.LogDebug(ex, "Failed to load current spec {Path} from branch {Branch}", specPath, branchName);
-                    continue;
-                }
-
-                if (string.IsNullOrWhiteSpace(currentSpec))
-                    continue;
-
-                var updatedSpec = currentSpec;
-                foreach (var (oldLine, newLine) in changes)
-                {
-                    if (updatedSpec.Contains(oldLine, StringComparison.Ordinal))
-                    {
-                        updatedSpec = updatedSpec.Replace(oldLine, newLine);
-                    }
-                }
-
-                if (!string.Equals(updatedSpec, currentSpec, StringComparison.Ordinal))
-                {
-                    _logger?.LogInformation("Backfilling updated #!RemoteAsset checksums to branch {Branch} for PR #{PrNumber}", branchName, prNumber);
-                    await _gitHubService.UpdateFileContentAsync(
-                        owner, repo, specPath, "chore: update #!RemoteAsset sha256 checksums", updatedSpec, branchName, ct);
-                }
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger?.LogWarning(ex, "Failed to backfill remoteasset diff artifact for PR #{PrNumber}", prNumber);
-        }
     }
 
     private async Task CheckAndRecordFailureAsync(string owner, string repo, string packageName, int prNumber, CancellationToken ct)

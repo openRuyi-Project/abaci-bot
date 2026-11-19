@@ -35,7 +35,7 @@ public class GitHubPackageUpdatePublisherTests
         var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
         var rewriteResult = new SpecRewriteResult(true, "Name: curl\nVersion: 8.22.0\n", null, HasChanged: true);
 
-        var result = await publisher.PublishUpdateAsync(candidate, rewriteResult, "openRuyi-Project/openRuyi");
+        var result = await publisher.PublishUpdateAsync(candidate, rewriteResult, "openRuyi-Project/openRuyi", "main", "SPECS/curl/curl.spec");
 
         Assert.True(result.Success);
         Assert.True(result.Skipped);
@@ -74,7 +74,7 @@ public class GitHubPackageUpdatePublisherTests
         var candidate = new UpdateCandidate("curl", "8.21.0", "8.23.0", CandidateOrigin.Lookout, "https://evidence");
         var rewriteResult = new SpecRewriteResult(true, "Name: curl\nVersion: 8.23.0\n", null, HasChanged: true);
 
-        var result = await publisher.PublishUpdateAsync(candidate, rewriteResult, "openRuyi-Project/openRuyi");
+        var result = await publisher.PublishUpdateAsync(candidate, rewriteResult, "openRuyi-Project/openRuyi", "main", "SPECS/curl/curl.spec");
 
         Assert.True(result.Success);
         Assert.True(result.Skipped);
@@ -123,7 +123,7 @@ public class GitHubPackageUpdatePublisherTests
         var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
         var rewriteResult = new SpecRewriteResult(true, "Name: curl\nVersion: 8.22.0\n", null, HasChanged: true);
 
-        var result = await publisher.PublishUpdateAsync(candidate, rewriteResult, "openRuyi-Project/openRuyi");
+        var result = await publisher.PublishUpdateAsync(candidate, rewriteResult, "openRuyi-Project/openRuyi", "main", "SPECS/curl/curl.spec");
 
         Assert.True(result.Success);
         Assert.False(result.Skipped);
@@ -131,6 +131,19 @@ public class GitHubPackageUpdatePublisherTests
         // Assert file update was dispatched
         await gitHubMock.Received(1).UpdateFileContentAsync(
             "openRuyi-Project", "openRuyi", "SPECS/curl/curl.spec", Arg.Any<string>(), rewriteResult.UpdatedContent, "autoupdate/curl", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PublishUpdateAsync_ThrowsArgumentException_WhenSpecPathIsNullOrWhiteSpace()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions());
+        var publisher = new GitHubPackageUpdatePublisher(gitHubMock, options);
+        var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
+        var rewriteResult = new SpecRewriteResult(true, "Name: curl\nVersion: 8.22.0\n", null, HasChanged: true);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            publisher.PublishUpdateAsync(candidate, rewriteResult, "openRuyi-Project/openRuyi", "main", ""));
     }
 
     [Fact]

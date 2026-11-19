@@ -429,6 +429,9 @@
     // Unit: days. Range: >= 1. Default: 7.
     "FailedPrTtlDays": 7,
     // Unit: hours. Range: >= 0. Default: 72.
+    // Minimum age an upstream release must reach before submission.
+    // 0: disables the stabilization window; candidates are submitted immediately.
+    // Security advisories bypass this stabilization delay.
     "CooldownHours": 72,
     // Range: >= 1. Default: 3.
     "MaxConsecutiveFailures": 3,
