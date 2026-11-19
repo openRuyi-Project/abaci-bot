@@ -38,7 +38,7 @@ public class PackageUpdateService : BackgroundService
         ObsPostMergeVerifier obsPostMergeVerifier,
         ISpecCatalog specCatalog,
         IOptions<PackageUpdateOptions> options,
-        IRemoteAssetBackfiller? remoteAssetBackfiller = null,
+        IRemoteAssetBackfiller remoteAssetBackfiller,
         ILogger<PackageUpdateService>? logger = null)
     {
         _gitHubService = gitHubService;
@@ -48,7 +48,7 @@ public class PackageUpdateService : BackgroundService
         _obsPostMergeVerifier = obsPostMergeVerifier;
         _specCatalog = specCatalog ?? throw new ArgumentNullException(nameof(specCatalog));
         _options = options.Value;
-        _remoteAssetBackfiller = remoteAssetBackfiller ?? new RemoteAssetBackfiller(gitHubService);
+        _remoteAssetBackfiller = remoteAssetBackfiller ?? throw new ArgumentNullException(nameof(remoteAssetBackfiller));
         _logger = logger;
     }
 

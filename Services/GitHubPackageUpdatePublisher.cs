@@ -176,7 +176,7 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
         return new PublishResult(true, false, null, pr.Number, pr.HtmlUrl);
     }
 
-    private bool IsWhitelistedCommitter(string login, string email)
+    internal bool IsWhitelistedCommitter(string? login, string? email)
     {
         if (string.IsNullOrWhiteSpace(login) && string.IsNullOrWhiteSpace(email))
             return true;
@@ -185,7 +185,7 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
         if (string.Equals(login, botLogin, StringComparison.OrdinalIgnoreCase))
             return true;
 
-        if (login.EndsWith("[bot]", StringComparison.OrdinalIgnoreCase))
+        if (login?.EndsWith("[bot]", StringComparison.OrdinalIgnoreCase) == true)
             return true;
 
         // GitHub Web UI merge commits

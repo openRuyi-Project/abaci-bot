@@ -160,4 +160,247 @@ public class GitHubPackageUpdatePublisherTests
         Assert.Contains("- [x] Package version updated in spec file", body);
         Assert.Contains("如需停止本包的自动更新，请在 SPEC 文件头部加入 `#!NoAutoUpdate: <reason>`", body);
     }
+
+    [Fact]
+    public async Task PublishUpdateAsync_ReturnsSkipped_WhenCandidateOrRewriteResultInvalid()
+    {
+        var publisher = new GitHubPackageUpdatePublisher(Substitute.For<IGitHubService>(), Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions()));
+        var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
+
+        // 1. Rewrite failed
+        var failedRewrite = new SpecRewriteResult(false, "", "error");
+        var res1 = await publisher.PublishUpdateAsync(candidate, failedRewrite, "owner/repo", "main", "SPECS/curl.spec");
+        Assert.False(res1.Success);
+        Assert.True(res1.Skipped);
+
+        // 2. Rewrite has no changes
+        var unchangedRewrite = new SpecRewriteResult(true, "", null, HasChanged: false);
+        var res2 = await publisher.PublishUpdateAsync(candidate, unchangedRewrite, "owner/repo", "main", "SPECS/curl.spec");
+        Assert.False(res2.Success);
+        Assert.True(res2.Skipped);
+
+        // 3. Invalid target repo
+        var validRewrite = new SpecRewriteResult(true, "new content", null, HasChanged: true);
+        var res3 = await publisher.PublishUpdateAsync(candidate, validRewrite, "invalid_repo_without_slash", "main", "SPECS/curl.spec");
+        Assert.False(res3.Success);
+        Assert.False(res3.Skipped);
+    }
+
+    [Fact]
+    public async Task PublishUpdateAsync_FailsClosed_WhenLatestCommitFailsOrNull()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRefShaAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns("sha123");
+
+        // Throws exception reading latest commit
+        gitHubMock.GetBranchLatestCommitAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns<Task<(string, string, string, string)?>>(_ => throw new InvalidOperationException("API error"));
+
+        var publisher = new GitHubPackageUpdatePublisher(gitHubMock, Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions()));
+        var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
+        var rewriteResult = new SpecRewriteResult(true, "new content", null, HasChanged: true);
+
+        var res = await publisher.PublishUpdateAsync(candidate, rewriteResult, "owner/repo", "main", "SPECS/curl.spec");
+        Assert.False(res.Success);
+        Assert.Contains("fail-closed", res.SkipReason);
+
+        // Null latest commit
+        gitHubMock.GetBranchLatestCommitAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns((ValueTuple<string, string, string, string>?)null);
+        var resNull = await publisher.PublishUpdateAsync(candidate, rewriteResult, "owner/repo", "main", "SPECS/curl.spec");
+        Assert.False(resNull.Success);
+        Assert.Contains("fail-closed", resNull.SkipReason);
+    }
+
+    [Fact]
+    public async Task PublishUpdateAsync_CreatesBranchAndNewPullRequest_WhenBranchDoesNotExist()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRefShaAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns((string?)null); // Branch does not exist
+        gitHubMock.GetRefShaAsync("owner", "repo", "main", Arg.Any<CancellationToken>())
+            .Returns("baseSha456");
+        gitHubMock.FindOpenPullRequestByHeadAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns((PullRequest?)null);
+
+        var createdPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Number))?.SetValue(createdPr, 99);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.HtmlUrl))?.SetValue(createdPr, "https://github.com/owner/repo/pull/99");
+        gitHubMock.CreatePullRequestAsync("owner", "repo", Arg.Any<string>(), "autoupdate/curl", "main", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(createdPr);
+
+        var publisher = new GitHubPackageUpdatePublisher(gitHubMock, Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions { DryRun = false }));
+        var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
+        var rewriteResult = new SpecRewriteResult(true, "new content", null, HasChanged: true);
+
+        var res = await publisher.PublishUpdateAsync(candidate, rewriteResult, "owner/repo", "main", "SPECS/curl.spec");
+
+        Assert.True(res.Success);
+        Assert.False(res.Skipped);
+        Assert.Equal(99, res.PullRequestNumber);
+
+        // Verify branch was created from base SHA
+        await gitHubMock.Received(1).CreateOrUpdateRefAsync("owner", "repo", "autoupdate/curl", "baseSha456", force: false, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PublishUpdateAsync_RespectsDryRun_WithoutWritingToGitHub()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRefShaAsync("owner", "repo", "main", Arg.Any<CancellationToken>())
+            .Returns("baseSha456");
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions { DryRun = true });
+        var publisher = new GitHubPackageUpdatePublisher(gitHubMock, options);
+
+        var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
+        var rewriteResult = new SpecRewriteResult(true, "new content", null, HasChanged: true);
+
+        var res = await publisher.PublishUpdateAsync(candidate, rewriteResult, "owner/repo", "main", "SPECS/curl.spec");
+
+        Assert.True(res.Success);
+        Assert.False(res.Skipped);
+        Assert.Contains("DryRun", res.SkipReason);
+
+        await gitHubMock.DidNotReceive().CreatePullRequestAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PublishUpdateAsync_StepsAside_WhenHumanCommitsDetectedOnBranch()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRefShaAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns("existingBranchSha123");
+
+        var existingPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Number))?.SetValue(existingPr, 55);
+        gitHubMock.FindOpenPullRequestByHeadAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns(existingPr);
+
+        // Human committer
+        gitHubMock.GetBranchLatestCommitAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns(("commitSha", "manual tweak", "dev-human", "human@example.com"));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions { DryRun = false });
+        var publisher = new GitHubPackageUpdatePublisher(gitHubMock, options);
+
+        var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
+        var rewriteResult = new SpecRewriteResult(true, "new content", null, HasChanged: true);
+
+        var res = await publisher.PublishUpdateAsync(candidate, rewriteResult, "owner/repo", "main", "SPECS/curl.spec");
+
+        Assert.True(res.Success);
+        Assert.True(res.Skipped);
+        Assert.Contains("Human commits", res.SkipReason);
+
+        // Warning comment posted
+        await gitHubMock.Received(1).CreateCommentAsync("owner", "repo", 55, Arg.Is<string>(c => c.Contains("stepped aside")), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PublishUpdateAsync_Skips_WhenBranchAlreadyAtTargetVersion()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRefShaAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns("existingBranchSha123");
+
+        var existingPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Number))?.SetValue(existingPr, 56);
+        gitHubMock.FindOpenPullRequestByHeadAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns(existingPr);
+
+        // Bot committer
+        gitHubMock.GetBranchLatestCommitAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns(("commitSha", "bump version", "aqua-rium", "bot@openruyi.org"));
+
+        // Spec on branch already at target version 8.22.0
+        gitHubMock.GetFileContentAsync("owner", "repo", "SPECS/curl.spec", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns("Name: curl\nVersion: 8.22.0\nRelease: 1\n");
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions { DryRun = false });
+        var publisher = new GitHubPackageUpdatePublisher(gitHubMock, options);
+
+        var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
+        var rewriteResult = new SpecRewriteResult(true, "new content", null, HasChanged: true);
+
+        var res = await publisher.PublishUpdateAsync(candidate, rewriteResult, "owner/repo", "main", "SPECS/curl.spec");
+
+        Assert.True(res.Success);
+        Assert.True(res.Skipped);
+        Assert.Contains("already at target version", res.SkipReason);
+
+        await gitHubMock.DidNotReceive().UpdateFileContentAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PublishUpdateAsync_FailsClosed_WhenBranchSpecReadThrows()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRefShaAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns("existingBranchSha123");
+
+        gitHubMock.GetBranchLatestCommitAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns(("commitSha", "bump version", "web-flow", "noreply@github.com"));
+
+        gitHubMock.GetFileContentAsync("owner", "repo", "SPECS/curl.spec", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns<string>(_ => throw new HttpRequestException("Failed to read spec"));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions { DryRun = false });
+        var publisher = new GitHubPackageUpdatePublisher(gitHubMock, options);
+
+        var candidate = new UpdateCandidate("curl", "8.21.0", "8.22.0", CandidateOrigin.Lookout, "https://evidence");
+        var rewriteResult = new SpecRewriteResult(true, "new content", null, HasChanged: true);
+
+        var res = await publisher.PublishUpdateAsync(candidate, rewriteResult, "owner/repo", "main", "SPECS/curl.spec");
+
+        Assert.False(res.Success);
+        Assert.Contains("fail-closed", res.SkipReason);
+    }
+
+    [Fact]
+    public async Task PublishUpdateAsync_AddsRustLabel_WhenOriginIsRustCrate()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRefShaAsync("owner", "repo", "main", Arg.Any<CancellationToken>())
+            .Returns("baseSha456");
+
+        var createdPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Number))?.SetValue(createdPr, 77);
+        gitHubMock.CreatePullRequestAsync("owner", "repo", Arg.Any<string>(), "autoupdate/rust-anstream", "main", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(createdPr);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions { DryRun = false });
+        var publisher = new GitHubPackageUpdatePublisher(gitHubMock, options);
+
+        var candidate = new UpdateCandidate("rust-anstream", "0.6.0", "0.6.1", CandidateOrigin.RustCrate, "https://evidence");
+        var rewriteResult = new SpecRewriteResult(true, "new content", null, HasChanged: true);
+
+        var res = await publisher.PublishUpdateAsync(candidate, rewriteResult, "owner/repo", "main", "SPECS/rust-anstream/rust-anstream.spec");
+
+        Assert.True(res.Success);
+        Assert.Equal(77, res.PullRequestNumber);
+
+        await gitHubMock.Received(1).AddLabelsAsync(
+            "owner", "repo", 77, Arg.Is<string[]>(labels => labels.Contains(GitHubLabels.AutoUpdateRust)), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(null, null, true)]
+    [InlineData("my-custom-bot", "", true)]
+    [InlineData("dependabot[bot]", "", true)]
+    [InlineData("web-flow", "", true)]
+    [InlineData("developer", "noreply@github.com", true)]
+    [InlineData("developer", "dev@example.com", false)]
+    public void IsWhitelistedCommitter_EvaluatesCorrectly(string? login, string? email, bool expected)
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            BotLogin = "my-custom-bot"
+        });
+        var publisher = new GitHubPackageUpdatePublisher(Substitute.For<IGitHubService>(), options);
+
+        Assert.Equal(expected, publisher.IsWhitelistedCommitter(login!, email!));
+    }
 }

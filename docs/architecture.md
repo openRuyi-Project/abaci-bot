@@ -101,3 +101,4 @@ In addition to event-driven webhook processing, `abaci-bot` hosts background ser
 - **Current State**: `IGitHubService` acts as a monolithic repository-wide facade providing over 30 API methods across pull requests, issues, labels, workflows, artifacts, and git references.
 - **Rationale**: Preserved across existing governance modules to prevent wide-scale churn and maintain interface stability.
 - **Future Roadmap**: Introduce narrow, domain-focused port interfaces (e.g. `IPackageUpdateGitHubClient`, `IStaleGitHubClient`, `IWorkflowGateGitHubClient`) backed by modular adapter implementations.
+- **Review Trigger**: Re-evaluate and split into domain-specific clients prior to introducing new GitHub API write mutations or during the next major architectural refactoring milestone.

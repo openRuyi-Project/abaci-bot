@@ -439,6 +439,8 @@
     // true: a tracking issue is filed when the failure limit is reached.
     "IssueOnGivingUp": true,
     // Unit: days. Range: >= 1. Default: 30.
+    // Duration a package remains in failure cooldown after reaching consecutive CI failure limits.
+    // Setting 0 or empty is rejected by options validation.
     "GiveUpIssueCooldownDays": 30,
     // Format: label name.
     // Empty: falls back to Status: stale-exempt.
@@ -448,7 +450,8 @@
     // When remaining core API quota drops below this value, candidate sweeps pause.
     "MinRateLimitRemaining": 500,
     // Unit: milliseconds. Range: >= 0. Default: 2000.
-    // Delay between successive GitHub write API requests to avoid secondary rate limits.
+    // Delay inserted after publishing each update pull request to avoid secondary rate limits.
+    // 0: no delay between publishing candidates.
     "RequestThrottleMilliseconds": 2000
   },
 
@@ -474,6 +477,7 @@
     "OsvBatchSize": 1000,
     // Range: >= 0. Default: 0.
     // 0: every package in the catalog is evaluated during a sweep.
+    // Non-zero: packages scanned per sweep, advancing sequentially through the catalog across successive cycles.
     "PackagesPerSweep": 0,
     // Unit: queries per day. Range: >= 0. Default: 200.
     // 0: no NVD fallback queries are issued.

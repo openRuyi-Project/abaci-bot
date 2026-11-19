@@ -220,4 +220,85 @@ public class SpecVersionRewriterTests
         Assert.False(prereleaseResult.Success);
         Assert.Contains("pre-release", prereleaseResult.ErrorMessage);
     }
+
+    [Fact]
+    public void RustCrateSpecRewriter_HandlesAllEdgeCasesAndGuards()
+    {
+        var rewriter = new RustCrateSpecRewriter();
+
+        // 1. Null / empty contexts in CanHandle
+        Assert.False(rewriter.CanHandle(null!));
+        Assert.False(rewriter.CanHandle(new SpecContext("pkg", "pkg", "", "path")));
+        Assert.False(rewriter.CanHandle(new SpecContext("pkg", "pkg", "Name: plain\nVersion: 1.0\n", "path")));
+
+        // 2. Null / empty contexts in Rewrite
+        var nullRes = rewriter.Rewrite(null!, "1.0.0");
+        Assert.False(nullRes.Success);
+        Assert.Contains("SPEC content is empty", nullRes.ErrorMessage);
+
+        var emptyRes = rewriter.Rewrite(new SpecContext("pkg", "pkg", "", "path"), "1.0.0");
+        Assert.False(emptyRes.Success);
+
+        // 3. Empty target version
+        var specWithCrate = "%global crate_name foo\nVersion: 1.0.0\n";
+        var context = new SpecContext("rust-foo", "rust-foo", specWithCrate, "path");
+        var emptyVerRes = rewriter.Rewrite(context, "");
+        Assert.False(emptyVerRes.Success);
+        Assert.Contains("Target version cannot be empty", emptyVerRes.ErrorMessage);
+
+        // 4. Pre-release target version with hyphen
+        var hyphenRes = rewriter.Rewrite(context, "1.0.1-rc1");
+        Assert.False(hyphenRes.Success);
+        Assert.Contains("contains hyphen", hyphenRes.ErrorMessage);
+
+        // 5. Spec missing crate_name directive
+        var specNoCrate = "Name: rust-foo\nVersion: 1.0.0\n";
+        var contextNoCrate = new SpecContext("rust-foo", "rust-foo", specNoCrate, "path");
+        var noCrateRes = rewriter.Rewrite(contextNoCrate, "1.0.1");
+        Assert.False(noCrateRes.Success);
+        Assert.Contains("No '%global crate_name'", noCrateRes.ErrorMessage);
+
+        // 6. Spec missing Version: tag
+        var specNoVer = "%global crate_name foo\nName: rust-foo\n";
+        var contextNoVer = new SpecContext("rust-foo", "rust-foo", specNoVer, "path");
+        var noVerRes = rewriter.Rewrite(contextNoVer, "1.0.1");
+        Assert.False(noVerRes.Success);
+        Assert.Contains("No 'Version:'", noVerRes.ErrorMessage);
+
+        // 7. Already at target version
+        var alreadyTargetRes = rewriter.Rewrite(context, "1.0.0");
+        Assert.True(alreadyTargetRes.Success);
+        Assert.False(alreadyTargetRes.HasChanged);
+    }
+
+    [Fact]
+    public void PlainSpecVersionRewriter_HandlesAllEdgeCasesAndGuards()
+    {
+        var rewriter = new PlainSpecVersionRewriter();
+
+        // 1. CanHandle edge cases
+        Assert.False(rewriter.CanHandle(null!));
+        Assert.False(rewriter.CanHandle(new SpecContext("curl", "curl", "", "path")));
+        Assert.False(rewriter.CanHandle(new SpecContext("rust-foo", "rust-foo", "%global crate_name foo\nVersion: 1.0\n", "path")));
+        Assert.False(rewriter.CanHandle(new SpecContext("curl", "curl", "Name: curl\n", "path"))); // No Version:
+        Assert.False(rewriter.CanHandle(new SpecContext("curl", "curl", "Version: %{base_version}\n", "path"))); // Macro version
+
+        // 2. Rewrite edge cases
+        Assert.False(rewriter.Rewrite(null!, "1.0").Success);
+        Assert.False(rewriter.Rewrite(new SpecContext("curl", "curl", "", "path"), "1.0").Success);
+
+        var validContext = new SpecContext("curl", "curl", "Name: curl\nVersion: 8.21.0\n", "path");
+        var emptyVerRes = rewriter.Rewrite(validContext, "");
+        Assert.False(emptyVerRes.Success);
+        Assert.Contains("Target version cannot be empty", emptyVerRes.ErrorMessage);
+
+        var contextNoVer = new SpecContext("curl", "curl", "Name: curl\n", "path");
+        var noVerRes = rewriter.Rewrite(contextNoVer, "8.22.0");
+        Assert.False(noVerRes.Success);
+        Assert.Contains("No 'Version:'", noVerRes.ErrorMessage);
+
+        var noChangeRes = rewriter.Rewrite(validContext, "8.21.0");
+        Assert.True(noChangeRes.Success);
+        Assert.False(noChangeRes.HasChanged);
+    }
 }

@@ -217,5 +217,51 @@ public class LookoutVersionSourceTests
         Assert.Equal(50, requestCount);
         Assert.Equal(50 * 200, candidates.Count);
     }
+
+    [Fact]
+    public async Task GetCandidatesAsync_ReturnsEmpty_WhenDisabledOrBaseUrlEmpty()
+    {
+        var httpClient = new HttpClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
+        var optionsDisabled = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Lookout = new LookoutUpdateOptions { Enabled = false, BaseUrl = "https://lookout.openruyi.cn" }
+        });
+        var sourceDisabled = new LookoutVersionSource(httpClient, optionsDisabled);
+        Assert.Empty(await sourceDisabled.GetCandidatesAsync());
+
+        var optionsNoUrl = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Lookout = new LookoutUpdateOptions { Enabled = true, BaseUrl = "" }
+        });
+        var sourceNoUrl = new LookoutVersionSource(httpClient, optionsNoUrl);
+        Assert.Empty(await sourceNoUrl.GetCandidatesAsync());
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_HandlesNetworkError_HttpError_AndBadJson()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Lookout = new LookoutUpdateOptions { Enabled = true, BaseUrl = "https://lookout.openruyi.cn" }
+        });
+
+        // 1. Network exception
+        var handlerThrow = new FakeHttpMessageHandler(_ => throw new HttpRequestException("Network failure"));
+        var sourceThrow = new LookoutVersionSource(new HttpClient(handlerThrow), options);
+        Assert.Empty(await sourceThrow.GetCandidatesAsync());
+
+        // 2. HTTP 500
+        var handler500 = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var source500 = new LookoutVersionSource(new HttpClient(handler500), options);
+        Assert.Empty(await source500.GetCandidatesAsync());
+
+        // 3. Bad JSON
+        var handlerBadJson = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{ not valid json }", System.Text.Encoding.UTF8, "application/json")
+        });
+        var sourceBadJson = new LookoutVersionSource(new HttpClient(handlerBadJson), options);
+        Assert.Empty(await sourceBadJson.GetCandidatesAsync());
+    }
 }
 

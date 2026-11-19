@@ -59,10 +59,68 @@ public class UpdateAdmissionTests
     [InlineData("1.0", "1.0^git1", -1)]
     [InlineData("2.0.0", "1.99.99", 1)]
     [InlineData("1.0.1+suffix", "1.0.1", 0)]
-    public void CompareRpmVersions_ComparesCorrectly(string v1, string v2, int expected)
+    [InlineData("1.0^git1", "1.0.1", -1)]
+    [InlineData("1.0^", "1.0", 1)]
+    [InlineData("1.0^", "1.0.1", -1)]
+    [InlineData("1.0~rc1", "1.0~rc2", -1)]
+    [InlineData("1.0", "1.0.", 0)]
+    [InlineData("1.0a", "1.0.1", -1)]
+    [InlineData("1.0a", "1.0", 1)]
+    [InlineData("1.0", "1.0a", -1)]
+    [InlineData("1.0", "1.0.0", -1)]
+    [InlineData("01", "1", 0)]
+    [InlineData("1.0.0", "1.0", 1)]
+    [InlineData(null, null, 0)]
+    [InlineData(null, "1.0", -1)]
+    [InlineData("1.0", null, 1)]
+    [InlineData("1.0~", "1.0~", 0)]
+    [InlineData("1.0^", "1.0^", 0)]
+    [InlineData("1.0~rc1", "1.0^git1", -1)]
+    [InlineData("1.0^git1", "1.0~rc1", 1)]
+    public void CompareRpmVersions_ComparesCorrectly(string? v1, string? v2, int expected)
     {
         var cmp = UpdateAdmission.CompareRpmVersions(v1, v2);
         Assert.Equal(expected, cmp);
+    }
+
+    [Fact]
+    public void DeduceBranch_HandlesEdgeCases()
+    {
+        Assert.Equal(string.Empty, UpdateAdmission.DeduceBranch(null, "crate"));
+        Assert.Equal(string.Empty, UpdateAdmission.DeduceBranch("rust-crate-0.5", null!));
+        Assert.Equal(string.Empty, UpdateAdmission.DeduceBranch("other-dir", "crate"));
+        Assert.Equal("0.5", UpdateAdmission.DeduceBranch("rust-rand-core-0.5", "rand_core"));
+    }
+
+    [Fact]
+    public void StripVersionSuffix_HandlesEdgeCases()
+    {
+        Assert.Equal(string.Empty, UpdateAdmission.StripVersionSuffix(null!));
+        Assert.Equal(string.Empty, UpdateAdmission.StripVersionSuffix("   "));
+        Assert.Equal("1.2.3", UpdateAdmission.StripVersionSuffix("1.2.3"));
+        Assert.Equal("1.2.3", UpdateAdmission.StripVersionSuffix("1.2.3+suffix"));
+    }
+
+    [Fact]
+    public void IsVersionAtOrPastTarget_FullVersionAndEdgeCases()
+    {
+        Assert.False(UpdateAdmission.IsVersionAtOrPastTarget(null!, "1.0"));
+        Assert.False(UpdateAdmission.IsVersionAtOrPastTarget("Version: 1.0", null!));
+        Assert.False(UpdateAdmission.IsVersionAtOrPastTarget("No tags", "1.0"));
+
+        var fullVerSpec = "%global full_version 2.5.0\nName: test\n";
+        Assert.True(UpdateAdmission.IsVersionAtOrPastTarget(fullVerSpec, "2.4.0"));
+        Assert.True(UpdateAdmission.IsVersionAtOrPastTarget(fullVerSpec, "2.5.0"));
+        Assert.False(UpdateAdmission.IsVersionAtOrPastTarget(fullVerSpec, "2.6.0"));
+    }
+
+    [Fact]
+    public void IsCrossMajorVersion_HandlesInvalidOrEmptyVersions()
+    {
+        Assert.False(UpdateAdmission.IsCrossMajorVersion("", "1.0"));
+        Assert.False(UpdateAdmission.IsCrossMajorVersion("1.0", ""));
+        Assert.False(UpdateAdmission.IsCrossMajorVersion("abc", "1.0"));
+        Assert.False(UpdateAdmission.IsCrossMajorVersion("1.0", "abc"));
     }
 
     [Theory]
@@ -97,5 +155,30 @@ public class UpdateAdmissionTests
     public void IsValidTargetVersion_ValidatesTargetVersionsCorrectly(string version, bool expected)
     {
         Assert.Equal(expected, UpdateAdmission.IsValidTargetVersion(version));
+    }
+
+    [Theory]
+    [InlineData("1.0", "1.0^git", -1)]
+    [InlineData("1.0^git", "1.0", 1)]
+    [InlineData("1.0^1", "1.0.1", -1)]
+    [InlineData("1.0.1", "1.0^1", 1)]
+    [InlineData("1.0.1", "1.0.a", 1)]
+    [InlineData("1.0.a", "1.0.1", -1)]
+    [InlineData("1.0.beta", "1.0.alpha", 1)]
+    [InlineData("1.0.alpha", "1.0.beta", -1)]
+    [InlineData("1.0.10", "1.0.9", 1)]
+    [InlineData("1.0.9", "1.0.10", -1)]
+    public void CompareRpmVersions_CaretAndSegmentComparisons(string v1, string v2, int expectedSign)
+    {
+        int actual = UpdateAdmission.CompareRpmVersions(v1, v2);
+        Assert.Equal(expectedSign, Math.Sign(actual));
+    }
+
+    [Fact]
+    public void IsVersionCompatibleWithBranch_HandlesTrailingDotAndExactMatch()
+    {
+        Assert.True(UpdateAdmission.IsVersionCompatibleWithBranch("0.10.1", "0.10."));
+        Assert.True(UpdateAdmission.IsVersionCompatibleWithBranch("0.10", "0.10"));
+        Assert.True(UpdateAdmission.IsVersionCompatibleWithBranch("0.10.1", ""));
     }
 }

@@ -261,4 +261,204 @@ public class CveActiveWatchServiceTests
         Assert.Equal(3, capturedBatches.Count);
         Assert.Equal(new[] { "pkg1", "pkg2" }, capturedBatches[2]);
     }
+
+    [Fact]
+    public async Task StartAsync_AndStopAsync_Lifecycle()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            Enabled = false,
+            TargetRepository = "owner/repo",
+            CheckIntervalHours = 1
+        });
+
+        var service = new CveActiveWatchService(
+            Substitute.For<IGitHubService>(),
+            Substitute.For<IPackageVulnerabilityScanner>(),
+            options);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await service.StartAsync(cts.Token);
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task RunScanSweepAsync_LoadsCatalogViaSpecCatalog_WhenCatalogProviderNull()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.SearchStaleCandidatesAsync(
+            "owner", "repo", Arg.Any<DateTimeOffset>(), false, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<Issue>());
+
+        var specCatalogMock = Substitute.For<ISpecCatalog>();
+        specCatalogMock.GetAllPackageNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(new[] { "pkgA", "pkgB" });
+        specCatalogMock.GetSpecAsync("pkgA", Arg.Any<CancellationToken>())
+            .Returns(new SpecContext("pkgA", "pkgA", "Name: pkgA\nVersion: 1.2.3\n", "SPECS/pkgA.spec"));
+        specCatalogMock.GetSpecAsync("pkgB", Arg.Any<CancellationToken>())
+            .Returns(new SpecContext("pkgB", "pkgB", "No version line\n", "SPECS/pkgB.spec"));
+
+        var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
+        var captured = new List<(string Name, string Version)>();
+        scannerMock.ScanPackagesAsync(Arg.Do<IEnumerable<(string Name, string Version)>>(p => captured.AddRange(p)), Arg.Any<CancellationToken>())
+            .Returns(new PackageVulnerabilityScanResult(Array.Empty<PackageVulnerabilityFinding>(), new HashSet<string>()));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "owner/repo",
+            PackagesPerSweep = 0
+        });
+
+        // Pass specCatalog and null catalogProvider
+        var service = new CveActiveWatchService(gitHubMock, scannerMock, options, specCatalog: specCatalogMock);
+        await service.RunScanSweepAsync();
+
+        Assert.Single(captured);
+        Assert.Equal("pkgA", captured[0].Name);
+        Assert.Equal("1.2.3", captured[0].Version);
+    }
+
+    [Theory]
+    [InlineData("invalid_repo")]
+    [InlineData("")]
+    public async Task RunScanSweepAsync_HandlesInvalidTargetRepo(string targetRepo)
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            Enabled = true,
+            TargetRepository = targetRepo
+        });
+
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var service = new CveActiveWatchService(gitHubMock, Substitute.For<IPackageVulnerabilityScanner>(), options);
+
+        await service.RunScanSweepAsync();
+        await gitHubMock.DidNotReceive().SearchStaleCandidatesAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateTimeOffset>(), Arg.Any<bool>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunScanSweepAsync_DefersSweep_WhenRateLimitLow()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(100, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            Enabled = true,
+            TargetRepository = "owner/repo"
+        });
+
+        var service = new CveActiveWatchService(gitHubMock, scannerMock, options);
+        await service.RunScanSweepAsync();
+
+        await scannerMock.DidNotReceive().ScanPackagesAsync(
+            Arg.Any<IEnumerable<(string, string)>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunScanSweepAsync_ReturnsEarly_WhenPackageCatalogEmpty()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            Enabled = true,
+            TargetRepository = "owner/repo"
+        });
+
+        var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<(string, string)>>(Array.Empty<(string, string)>());
+        var service = new CveActiveWatchService(gitHubMock, scannerMock, options, catalogProvider: fakeCatalog);
+        await service.RunScanSweepAsync();
+
+        await scannerMock.DidNotReceive().ScanPackagesAsync(
+            Arg.Any<IEnumerable<(string, string)>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunScanSweepAsync_UpdatesExistingVulnerabilityIssue_AndReconcilesSeverityLabels()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        var existingIssue = (Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Issue));
+        typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(existingIssue, 88);
+        typeof(Issue).GetProperty(nameof(Issue.Title))?.SetValue(existingIssue, "[Security] Outstanding CVEs detected in curl");
+        var oldSeverityLabel = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(oldSeverityLabel, GitHubLabels.Severity4);
+        typeof(Issue).GetProperty(nameof(Issue.Labels))?.SetValue(existingIssue, new List<Label> { oldSeverityLabel });
+
+        gitHubMock.SearchStaleCandidatesAsync("owner", "repo", Arg.Any<DateTimeOffset>(), false, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { existingIssue });
+
+        var report = new CveReport("CVE-2024-9999", 9.8, GitHubLabels.Severity1, "OSV", "Critical RCE");
+        var finding = new PackageVulnerabilityFinding("curl", "8.2.1", new[] { "CVE-2024-9999" }, new[] { report });
+
+        var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
+        scannerMock.ScanPackagesAsync(Arg.Any<IEnumerable<(string, string)>>(), Arg.Any<CancellationToken>())
+            .Returns(new PackageVulnerabilityScanResult(new[] { finding }, new HashSet<string> { "curl" }));
+
+        var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<(string, string)>>(new[] { ("curl", "8.2.1") });
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "owner/repo"
+        });
+
+        var service = new CveActiveWatchService(gitHubMock, scannerMock, options, catalogProvider: fakeCatalog);
+        await service.RunScanSweepAsync();
+
+        await gitHubMock.Received(1).UpdateIssueAsync("owner", "repo", 88, "[Security] Outstanding CVEs detected in curl", Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).RemoveLabelAsync("owner", "repo", 88, GitHubLabels.Severity4, Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).AddLabelsAsync("owner", "repo", 88, Arg.Is<string[]>(labels => labels.Contains(GitHubLabels.Severity1)), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunScanSweepAsync_AutoClosesResolvedVulnerabilityIssue()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        var resolvedIssue = (Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Issue));
+        typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(resolvedIssue, 99);
+        typeof(Issue).GetProperty(nameof(Issue.Title))?.SetValue(resolvedIssue, "[Security] Outstanding CVEs detected in curl");
+        var vulnLabel = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(vulnLabel, GitHubLabels.VulnerabilityDetected);
+        typeof(Issue).GetProperty(nameof(Issue.Labels))?.SetValue(resolvedIssue, new List<Label> { vulnLabel });
+
+        // Search returns this issue for reconciliation
+        gitHubMock.SearchStaleCandidatesAsync("owner", "repo", Arg.Any<DateTimeOffset>(), false, Arg.Is<string>(q => q.Contains("is:issue is:open")), Arg.Any<CancellationToken>())
+            .Returns(new[] { resolvedIssue });
+
+        // Scanner reports curl was scanned successfully, with 0 findings (resolved!)
+        var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
+        scannerMock.ScanPackagesAsync(Arg.Any<IEnumerable<(string, string)>>(), Arg.Any<CancellationToken>())
+            .Returns(new PackageVulnerabilityScanResult(Array.Empty<PackageVulnerabilityFinding>(), new HashSet<string> { "curl" }));
+
+        var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<(string, string)>>(new[] { ("curl", "8.2.2") });
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "owner/repo"
+        });
+
+        var service = new CveActiveWatchService(gitHubMock, scannerMock, options, catalogProvider: fakeCatalog);
+        await service.RunScanSweepAsync();
+
+        await gitHubMock.Received(1).CreateCommentAsync("owner", "repo", 99, Arg.Is<string>(c => c.Contains("resolved")), Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).RemoveLabelAsync("owner", "repo", 99, GitHubLabels.VulnerabilityDetected, Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).AddLabelsAsync("owner", "repo", 99, Arg.Is<string[]>(labels => labels.Contains(GitHubLabels.VulnerabilityResolved)), Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).CloseIssueAsync("owner", "repo", 99, Arg.Any<CancellationToken>());
+    }
 }

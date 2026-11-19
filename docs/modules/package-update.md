@@ -21,13 +21,13 @@ flowchart TD
     Start["Scheduled Sweep Timer"] --> QuotaCheck{"Core Rate Limit >= MinRateLimitRemaining?"}
     QuotaCheck -- No --> Defer["Log Warning & Defer Sweep"]
     QuotaCheck -- Yes --> CleanPrs["Clean Stale Failed PRs (FailedPrTtlDays)"]
-    CleanPrs --> ConcurrencyCheck{"Active Bot PRs >= MaxConcurrentPullRequests?"}
-    ConcurrencyCheck -- Yes --> PostTasks["Run Post-Sweep OBS Verification"]
-    ConcurrencyCheck -- No --> Discover["Discover Candidates (Lookout & crates.io)"]
-    Discover --> FilterCandidates["Filter Cooldown & Admitted Versions"]
-    FilterCandidates --> RewriteSpec["Rewrite SPEC (Plain or Rust)"]
+    CleanPrs --> Discover["Discover Candidates (Lookout & crates.io)"]
+    Discover --> Prioritize["Prioritize Candidates (Security Advisories First)"]
+    Prioritize --> Loop{"Candidate Evaluation Loop"}
+    Loop -- Concurrency Limit Reached --> PostTasks["Run Post-Sweep OBS Verification"]
+    Loop -- Candidate Admitted --> RewriteSpec["Rewrite SPEC (Plain or Rust)"]
     RewriteSpec --> PublishPr["Create Branch & Publish Pull Request"]
-    PublishPr --> PostTasks
+    PublishPr --> Loop
     PostTasks --> Done["End Sweep"]
 ```
 
@@ -37,7 +37,7 @@ flowchart TD
    - `PlainSpecVersionRewriter`: Updates `Version:` tokens while keeping `Release:` intact.
    - `RustCrateSpecRewriter`: Synchronizes `Version:` and `%global full_version` for Rust crates.
 3. **CI Checksum Backfill**: Detects failed pull requests caused by invalid `#!RemoteAsset` checksums and automatically backfills correct SHA-256 digests.
-4. **Failure Cooldown & Tracking**: Tracks consecutive CI failures per package (`MaxConsecutiveFailures`). When the threshold is reached, creates a tracking issue carrying `Auto-Update: Blocked` and `Status: stale-exempt` and enters cooldown (`CooldownHours` / `GiveUpIssueCooldownDays`).
+4. **Failure Cooldown & Tracking**: Tracks consecutive CI failures per package (`MaxConsecutiveFailures`). When the threshold is reached, creates a tracking issue carrying `Auto-Update: Blocked` and `Status: stale-exempt` and enters cooldown for `GiveUpIssueCooldownDays` days (independent of the upstream release stabilization window `CooldownHours`).
 5. **Post-Merge OBS Verification**: `ObsPostMergeVerifier` polls Open Build Service (`build.openruyi.cn`) to verify that merged pull request commits build successfully. If `RequireObsSuccessAfterMerge` is enabled and OBS fails, applies `Auto-Update: Blocked`.
 
 ---
@@ -71,14 +71,14 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 | `SkipPackagesWithPatches` | `bool` | `true` | When `true`, packages with downstream `Patch` directives are skipped. |
 | `MaxCandidatesPerSweep` | `int` | `5` | Maximum number of update candidates admitted and published in a single sweep. |
 | `MaxConcurrentPullRequests` | `int` | `5` | Maximum open update pull requests allowed simultaneously. |
-| `FailedPrTtlDays` | `int` | `7` | Days an inactive pull request with failing CI remains open before automated closure. |
+| `FailedPrTtlDays` | `int` | `7` | Days an inactive pull request with failing CI remains open before automated closure, and maximum age of merged pull requests before unverified branches are reclaimed. |
 | `CooldownHours` | `int` | `72` | Minimum age in hours an upstream release must reach before submission. Setting 0 disables the stabilization window. Security advisories bypass this stabilization delay. |
 | `MaxConsecutiveFailures` | `int` | `3` | Consecutive failed pull requests before entering cooldown. |
 | `IssueOnGivingUp` | `bool` | `true` | Whether to file a tracking issue when a package reaches consecutive failure limits. |
 | `GiveUpIssueCooldownDays` | `int` | `30` | Days a package remains in failure cooldown after reaching consecutive CI failure limits. |
 | `GiveUpIssueLabel` | `string` | `"Status: stale-exempt"` | Protection label applied to failure tracking issues. |
 | `MinRateLimitRemaining` | `int` | `500` | Minimum core GitHub API quota required to begin a sweep. |
-| `RequestThrottleMilliseconds` | `int` | `2000` | Inter-request delay between GitHub API mutations to prevent secondary rate limits. |
+| `RequestThrottleMilliseconds` | `int` | `2000` | Delay in milliseconds inserted after publishing each update pull request to prevent secondary rate limits. |
 
 ### Nested Options
 
@@ -111,7 +111,7 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 - **Closed-Loop Cooldown Reset**: When a package enters failure cooldown due to consecutive CI failures (`MaxConsecutiveFailures`), cooldown is deterministically reset via two authoritative events:
   1. The tracking issue opened on GitHub is closed by maintainers.
   2. The SPEC file on `main` is manually updated to or past the target version.
-  Unstructured issue comments do not unfreeze cooldown to avoid false resets during discussion.
+  Unstructured issue comments do not unfreeze cooldown to avoid false resets during discussion. If maintainers need to manually unfreeze a package early, simply close the tracking issue or bump the SPEC on main.
 - **Merged Branch Reclamation**: Git branches created for pull requests (`autoupdate/<pkg>`) are safely deleted after PR merge once:
   1. Post-merge OBS build verification reports `Succeeded`, or
   2. The merged PR has aged past `FailedPrTtlDays` (preventing branch accumulation for broken OBS builds).

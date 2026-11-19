@@ -1,6 +1,7 @@
 using System.Net;
 using abaci_bot.Options;
 using abaci_bot.Services;
+using static abaci_bot.Services.RustCrateVersionSource;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -94,6 +95,87 @@ public class RustCrateVersionSourceTests
         Assert.Equal("https://crates.io/crates/anstream/0.6.22", cand.EvidenceUrl);
         Assert.True(cand.PublishedAt.HasValue);
         Assert.Equal(DateTimeOffset.Parse("2026-03-01T10:00:00Z"), cand.PublishedAt.Value);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void GetSparseIndexPath_ThrowsOnEmpty(string? name)
+    {
+        Assert.Throws<ArgumentException>(() => RustCrateVersionSource.GetSparseIndexPath(name!));
+    }
+
+    [Fact]
+    public void SelectLatestVersion_HandlesEdgeCases()
+    {
+        Assert.Null(RustCrateVersionSource.SelectLatestVersion(null!, "1.0.0"));
+        Assert.Null(RustCrateVersionSource.SelectLatestVersion(new List<CrateIndexEntry>(), "1.0.0"));
+
+        // Already at latest version
+        var entries = new List<CrateIndexEntry> { new() { Version = "1.0.0" } };
+        Assert.Null(RustCrateVersionSource.SelectLatestVersion(entries, "1.0.0"));
+
+        // Target version is older than current
+        var olderEntries = new List<CrateIndexEntry> { new() { Version = "0.9.0" } };
+        Assert.Null(RustCrateVersionSource.SelectLatestVersion(olderEntries, "1.0.0"));
+
+        // Chronological fallback for custom non-System.Version strings
+        var customEntries = new List<CrateIndexEntry>
+        {
+            new() { Version = "custom-v1" },
+            new() { Version = "custom-v2" }
+        };
+        var latestCustom = RustCrateVersionSource.SelectLatestVersion(customEntries, "custom-v1");
+        Assert.NotNull(latestCustom);
+        Assert.Equal("custom-v2", latestCustom.Version);
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_HandlesDisabledAndNetworkErrors()
+    {
+        var optionsDisabled = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            RustCratePoller = new RustCratePollerOptions { Enabled = false }
+        });
+        var sourceDisabled = new RustCrateVersionSource(new HttpClient(), optionsDisabled);
+        var resDisabled = await sourceDisabled.GetCandidatesAsync();
+        Assert.Empty(resDisabled);
+
+        // Network error handling (404 / 500 / network exception)
+        var handlerErr = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            RustCratePoller = new RustCratePollerOptions { Enabled = true, MaxCratesPerSweep = 10 }
+        });
+        var specContent = "%global crate_name foo\nVersion: 1.0.0\n";
+        var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<SpecContext>>(new[]
+        {
+            new SpecContext("rust-foo", "rust-foo", specContent, "SPECS/rust-foo/rust-foo.spec")
+        });
+        var sourceErr = new RustCrateVersionSource(new HttpClient(handlerErr), options, specCatalogProvider: fakeCatalog);
+        var resErr = await sourceErr.GetCandidatesAsync();
+        Assert.Empty(resErr);
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_SkipsSpecsMissingCrateNameOrVersion()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("") });
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            RustCratePoller = new RustCratePollerOptions { Enabled = true }
+        });
+
+        var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<SpecContext>>(new[]
+        {
+            new SpecContext("rust-nocrate", "rust-nocrate", "Version: 1.0.0\n", "SPECS/rust-nocrate/rust-nocrate.spec"),
+            new SpecContext("rust-nover", "rust-nover", "%global crate_name bar\n", "SPECS/rust-nover/rust-nover.spec")
+        });
+
+        var source = new RustCrateVersionSource(new HttpClient(handler), options, specCatalogProvider: fakeCatalog);
+        var candidates = await source.GetCandidatesAsync();
+        Assert.Empty(candidates);
     }
 }
 
