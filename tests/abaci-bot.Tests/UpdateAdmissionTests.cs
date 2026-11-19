@@ -61,6 +61,8 @@ public class UpdateAdmissionTests
     [InlineData("2026.05.26", true)]
     [InlineData("1.0_beta", true)]
     [InlineData("1.0+build1", true)]
+    [InlineData("1.0~rc1", true)]
+    [InlineData("2.0^git20261119", true)]
     [InlineData("1.2-3", false)]
     [InlineData("1.0\nName: hacked", false)]
     [InlineData("1.0\r\nName: hacked", false)]

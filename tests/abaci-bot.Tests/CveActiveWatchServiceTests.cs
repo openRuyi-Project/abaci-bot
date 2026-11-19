@@ -210,4 +210,55 @@ public class CveActiveWatchServiceTests
                                        !labels.Any(l => l.StartsWith("Severity:"))),
             Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task RunScanSweepAsync_RotatesPackageCatalog_AcrossConsecutiveSweeps()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.SearchStaleCandidatesAsync(
+            "openRuyi-Project", "openRuyi", Arg.Any<DateTimeOffset>(), false, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<Issue>());
+
+        var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
+        var capturedBatches = new List<List<string>>();
+
+        scannerMock.ScanPackagesAsync(Arg.Do<IEnumerable<(string Name, string Version)>>(pkgs =>
+        {
+            capturedBatches.Add(pkgs.Select(p => p.Name).ToList());
+        }), Arg.Any<CancellationToken>())
+        .Returns(new PackageVulnerabilityScanResult(Array.Empty<PackageVulnerabilityFinding>(), new HashSet<string>()));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "openRuyi-Project/openRuyi",
+            PackagesPerSweep = 2
+        });
+
+        var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<(string, string)>>(new[]
+        {
+            ("pkg1", "1.0"),
+            ("pkg2", "1.0"),
+            ("pkg3", "1.0"),
+            ("pkg4", "1.0")
+        });
+
+        var service = new CveActiveWatchService(gitHubMock, scannerMock, options, catalogProvider: fakeCatalog);
+
+        // First sweep: should take pkg1, pkg2
+        await service.RunScanSweepAsync();
+        Assert.Single(capturedBatches);
+        Assert.Equal(new[] { "pkg1", "pkg2" }, capturedBatches[0]);
+
+        // Second sweep: should rotate and take pkg3, pkg4
+        await service.RunScanSweepAsync();
+        Assert.Equal(2, capturedBatches.Count);
+        Assert.Equal(new[] { "pkg3", "pkg4" }, capturedBatches[1]);
+
+        // Third sweep: should wrap around and take pkg1, pkg2
+        await service.RunScanSweepAsync();
+        Assert.Equal(3, capturedBatches.Count);
+        Assert.Equal(new[] { "pkg1", "pkg2" }, capturedBatches[2]);
+    }
 }

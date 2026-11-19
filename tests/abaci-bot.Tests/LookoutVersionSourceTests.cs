@@ -170,5 +170,51 @@ public class LookoutVersionSourceTests
         Assert.True(candidates[0].IsSecurityAdvisory);
         Assert.Equal("https://lookout.openruyi.cn/package/curl", candidates[0].EvidenceUrl);
     }
+
+    [Fact]
+    public async Task GetCandidatesAsync_RespectsMaxPagesLimit()
+    {
+        int requestCount = 0;
+        var handler = new FakeHttpMessageHandler(req =>
+        {
+            requestCount++;
+            // Always return a full page of 200 items
+            var fullPage = new
+            {
+                packages = Enumerable.Range(1, 200).Select(i => new
+                {
+                    name = $"pkg-{requestCount}-{i}",
+                    current_version = "1.0",
+                    latest_version = "1.1",
+                    last_known_relation = "outdated",
+                    stale = false
+                }).ToArray()
+            };
+
+            var json = JsonSerializer.Serialize(fullPage);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+
+        var httpClient = new HttpClient(handler);
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Lookout = new LookoutUpdateOptions
+            {
+                Enabled = true,
+                BaseUrl = "https://lookout.openruyi.cn",
+                StaleThresholdHours = 48
+            }
+        });
+
+        var source = new LookoutVersionSource(httpClient, options);
+        var candidates = await source.GetCandidatesAsync();
+
+        // Must stop at maxPages = 50
+        Assert.Equal(50, requestCount);
+        Assert.Equal(50 * 200, candidates.Count);
+    }
 }
 

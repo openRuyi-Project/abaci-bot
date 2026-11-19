@@ -15,7 +15,8 @@ public record SpecContext(string PackageName, string DirectoryName, string Conte
 /// <param name="UpdatedContent">The rewritten SPEC content if successful, or original content on failure.</param>
 /// <param name="ErrorMessage">Explanation of failure if unsuccessful.</param>
 /// <param name="HasChanged">Whether the content actually changed (false indicates no-op / identical content).</param>
-public record SpecRewriteResult(bool Success, string UpdatedContent, string? ErrorMessage = null, bool HasChanged = false);
+/// <param name="SpecPath">Optional relative path to the SPEC file (e.g. "SPECS/rust-foo-0.7/rust-foo-0.7.spec").</param>
+public record SpecRewriteResult(bool Success, string UpdatedContent, string? ErrorMessage = null, bool HasChanged = false, string? SpecPath = null);
 
 /// <summary>
 /// Deep module abstraction for pure-function RPM SPEC version rewriting.

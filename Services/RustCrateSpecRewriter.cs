@@ -109,7 +109,8 @@ public class RustCrateSpecRewriter : ISpecVersionRewriter
                 updated.AsSpan(r.Index + r.Length));
         }
 
-        return new SpecRewriteResult(true, updated, null, HasChanged: true);
+        var dir = !string.IsNullOrWhiteSpace(context.DirectoryName) ? context.DirectoryName : context.PackageName;
+        return new SpecRewriteResult(true, updated, null, HasChanged: true, SpecPath: $"SPECS/{dir}/{context.PackageName}.spec");
     }
 
     /// <summary>

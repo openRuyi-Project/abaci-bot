@@ -41,9 +41,16 @@ public class LookoutVersionSource : IUpdateCandidateSource
         var baseUrl = _options.BaseUrl.TrimEnd('/');
         int page = 1;
         const int perPage = 200;
+        const int maxPages = 50;
 
         while (!ct.IsCancellationRequested)
         {
+            if (page > maxPages)
+            {
+                _logger?.LogInformation("Reached max page limit ({Max}) for Lookout queries", maxPages);
+                break;
+            }
+
             var url = $"{baseUrl}/api/v2/packages?per_page={perPage}&page={page}";
             HttpResponseMessage response;
             try
@@ -142,6 +149,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
             if (items.Count < perPage)
                 break;
 
+            await Task.Delay(50, ct);
             page++;
         }
 

@@ -19,6 +19,7 @@ public class PackageUpdateService : BackgroundService
     private readonly IEnumerable<ISpecVersionRewriter> _specRewriters;
     private readonly IPackageUpdatePublisher _publisher;
     private readonly ObsPostMergeVerifier _obsPostMergeVerifier;
+    private readonly ISpecCatalog? _specCatalog;
     private readonly PackageUpdateOptions _options;
     private readonly ILogger<PackageUpdateService>? _logger;
 
@@ -34,7 +35,8 @@ public class PackageUpdateService : BackgroundService
         IPackageUpdatePublisher publisher,
         ObsPostMergeVerifier obsPostMergeVerifier,
         IOptions<PackageUpdateOptions> options,
-        ILogger<PackageUpdateService>? logger = null)
+        ILogger<PackageUpdateService>? logger = null,
+        ISpecCatalog? specCatalog = null)
     {
         _gitHubService = gitHubService;
         _candidateSources = candidateSources;
@@ -43,6 +45,7 @@ public class PackageUpdateService : BackgroundService
         _obsPostMergeVerifier = obsPostMergeVerifier;
         _options = options.Value;
         _logger = logger;
+        _specCatalog = specCatalog;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -183,30 +186,68 @@ public class PackageUpdateService : BackgroundService
                 continue;
             }
 
-            // A. Check cooldown
+            // A. Upstream version stabilization window (CooldownHours)
+            // Routine updates wait for CooldownHours to ensure the upstream release is stable.
+            // Security advisories bypass this stabilization window for immediate triage.
+            if (_options.CooldownHours > 0 && candidate.PublishedAt.HasValue && !candidate.IsSecurityAdvisory)
+            {
+                var age = DateTimeOffset.UtcNow - candidate.PublishedAt.Value;
+                if (age < TimeSpan.FromHours(_options.CooldownHours))
+                {
+                    _logger?.LogDebug("Package {Package} version {Version} published {Age:F1}h ago, within {Cooldown}h stabilization window; skipping",
+                        candidate.PackageName, candidate.TargetVersion, age.TotalHours, _options.CooldownHours);
+                    continue;
+                }
+            }
+
+            // B. Check repeated CI failure cooldown
             if (IsInCooldown(candidate.PackageName))
             {
-                _logger?.LogDebug("Package {Package} is in 30-day failure cooldown; skipping", candidate.PackageName);
+                _logger?.LogDebug("Package {Package} is in failure cooldown; skipping", candidate.PackageName);
                 continue;
             }
 
-            // B. Read existing SPEC from base branch (main)
-            var specPath = $"SPECS/{candidate.PackageName}/{candidate.PackageName}.spec";
+            // C. Read existing SPEC from base branch (main) using ISpecCatalog when available, falling back to direct GitHub fetch
+            SpecContext? specContext = null;
+            if (_specCatalog != null)
+            {
+                try
+                {
+                    specContext = await _specCatalog.GetSpecAsync(candidate.PackageName, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger?.LogDebug(ex, "Could not load SPEC for candidate {Package} via SpecCatalog", candidate.PackageName);
+                }
+            }
+
             string specContent;
-            try
+            if (specContext != null)
             {
-                specContent = await _gitHubService.GetFileContentAsync(owner, repo, specPath, "main", ct);
+                specContent = specContext.Content;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            else
             {
-                _logger?.LogDebug(ex, "Could not load SPEC for candidate {Package} from main; skipping", candidate.PackageName);
-                continue;
+                var fallbackPath = $"SPECS/{candidate.PackageName}/{candidate.PackageName}.spec";
+                try
+                {
+                    specContent = await _gitHubService.GetFileContentAsync(owner, repo, fallbackPath, "main", ct);
+                    if (!string.IsNullOrWhiteSpace(specContent))
+                    {
+                        specContext = new SpecContext(candidate.PackageName, candidate.PackageName, specContent);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger?.LogDebug(ex, "Could not load SPEC for candidate {Package} from main; skipping", candidate.PackageName);
+                    continue;
+                }
             }
 
-            if (string.IsNullOrWhiteSpace(specContent))
+            if (specContext == null || string.IsNullOrWhiteSpace(specContent))
                 continue;
 
-            // C. Check #!NoAutoUpdate directive
+            // D. Check #!NoAutoUpdate directive
             if (NoAutoUpdateMarker.HasNoAutoUpdate(specContent, out var optOutReason))
             {
                 _logger?.LogInformation("Skipping {Package} due to in-spec opt-out: {Reason}", candidate.PackageName, optOutReason);
@@ -228,8 +269,7 @@ public class PackageUpdateService : BackgroundService
                 continue;
             }
 
-            // D. Select compatible rewriter
-            var specContext = new SpecContext(candidate.PackageName, candidate.PackageName, specContent);
+            // E. Select compatible rewriter
             var rewriter = _specRewriters.FirstOrDefault(r => r.CanHandle(specContext));
             if (rewriter == null)
             {
@@ -328,7 +368,7 @@ public class PackageUpdateService : BackgroundService
 
                         // Delete remote branch if exists, belongs to target repository, and matches branch prefix
                         var headRepoFullName = fullPr?.Head?.Repository?.FullName;
-                        var isSameRepo = headRepoFullName == null || string.Equals(headRepoFullName, $"{owner}/{repo}", StringComparison.OrdinalIgnoreCase);
+                        var isSameRepo = headRepoFullName != null && string.Equals(headRepoFullName, $"{owner}/{repo}", StringComparison.OrdinalIgnoreCase);
                         var prefix = !string.IsNullOrEmpty(_options.BranchPrefix) ? _options.BranchPrefix : "autoupdate/";
                         var hasExpectedPrefix = !string.IsNullOrWhiteSpace(branchName) && branchName.StartsWith(prefix, StringComparison.Ordinal);
 
@@ -387,6 +427,16 @@ public class PackageUpdateService : BackgroundService
         return false;
     }
 
+    public void ResetCooldown(string packageName)
+    {
+        if (string.IsNullOrWhiteSpace(packageName))
+            return;
+
+        _cooldowns.TryRemove(packageName, out _);
+        _failureCounts.TryRemove(packageName, out _);
+        _logger?.LogInformation("Reset cooldown and failure count for package {Package}", packageName);
+    }
+
     public bool RecordFailure(string packageName)
     {
         if (string.IsNullOrWhiteSpace(packageName) || IsInCooldown(packageName))
@@ -397,11 +447,12 @@ public class PackageUpdateService : BackgroundService
 
         if (count >= _options.MaxConsecutiveFailures)
         {
-            var cooldownHours = _options.CooldownHours > 0 ? _options.CooldownHours : _options.GiveUpIssueCooldownDays * 24;
+            var cooldownDays = _options.GiveUpIssueCooldownDays > 0 ? _options.GiveUpIssueCooldownDays : 30;
+            var cooldownHours = cooldownDays * 24;
             _cooldowns[packageName] = DateTimeOffset.UtcNow.AddHours(cooldownHours);
             _failureCounts.TryRemove(packageName, out _);
-            _logger?.LogWarning("Package {Package} reached {Max} consecutive CI failures; entering {Hours}-hour cooldown",
-                packageName, _options.MaxConsecutiveFailures, cooldownHours);
+            _logger?.LogWarning("Package {Package} reached {Max} consecutive CI failures; entering {Days}-day cooldown",
+                packageName, _options.MaxConsecutiveFailures, cooldownDays);
             return true;
         }
 
@@ -481,14 +532,14 @@ public class PackageUpdateService : BackgroundService
         var enteredCooldown = RecordFailure(packageName);
         if (enteredCooldown && !_options.DryRun && _options.IssueOnGivingUp)
         {
-            var cooldownHours = _options.CooldownHours > 0 ? _options.CooldownHours : _options.GiveUpIssueCooldownDays * 24;
+            var cooldownDays = _options.GiveUpIssueCooldownDays > 0 ? _options.GiveUpIssueCooldownDays : 30;
             var issueTitle = $"[{GitHubLabels.AutoUpdateBlocked}] Repeated CI failures on package {packageName}";
             var issueBody = $"""
                 ## Repeated CI Failures Alert
                 Automated updates for package `{packageName}` have encountered repeated CI failures ({_options.MaxConsecutiveFailures} distinct failed PRs).
 
                 - **Latest Failed PR**: #{prNumber}
-                - **Action Taken**: Entering {cooldownHours / 24}-day cooldown before further automated attempts.
+                - **Action Taken**: Entering {cooldownDays}-day cooldown before further automated attempts.
                 - **Guidance**: Please inspect dependencies or build requirements manually.
                 """;
 

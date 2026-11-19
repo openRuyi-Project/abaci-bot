@@ -19,6 +19,7 @@ public class CveActiveWatchService : BackgroundService
     private readonly ILogger<CveActiveWatchService>? _logger;
     private readonly ISpecCatalog? _specCatalog;
     private readonly Func<CancellationToken, Task<IReadOnlyList<(string PackageName, string Version)>>>? _catalogProvider;
+    private int _catalogOffset;
 
     private static readonly Regex PackageIssueTitleRegex = new(
         @"^\[Security\]\s*Outstanding CVEs detected in\s+(?<pkg>\S+)",
@@ -104,9 +105,22 @@ public class CveActiveWatchService : BackgroundService
             return;
         }
 
-        var packagesToScan = _options.PackagesPerSweep > 0
-            ? packages.Take(_options.PackagesPerSweep).ToList()
-            : packages;
+        IReadOnlyList<(string PackageName, string Version)> packagesToScan;
+        if (_options.PackagesPerSweep > 0 && _options.PackagesPerSweep < packages.Count)
+        {
+            var offset = _catalogOffset % packages.Count;
+            var chunk = new List<(string PackageName, string Version)>(_options.PackagesPerSweep);
+            for (int i = 0; i < _options.PackagesPerSweep; i++)
+            {
+                chunk.Add(packages[(offset + i) % packages.Count]);
+            }
+            _catalogOffset = (offset + _options.PackagesPerSweep) % packages.Count;
+            packagesToScan = chunk;
+        }
+        else
+        {
+            packagesToScan = packages;
+        }
 
         _logger?.LogInformation("Dispatching OSV scan for {Count} packages", packagesToScan.Count);
 

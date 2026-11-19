@@ -68,7 +68,8 @@ public class PlainSpecVersionRewriter : ISpecVersionRewriter
             targetVersion,
             context.Content.AsSpan(verGroup.Index + verGroup.Length));
 
-        return new SpecRewriteResult(true, updatedContent, null, HasChanged: true);
+        var dirName = !string.IsNullOrWhiteSpace(context.DirectoryName) ? context.DirectoryName : context.PackageName;
+        return new SpecRewriteResult(true, updatedContent, null, HasChanged: true, SpecPath: $"SPECS/{dirName}/{context.PackageName}.spec");
     }
 }
 

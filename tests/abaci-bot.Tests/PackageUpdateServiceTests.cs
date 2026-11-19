@@ -232,4 +232,204 @@ public class PackageUpdateServiceTests
             Arg.Is<string[]>(l => l.Contains(GitHubLabels.AutoUpdate) && l.Contains(GitHubLabels.StatusStaleExempt)),
             Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task RunSweepAsync_StabilizationWindow_SkipsRecentCandidates_UnlessSecurityAdvisory()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        // curl: published 10 hours ago, not security -> should be skipped by 72h window
+        var routineCandidate = new UpdateCandidate("curl", "8.2.1", "8.2.2", CandidateOrigin.Lookout, "https://lookout", false,
+            PublishedAt: DateTimeOffset.UtcNow.AddHours(-10));
+        // openssl: published 10 hours ago, IS security advisory -> should bypass 72h window
+        var securityCandidate = new UpdateCandidate("openssl", "3.0.0", "3.0.1", CandidateOrigin.Lookout, "https://lookout", true,
+            PublishedAt: DateTimeOffset.UtcNow.AddHours(-10));
+
+        var sourceMock = Substitute.For<IUpdateCandidateSource>();
+        sourceMock.GetCandidatesAsync(Arg.Any<CancellationToken>())
+            .Returns(new[] { routineCandidate, securityCandidate });
+
+        var rewriterMock = Substitute.For<ISpecVersionRewriter>();
+        rewriterMock.CanHandle(Arg.Any<SpecContext>()).Returns(true);
+        rewriterMock.Rewrite(Arg.Any<SpecContext>(), Arg.Any<string>())
+            .Returns(new SpecRewriteResult(true, "Name: openssl\nVersion: 3.0.1\n", null, true));
+
+        var publisherMock = Substitute.For<IPackageUpdatePublisher>();
+        publisherMock.PublishUpdateAsync(Arg.Any<UpdateCandidate>(), Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new PublishResult(true, false, PullRequestNumber: 101));
+
+        gitHubMock.GetFileContentAsync("openRuyi-Project", "openRuyi", "SPECS/openssl/openssl.spec", "main", Arg.Any<CancellationToken>())
+            .Returns("Name: openssl\nVersion: 3.0.0\nRelease: 1\n");
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "openRuyi-Project/openRuyi",
+            CooldownHours = 72,
+            RequestThrottleMilliseconds = 0
+        });
+
+        var obsVerifier = new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), options);
+        var service = new PackageUpdateService(
+            gitHubMock,
+            new[] { sourceMock },
+            new[] { rewriterMock },
+            publisherMock,
+            obsVerifier,
+            options);
+
+        await service.RunSweepAsync();
+
+        // curl was skipped due to 72h cooldown
+        await publisherMock.DidNotReceive().PublishUpdateAsync(
+            routineCandidate, Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+
+        // openssl was published because IsSecurityAdvisory bypassed stabilization cooldown
+        await publisherMock.Received(1).PublishUpdateAsync(
+            securityCandidate, Arg.Any<SpecRewriteResult>(), "openRuyi-Project/openRuyi", "main", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunSweepAsync_UsesSpecCatalog_WhenAvailable()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        var candidate = new UpdateCandidate("rust-aho-corasick", "0.7.18", "0.7.20", CandidateOrigin.RustCrate, string.Empty, false);
+        var sourceMock = Substitute.For<IUpdateCandidateSource>();
+        sourceMock.GetCandidatesAsync(Arg.Any<CancellationToken>()).Returns(new[] { candidate });
+
+        var specCatalogMock = Substitute.For<ISpecCatalog>();
+        var specContext = new SpecContext("rust-aho-corasick", "rust-aho-corasick-0.7", "Name: rust-aho-corasick\nVersion: 0.7.18\n");
+        specCatalogMock.GetSpecAsync("rust-aho-corasick", Arg.Any<CancellationToken>())
+            .Returns(specContext);
+
+        var rewriterMock = Substitute.For<ISpecVersionRewriter>();
+        rewriterMock.CanHandle(specContext).Returns(true);
+        rewriterMock.Rewrite(specContext, "0.7.20")
+            .Returns(new SpecRewriteResult(true, "Name: rust-aho-corasick\nVersion: 0.7.20\n", null, true, "SPECS/rust-aho-corasick-0.7/rust-aho-corasick.spec"));
+
+        var publisherMock = Substitute.For<IPackageUpdatePublisher>();
+        publisherMock.PublishUpdateAsync(candidate, Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new PublishResult(true, false, PullRequestNumber: 102));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "openRuyi-Project/openRuyi",
+            CooldownHours = 0,
+            RequestThrottleMilliseconds = 0
+        });
+
+        var obsVerifier = new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), options);
+        var service = new PackageUpdateService(
+            gitHubMock,
+            new[] { sourceMock },
+            new[] { rewriterMock },
+            publisherMock,
+            obsVerifier,
+            options,
+            specCatalog: specCatalogMock);
+
+        await service.RunSweepAsync();
+
+        await specCatalogMock.Received(1).GetSpecAsync("rust-aho-corasick", Arg.Any<CancellationToken>());
+        await publisherMock.Received(1).PublishUpdateAsync(
+            candidate, Arg.Is<SpecRewriteResult>(r => r.SpecPath == "SPECS/rust-aho-corasick-0.7/rust-aho-corasick.spec"),
+            "openRuyi-Project/openRuyi", "main", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void ResetCooldown_ClearsCooldownAndFailureCount()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            MaxConsecutiveFailures = 2,
+            GiveUpIssueCooldownDays = 30
+        });
+
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var obsVerifier = new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), options);
+        var service = new PackageUpdateService(
+            gitHubMock,
+            Array.Empty<IUpdateCandidateSource>(),
+            Array.Empty<ISpecVersionRewriter>(),
+            Substitute.For<IPackageUpdatePublisher>(),
+            obsVerifier,
+            options);
+
+        // Record 2 failures to enter cooldown
+        service.RecordFailure("test-pkg");
+        service.RecordFailure("test-pkg");
+        Assert.True(service.IsInCooldown("test-pkg"));
+
+        // Reset cooldown
+        service.ResetCooldown("test-pkg");
+        Assert.False(service.IsInCooldown("test-pkg"));
+    }
+
+    [Fact]
+    public async Task RunSweepAsync_DeletesBranch_WhenHeadRepoMatchesTargetRepo()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        var stalePr = (Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Issue));
+        typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(stalePr, 95);
+        typeof(Issue).GetProperty(nameof(Issue.UpdatedAt))?.SetValue(stalePr, (DateTimeOffset?)DateTimeOffset.UtcNow.AddDays(-10));
+        var autoUpdateLabel = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(autoUpdateLabel, GitHubLabels.AutoUpdate);
+        typeof(Issue).GetProperty(nameof(Issue.Labels))?.SetValue(stalePr, new List<Label> { autoUpdateLabel });
+
+        gitHubMock.SearchStaleCandidatesAsync(
+            "openRuyi-Project", "openRuyi", Arg.Any<DateTimeOffset>(), true, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { stalePr });
+
+        var fullPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var headRef = (GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(GitReference));
+        typeof(GitReference).GetProperty(nameof(GitReference.Ref))?.SetValue(headRef, "autoupdate/curl");
+
+        var targetRepoObj = (Repository)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Repository));
+        typeof(Repository).GetProperty(nameof(Repository.FullName))?.SetValue(targetRepoObj, "openRuyi-Project/openRuyi");
+        typeof(GitReference).GetProperty(nameof(GitReference.Repository))?.SetValue(headRef, targetRepoObj);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Head))?.SetValue(fullPr, headRef);
+
+        gitHubMock.GetPullRequestAsync("openRuyi-Project", "openRuyi", 95, Arg.Any<CancellationToken>())
+            .Returns(fullPr);
+
+        var failedRun = (WorkflowRun)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WorkflowRun));
+        typeof(WorkflowRun).GetProperty(nameof(WorkflowRun.CreatedAt))?.SetValue(failedRun, DateTimeOffset.UtcNow.AddDays(-9));
+        typeof(WorkflowRun).GetProperty(nameof(WorkflowRun.Conclusion))?.SetValue(failedRun, new Octokit.StringEnum<WorkflowRunConclusion>(WorkflowRunConclusion.Failure));
+        gitHubMock.ListWorkflowRunsAsync("openRuyi-Project", "openRuyi", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns(new[] { failedRun });
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "openRuyi-Project/openRuyi",
+            FailedPrTtlDays = 7,
+            MaxConcurrentPullRequests = 5
+        });
+
+        var obsVerifier = new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), options);
+        var service = new PackageUpdateService(
+            gitHubMock,
+            Array.Empty<IUpdateCandidateSource>(),
+            Array.Empty<ISpecVersionRewriter>(),
+            Substitute.For<IPackageUpdatePublisher>(),
+            obsVerifier,
+            options);
+
+        await service.RunSweepAsync();
+
+        await gitHubMock.Received(1).CloseIssueAsync("openRuyi-Project", "openRuyi", 95, Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).DeleteRefAsync("openRuyi-Project", "openRuyi", "autoupdate/curl", Arg.Any<CancellationToken>());
+    }
 }

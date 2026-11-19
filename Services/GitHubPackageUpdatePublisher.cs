@@ -58,7 +58,9 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
 
         var branchPrefix = string.IsNullOrWhiteSpace(_options.BranchPrefix) ? "autoupdate/" : _options.BranchPrefix;
         var branchName = $"{branchPrefix}{candidate.PackageName}";
-        var specPath = $"SPECS/{candidate.PackageName}/{candidate.PackageName}.spec";
+        var specPath = !string.IsNullOrWhiteSpace(rewriteResult.SpecPath)
+            ? rewriteResult.SpecPath
+            : $"SPECS/{candidate.PackageName}/{candidate.PackageName}.spec";
 
         var existingBranchSha = await _gitHubService.GetRefShaAsync(owner, repo, branchName, ct);
         var existingPr = await _gitHubService.FindOpenPullRequestByHeadAsync(owner, repo, branchName, ct);

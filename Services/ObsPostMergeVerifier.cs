@@ -100,17 +100,40 @@ public class ObsPostMergeVerifier
 
             if (buildResult.Code == ObsStatusCode.Succeeded)
             {
-                if (!_options.DryRun && pr.Labels != null && pr.Labels.Any(l => string.Equals(l.Name, GitHubLabels.AutoUpdateBlocked, StringComparison.OrdinalIgnoreCase)))
+                if (!_options.DryRun)
                 {
-                    try
+                    if (pr.Labels != null && pr.Labels.Any(l => string.Equals(l.Name, GitHubLabels.AutoUpdateBlocked, StringComparison.OrdinalIgnoreCase)))
                     {
-                        await _gitHubService.RemoveLabelAsync(owner, repo, pr.Number, GitHubLabels.AutoUpdateBlocked, ct);
-                        _logger?.LogInformation("Removed {BlockedLabel} from merged PR #{PrNumber} after successful OBS build",
-                            GitHubLabels.AutoUpdateBlocked, pr.Number);
+                        try
+                        {
+                            await _gitHubService.RemoveLabelAsync(owner, repo, pr.Number, GitHubLabels.AutoUpdateBlocked, ct);
+                            _logger?.LogInformation("Removed {BlockedLabel} from merged PR #{PrNumber} after successful OBS build",
+                                GitHubLabels.AutoUpdateBlocked, pr.Number);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger?.LogDebug(ex, "Failed to remove blocked label from PR #{Number}", pr.Number);
+                        }
                     }
-                    catch (Exception ex)
+
+                    // Reclaim merged branch if it belongs to this repository and matches the prefix
+                    var branchName = pr.Head?.Ref;
+                    var headRepo = pr.Head?.Repository?.FullName;
+                    var isSameRepo = headRepo != null && string.Equals(headRepo, $"{owner}/{repo}", StringComparison.OrdinalIgnoreCase);
+                    var prefix = !string.IsNullOrEmpty(_options.BranchPrefix) ? _options.BranchPrefix : "autoupdate/";
+
+                    if (isSameRepo && !string.IsNullOrWhiteSpace(branchName) && branchName.StartsWith(prefix, StringComparison.Ordinal))
                     {
-                        _logger?.LogDebug(ex, "Failed to remove blocked label from PR #{Number}", pr.Number);
+                        try
+                        {
+                            await _gitHubService.DeleteRefAsync(owner, repo, branchName, ct);
+                            _logger?.LogInformation("Reclaimed merged branch {Branch} for PR #{PrNumber} after successful OBS build verification",
+                                branchName, pr.Number);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger?.LogDebug(ex, "Failed to reclaim merged branch {Branch} for PR #{PrNumber}", branchName, pr.Number);
+                        }
                     }
                 }
             }

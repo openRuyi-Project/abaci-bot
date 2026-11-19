@@ -72,10 +72,10 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 | `MaxCandidatesPerSweep` | `int` | `5` | Maximum number of update candidates admitted and published in a single sweep. |
 | `MaxConcurrentPullRequests` | `int` | `5` | Maximum open update pull requests allowed simultaneously. |
 | `FailedPrTtlDays` | `int` | `7` | Days an inactive pull request with failing CI remains open before automated closure. |
-| `CooldownHours` | `int` | `72` | Hours a package remains in cooldown after repeated CI failures. |
+| `CooldownHours` | `int` | `72` | Minimum age in hours an upstream release must reach before submission (security advisories bypass this stabilization window). |
 | `MaxConsecutiveFailures` | `int` | `3` | Consecutive failed pull requests before entering cooldown. |
 | `IssueOnGivingUp` | `bool` | `true` | Whether to file a tracking issue when a package reaches consecutive failure limits. |
-| `GiveUpIssueCooldownDays` | `int` | `30` | Fallback cooldown period in days when `CooldownHours` is zero. |
+| `GiveUpIssueCooldownDays` | `int` | `30` | Days a package remains in failure cooldown after reaching consecutive CI failure limits. |
 | `GiveUpIssueLabel` | `string` | `"Status: stale-exempt"` | Protection label applied to failure tracking issues. |
 | `MinRateLimitRemaining` | `int` | `500` | Minimum core GitHub API quota required to begin a sweep. |
 | `RequestThrottleMilliseconds` | `int` | `2000` | Inter-request delay between GitHub API mutations to prevent secondary rate limits. |

@@ -23,7 +23,7 @@ public static class UpdateAdmission
         RegexOptions.Compiled);
 
     private static readonly Regex SafeVersionRegex = new(
-        @"^[a-zA-Z0-9_.+]+$",
+        @"^[a-zA-Z0-9_.+~^]+$",
         RegexOptions.Compiled);
 
     /// <summary>
