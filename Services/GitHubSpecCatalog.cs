@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Formats.Tar;
+using System.IO.Compression;
+using System.Text;
 using System.Text.RegularExpressions;
 using abaci_bot.Options;
 using Microsoft.Extensions.Logging;
@@ -8,12 +11,13 @@ namespace abaci_bot.Services;
 
 /// <summary>
 /// Deep module implementing ISpecCatalog.
-/// Bridges remote GitHub Git Trees API with caching and falls back to local SPECS/ directory if present.
-/// Shields callers from filesystem assumptions in containerized Docker runtime.
+/// Loads all repository specs in O(1) via a single tarball snapshot when available,
+/// falling back to the GitHub Git Trees API + lazy per-file fetch and local SPECS/ directory.
 /// </summary>
 public class GitHubSpecCatalog : ISpecCatalog, IDisposable
 {
     private readonly IGitHubService _gitHubService;
+    private readonly IRepositoryArchiveGateway? _archiveGateway;
     private readonly IOptions<PackageUpdateOptions> _options;
     private readonly ILogger<GitHubSpecCatalog>? _logger;
 
@@ -27,21 +31,15 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
     public GitHubSpecCatalog(
         IGitHubService gitHubService,
         IOptions<PackageUpdateOptions> options,
-        ILogger<GitHubSpecCatalog>? logger = null)
-        : this(gitHubService, options, logger, null)
-    {
-    }
-
-    public GitHubSpecCatalog(
-        IGitHubService gitHubService,
-        IOptions<PackageUpdateOptions> options,
-        ILogger<GitHubSpecCatalog>? logger,
-        IFileContentCache? fileCache)
+        ILogger<GitHubSpecCatalog>? logger = null,
+        IFileContentCache? fileCache = null,
+        IRepositoryArchiveGateway? archiveGateway = null)
     {
         _gitHubService = gitHubService;
         _options = options;
         _logger = logger;
         _fileCache = fileCache;
+        _archiveGateway = archiveGateway ?? gitHubService as IRepositoryArchiveGateway;
     }
 
     private (string Owner, string Repo) GetTargetOwnerRepo()
@@ -200,6 +198,11 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
             if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(repo))
                 return;
 
+            if (await TryLoadCatalogFromTarballAsync(owner, repo, baseBranch, ct))
+            {
+                return;
+            }
+
             _logger?.LogInformation("Discovering repository spec tree from GitHub for {Owner}/{Repo} on branch {Branch}", owner, repo, baseBranch);
             var tree = await _gitHubService.GetTreeRecursiveAsync(owner, repo, baseBranch, ct);
             if (tree?.Tree != null)
@@ -209,6 +212,7 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
                     _logger?.LogWarning("Remote spec tree from GitHub for {Owner}/{Repo} was truncated by GitHub API (>100k items)", owner, repo);
                 }
 
+                _specPathMap.Clear();
                 _specCache.Clear();
                 _specBlobMap.Clear();
                 foreach (var item in tree.Tree)
@@ -232,6 +236,10 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
 
             _lastCatalogRefresh = DateTimeOffset.UtcNow;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Failed to refresh remote spec catalog from GitHub tree");
@@ -240,6 +248,122 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
         {
             _refreshLock.Release();
         }
+    }
+
+    private async Task<bool> TryLoadCatalogFromTarballAsync(string owner, string repo, string baseBranch, CancellationToken ct)
+    {
+        if (_archiveGateway == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var tarballBytes = await _archiveGateway.GetRepositoryTarballAsync(owner, repo, baseBranch, ct);
+            if (tarballBytes == null || tarballBytes.Length == 0)
+            {
+                return false;
+            }
+
+            var staged = new Dictionary<string, (string Path, SpecContext Context)>(StringComparer.OrdinalIgnoreCase);
+
+            await using var memoryStream = new MemoryStream(tarballBytes, writable: false);
+            await using var gzipStream = new GZipStream(memoryStream, CompressionMode.Decompress);
+            await using var tarReader = new TarReader(gzipStream, leaveOpen: false);
+
+            while (await tarReader.GetNextEntryAsync(copyData: false, ct) is { } entry)
+            {
+                if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile) ||
+                    entry.DataStream == null)
+                {
+                    continue;
+                }
+
+                var relativePath = StripTarballRootPrefix(entry.Name);
+                if (!relativePath.StartsWith("SPECS/", StringComparison.OrdinalIgnoreCase) ||
+                    !relativePath.EndsWith(".spec", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var parts = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3)
+                {
+                    continue;
+                }
+
+                var pkgName = parts[1];
+                using var reader = new StreamReader(entry.DataStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
+                var content = await reader.ReadToEndAsync(ct);
+
+                var fileName = parts[^1];
+                if (staged.ContainsKey(pkgName) &&
+                    !fileName.Equals($"{pkgName}.spec", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var dirName = parts[^2];
+                staged[pkgName] = (relativePath, new SpecContext(pkgName, dirName, content, relativePath));
+            }
+
+            if (staged.Count == 0)
+            {
+                _logger?.LogWarning(
+                    "Repository tarball for {Owner}/{Repo}@{Branch} contained 0 SPECS/*/*.spec entries; falling back to Git Tree API",
+                    owner, repo, baseBranch);
+                return false;
+            }
+
+            _specPathMap.Clear();
+            _specBlobMap.Clear();
+            _specCache.Clear();
+
+            var now = DateTimeOffset.UtcNow;
+            var expiry = now.AddHours(6).AddMinutes(1);
+            foreach (var (pkgName, item) in staged)
+            {
+                _specPathMap[pkgName] = item.Path;
+                _specCache[pkgName] = (item.Context, expiry);
+            }
+
+            _lastCatalogRefresh = now;
+            _logger?.LogInformation(
+                "Loaded {Count} specs from single repository tarball snapshot for {Owner}/{Repo}@{Branch}",
+                staged.Count, owner, repo, baseBranch);
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(
+                ex,
+                "Failed to load spec catalog from repository tarball for {Owner}/{Repo}@{Branch}; falling back to Git Tree API",
+                owner, repo, baseBranch);
+            return false;
+        }
+    }
+
+    private static string StripTarballRootPrefix(string entryName)
+    {
+        var normalized = entryName.Replace('\\', '/').TrimStart('/');
+        while (normalized.StartsWith("./", StringComparison.Ordinal))
+        {
+            normalized = normalized[2..];
+        }
+
+        if (normalized.StartsWith("SPECS/", StringComparison.OrdinalIgnoreCase))
+        {
+            return normalized;
+        }
+
+        var firstSlash = normalized.IndexOf('/');
+        return firstSlash >= 0 && firstSlash + 1 < normalized.Length
+            ? normalized[(firstSlash + 1)..]
+            : normalized;
     }
 
     public void Dispose()

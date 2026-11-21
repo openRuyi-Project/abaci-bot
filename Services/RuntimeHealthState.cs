@@ -4,17 +4,31 @@ using Microsoft.Extensions.Logging;
 namespace abaci_bot.Services;
 
 /// <summary>
-/// Tracks process startup time and the most recent sanitized error/critical log entry
-/// for <c>/health?verbose=true</c> diagnostics without leaking credentials.
+/// Immutable per-source health snapshot surfaced under <c>/health?verbose=true</c> (<c>sources</c>).
+/// </summary>
+public sealed record SourceHealthSnapshot(
+    string Status,
+    DateTimeOffset? LastAttemptAt,
+    DateTimeOffset? LastSuccessAt,
+    int LastCandidateCount,
+    int ConsecutiveFailures,
+    string? LastError);
+
+/// <summary>
+/// Tracks process startup time, per-source polling health, and the most recent sanitized
+/// error/critical log entry for <c>/health?verbose=true</c> diagnostics without leaking credentials.
 /// </summary>
 public sealed partial class RuntimeHealthState
 {
     private readonly TimeProvider _timeProvider;
     private readonly object _errorLock = new();
+    private readonly Dictionary<string, SourceHealthSnapshot> _sources = new(StringComparer.OrdinalIgnoreCase);
     private string? _lastError;
     private DateTimeOffset? _lastErrorAt;
 
-    [GeneratedRegex(@"(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|Bearer\s+[A-Za-z0-9\-._~+/]+=*)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(
+        @"(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|Bearer\s+[A-Za-z0-9\-._~+/]+=*|Authorization:\s*(?:(?:Bearer|Basic|Token)\s+)?\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?)",
+        RegexOptions.IgnoreCase)]
     private static partial Regex SecretTokenRegex();
 
     public DateTimeOffset StartedAtUtc { get; }
@@ -55,17 +69,80 @@ public sealed partial class RuntimeHealthState
             ? detail
             : $"{shortSource}: {detail}";
 
-        var sanitized = SecretTokenRegex().Replace(combined, "[REDACTED]");
-        if (sanitized.Length > 240)
-        {
-            sanitized = sanitized[..240];
-        }
+        var sanitized = SanitizeMessage(combined);
 
         lock (_errorLock)
         {
             _lastError = sanitized;
             _lastErrorAt = _timeProvider.GetUtcNow();
         }
+    }
+
+    public void RecordSourceOutcome(string sourceName, string status, int candidateCount, string? error = null)
+    {
+        if (string.IsNullOrWhiteSpace(sourceName))
+        {
+            return;
+        }
+
+        var normalizedName = sourceName.Trim();
+        var normalizedStatus = string.IsNullOrWhiteSpace(status)
+            ? "healthy"
+            : status.Trim().ToLowerInvariant();
+        var now = _timeProvider.GetUtcNow();
+        var sanitizedError = string.IsNullOrWhiteSpace(error) ? null : SanitizeMessage(error);
+
+        lock (_errorLock)
+        {
+            _sources.TryGetValue(normalizedName, out var previous);
+            SourceHealthSnapshot updated = normalizedStatus switch
+            {
+                "healthy" => new SourceHealthSnapshot(
+                    Status: "healthy",
+                    LastAttemptAt: now,
+                    LastSuccessAt: now,
+                    LastCandidateCount: candidateCount,
+                    ConsecutiveFailures: 0,
+                    LastError: null),
+                "degraded" => new SourceHealthSnapshot(
+                    Status: "degraded",
+                    LastAttemptAt: now,
+                    LastSuccessAt: now,
+                    LastCandidateCount: candidateCount,
+                    ConsecutiveFailures: (previous?.ConsecutiveFailures ?? 0) + 1,
+                    LastError: sanitizedError ?? previous?.LastError),
+                "failed" => new SourceHealthSnapshot(
+                    Status: "failed",
+                    LastAttemptAt: now,
+                    LastSuccessAt: previous?.LastSuccessAt,
+                    LastCandidateCount: candidateCount,
+                    ConsecutiveFailures: (previous?.ConsecutiveFailures ?? 0) + 1,
+                    LastError: sanitizedError ?? previous?.LastError),
+                _ => new SourceHealthSnapshot(
+                    Status: normalizedStatus,
+                    LastAttemptAt: now,
+                    LastSuccessAt: previous?.LastSuccessAt,
+                    LastCandidateCount: 0,
+                    ConsecutiveFailures: 0,
+                    LastError: null)
+            };
+
+            _sources[normalizedName] = updated;
+        }
+    }
+
+    public IReadOnlyDictionary<string, SourceHealthSnapshot> GetSourceHealth()
+    {
+        lock (_errorLock)
+        {
+            return new Dictionary<string, SourceHealthSnapshot>(_sources, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private static string SanitizeMessage(string message)
+    {
+        var sanitized = SecretTokenRegex().Replace(message, "[REDACTED]");
+        return sanitized.Length > 240 ? sanitized[..240] : sanitized;
     }
 
     private static string? ShortenSource(string? source)

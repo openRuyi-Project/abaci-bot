@@ -2,6 +2,7 @@ using abaci_bot.Contexts;
 using abaci_bot.Modules;
 using abaci_bot.Options;
 using abaci_bot.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -47,13 +48,14 @@ public class BotControlPlaneAndLocaleTests
         try
         {
             var opts = Microsoft.Extensions.Options.Options.Create(new BotStateOptions { StateDirectory = tempDir });
-            var store1 = new JsonBotStateStore(opts, NullLogger<JsonBotStateStore>.Instance);
+            using (var store1 = new JsonBotStateStore(opts, NullLogger<JsonBotStateStore>.Instance))
+            {
+                store1.SetIgnoredPackage("openRuyi-Project", "openRuyi", "dnf5", "upstream regression", "alice");
+                store1.SetPackageFailure("openRuyi-Project", "openRuyi", "etcd", 3, DateTimeOffset.UtcNow.AddDays(30));
+                store1.SetUserLocale("bob", "zh");
+            }
 
-            store1.SetIgnoredPackage("openRuyi-Project", "openRuyi", "dnf5", "upstream regression", "alice");
-            store1.SetPackageFailure("openRuyi-Project", "openRuyi", "etcd", 3, DateTimeOffset.UtcNow.AddDays(30));
-            store1.SetUserLocale("bob", "zh");
-
-            var store2 = new JsonBotStateStore(opts, NullLogger<JsonBotStateStore>.Instance);
+            using var store2 = new JsonBotStateStore(opts, NullLogger<JsonBotStateStore>.Instance);
             var ignored = store2.GetIgnoredPackage("openRuyi-Project", "openRuyi", "dnf5");
             Assert.NotNull(ignored);
             Assert.Equal("upstream regression", ignored!.Reason);
@@ -93,7 +95,7 @@ public class BotControlPlaneAndLocaleTests
         try
         {
             var opts = Microsoft.Extensions.Options.Options.Create(new BotStateOptions { StateDirectory = tempDir });
-            var store = new JsonBotStateStore(opts, NullLogger<JsonBotStateStore>.Instance);
+            using var store = new JsonBotStateStore(opts, NullLogger<JsonBotStateStore>.Instance);
             Assert.Null(store.GetUserLocale("alice"));
             Assert.Empty(store.GetIgnoredPackages("owner", "repo"));
         }
@@ -125,7 +127,7 @@ public class BotControlPlaneAndLocaleTests
                     ["org/default-zh"] = "zh"
                 }
             });
-            var store = new JsonBotStateStore(opts);
+            using var store = new JsonBotStateStore(opts);
             store.SetUserLocale("alice", "en");
             store.SetUserLocale("bob", "zh");
 
@@ -174,7 +176,7 @@ public class BotControlPlaneAndLocaleTests
                     ["org/locked-lang"] = "en"
                 }
             });
-            var store = new JsonBotStateStore(stateOpts);
+            using var store = new JsonBotStateStore(stateOpts);
             var localeResolver = new LocaleResolver(stateOpts, store);
             var pkgOpts = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions());
 
@@ -339,7 +341,7 @@ public class BotControlPlaneAndLocaleTests
                 StateDirectory = tempDir,
                 LocaleRetentionDays = 180
             });
-            var store = new JsonBotStateStore(opts);
+            using var store = new JsonBotStateStore(opts);
             Assert.Null(store.GetUserLocale("expiredUser"));
             Assert.Equal("zh", store.GetUserLocale("activeUser"));
         }
@@ -390,7 +392,7 @@ public class BotControlPlaneAndLocaleTests
         try
         {
             var stateOpts = Microsoft.Extensions.Options.Options.Create(new BotStateOptions { StateDirectory = tempDir });
-            var store = new JsonBotStateStore(stateOpts);
+            using var store = new JsonBotStateStore(stateOpts);
             store.SetUserLocale("zh-caller", "zh");
             store.SetPackageFailure("org", "repo", "dnf5", 2, DateTimeOffset.UtcNow.AddDays(5));
 
@@ -529,11 +531,13 @@ public class BotControlPlaneAndLocaleTests
         try
         {
             var opts = Microsoft.Extensions.Options.Options.Create(new BotStateOptions { StateDirectory = tempDir });
-            var store1 = new JsonBotStateStore(opts);
-            Assert.True(store1.TryMarkFailedPrRecorded("org", "repo", 101));
-            Assert.False(store1.TryMarkFailedPrRecorded("org", "repo", 101));
+            using (var store1 = new JsonBotStateStore(opts))
+            {
+                Assert.True(store1.TryMarkFailedPrRecorded("org", "repo", 101));
+                Assert.False(store1.TryMarkFailedPrRecorded("org", "repo", 101));
+            }
 
-            var store2 = new JsonBotStateStore(opts);
+            using var store2 = new JsonBotStateStore(opts);
             Assert.False(store2.TryMarkFailedPrRecorded("org", "repo", 101));
             Assert.True(store2.TryMarkFailedPrRecorded("org", "repo", 102));
         }
@@ -564,14 +568,15 @@ public class BotControlPlaneAndLocaleTests
                 StateDirectory = tempDir,
                 EphemeralReplyDeleteMinutes = 5
             });
-            var store1 = new JsonBotStateStore(opts);
-            var service1 = new EphemeralReplyService(gitHub, store1, opts, gateway, NullLogger<EphemeralReplyService>.Instance, timeProvider);
-
-            await service1.PostEphemeralReplyAsync("org", "repo", 42, "Usage hint");
-            Assert.Equal(0, await service1.ProcessDueRepliesAsync());
+            using (var store1 = new JsonBotStateStore(opts))
+            {
+                var service1 = new EphemeralReplyService(gitHub, store1, opts, gateway, NullLogger<EphemeralReplyService>.Instance, timeProvider);
+                await service1.PostEphemeralReplyAsync("org", "repo", 42, "Usage hint");
+                Assert.Equal(0, await service1.ProcessDueRepliesAsync());
+            }
 
             // Simulate process restart with new store and service instance
-            var store2 = new JsonBotStateStore(opts);
+            using var store2 = new JsonBotStateStore(opts);
             var service2 = new EphemeralReplyService(gitHub, store2, opts, gateway, NullLogger<EphemeralReplyService>.Instance, timeProvider);
 
             // Advance 6 min -> transient failure on first delete schedules retry (+1m)
@@ -623,7 +628,7 @@ public class BotControlPlaneAndLocaleTests
                 StateDirectory = tempDir,
                 EphemeralReplyDeleteMinutes = 5
             });
-            var store = new JsonBotStateStore(stateOpts);
+            using var store = new JsonBotStateStore(stateOpts);
             var ephemeral = new EphemeralReplyService(gitHub, store, stateOpts, gateway, timeProvider: timeProvider);
 
             var cgOpts = Microsoft.Extensions.Options.Options.Create(new ConversationGuardOptions
@@ -681,13 +686,14 @@ public class BotControlPlaneAndLocaleTests
                 EphemeralReplyDeleteMinutes = 5,
                 EphemeralReplyAction = EphemeralReplyAction.Minimize
             });
-            var store1 = new JsonBotStateStore(opts);
-            var service1 = new EphemeralReplyService(gitHub, store1, opts, gateway, timeProvider: timeProvider);
-
-            await service1.PostEphemeralReplyAsync("org", "repo", 42, "Usage hint");
+            using (var store1 = new JsonBotStateStore(opts))
+            {
+                var service1 = new EphemeralReplyService(gitHub, store1, opts, gateway, timeProvider: timeProvider);
+                await service1.PostEphemeralReplyAsync("org", "repo", 42, "Usage hint");
+            }
 
             // Simulate process restart with new store and service instance
-            var store2 = new JsonBotStateStore(opts);
+            using var store2 = new JsonBotStateStore(opts);
             var service2 = new EphemeralReplyService(gitHub, store2, opts, gateway, timeProvider: timeProvider);
 
             // First attempt returns false -> must NOT remove pending entry, must schedule retry (+1m)
@@ -828,6 +834,124 @@ public class BotControlPlaneAndLocaleTests
         await service.HandleCommandAsync(ctx, "@abaci-bot lock confirm:", "author-user");
 
         await gitHub.Received(1).LockIssueAsync("owner", "repo", 42, LockReason.TooHeated, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void JsonBotStateStore_SecondInstanceOnSameDirectory_FailsFast_AndSucceedsAfterDispose()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bot-state-lock-{Guid.NewGuid():N}");
+        try
+        {
+            var opts = Microsoft.Extensions.Options.Options.Create(new BotStateOptions { StateDirectory = tempDir });
+            using (var store1 = new JsonBotStateStore(opts, NullLogger<JsonBotStateStore>.Instance))
+            {
+                store1.SetUserLocale("alice", "zh");
+
+                var ex = Assert.Throws<InvalidOperationException>(() => new JsonBotStateStore(opts));
+                Assert.Contains("already locked", ex.Message, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("single active instance", ex.Message, StringComparison.OrdinalIgnoreCase);
+            }
+
+            // Lock released cleanly after Dispose(); second startup succeeds and reads persisted state
+            using var store2 = new JsonBotStateStore(opts);
+            Assert.Equal("zh", store2.GetUserLocale("alice"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void HealthResponseBuilder_IncludesVerboseSources_RedactsAuthorizationAndPrivateKey_AndDIResolvesCleanly()
+    {
+        var initialTime = new DateTimeOffset(2026, 11, 21, 8, 0, 0, TimeSpan.Zero);
+        var timeProvider = new MutableTimeProvider(initialTime);
+        var runtimeHealth = new RuntimeHealthState(timeProvider);
+
+        runtimeHealth.RecordError(
+            "LookoutVersionSource",
+            new HttpRequestException("Authorization: Basic dXNlcjpwYXNz while reading -----BEGIN RSA PRIVATE KEY----- key"));
+        runtimeHealth.RecordSourceOutcome(
+            "Lookout",
+            "failed",
+            0,
+            "Request failed with Authorization: Bearer super-secret-jwt");
+        timeProvider.Advance(TimeSpan.FromSeconds(30));
+        runtimeHealth.RecordSourceOutcome("RustCrates", "healthy", 3);
+
+        var minimalJson = System.Text.Json.JsonSerializer.Serialize(HealthResponseBuilder.Build(
+            verbose: false,
+            runtimeHealth,
+            new PackageUpdateOptions(),
+            new CveActiveWatchOptions(),
+            new MilestoneSyncOptions(),
+            new StaleLifecycleOptions(),
+            new ConversationGuardOptions(),
+            new AbiComplianceOptions(),
+            new RebuildImpactOptions(),
+            new SpdxComplianceOptions(),
+            new CveSecurityOptions()));
+
+        Assert.Contains("\"status\":\"healthy\"", minimalJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"sources\"", minimalJson, StringComparison.Ordinal);
+
+        var verboseJson = System.Text.Json.JsonSerializer.Serialize(HealthResponseBuilder.Build(
+            verbose: true,
+            runtimeHealth,
+            new PackageUpdateOptions { Enabled = true },
+            new CveActiveWatchOptions(),
+            new MilestoneSyncOptions(),
+            new StaleLifecycleOptions(),
+            new ConversationGuardOptions(),
+            new AbiComplianceOptions(),
+            new RebuildImpactOptions(),
+            new SpdxComplianceOptions(),
+            new CveSecurityOptions()));
+
+        Assert.Contains("\"sources\"", verboseJson, StringComparison.Ordinal);
+        Assert.Contains("\"Lookout\"", verboseJson, StringComparison.Ordinal);
+        Assert.Contains("\"RustCrates\"", verboseJson, StringComparison.Ordinal);
+        Assert.Contains("\"Status\":\"failed\"", verboseJson, StringComparison.Ordinal);
+        Assert.Contains("\"ConsecutiveFailures\":1", verboseJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("dXNlcjpwYXNz", verboseJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("super-secret-jwt", verboseJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("BEGIN RSA PRIVATE KEY", verboseJson, StringComparison.Ordinal);
+
+        // Verify DI construction of GitHubSpecCatalog, LookoutVersionSource, and RustCrateVersionSource
+        var tempDir = Path.Combine(Path.GetTempPath(), $"di-smoke-{Guid.NewGuid():N}");
+        try
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddHttpClient();
+            services.AddSingleton(runtimeHealth);
+            services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new BotStateOptions { StateDirectory = tempDir }));
+            services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions()));
+            services.AddSingleton<IBotStateStore, JsonBotStateStore>();
+            services.AddSingleton(Substitute.For<IGitHubService>());
+            services.AddSingleton(Substitute.For<IRepositoryArchiveGateway>());
+            services.AddSingleton<IFileContentCache, FileContentCache>();
+            services.Configure<FileCacheOptions>(_ => { });
+            services.AddSingleton<ISpecCatalog, GitHubSpecCatalog>();
+            services.AddSingleton<LookoutVersionSource>();
+            services.AddSingleton<RustCrateVersionSource>();
+
+            using var provider = services.BuildServiceProvider();
+            Assert.IsType<GitHubSpecCatalog>(provider.GetRequiredService<ISpecCatalog>());
+            Assert.NotNull(provider.GetRequiredService<LookoutVersionSource>());
+            Assert.NotNull(provider.GetRequiredService<RustCrateVersionSource>());
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
     }
 
     private sealed class MutableTimeProvider : TimeProvider

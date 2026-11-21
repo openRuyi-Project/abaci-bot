@@ -28,6 +28,7 @@ public class PackageUpdateService : BackgroundService
     // In-memory tracking of consecutive failures and cooldown timestamps
     private readonly ConcurrentDictionary<string, int> _failureCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _cooldowns = new(StringComparer.OrdinalIgnoreCase);
+    // Unit-test fallback only when constructed with stateStore == null; production DI always persists via IBotStateStore.
     private readonly ConcurrentDictionary<int, bool> _recordedFailedPrs = new();
     private readonly ConcurrentDictionary<string, int> _trackedBlockedIssues = new(StringComparer.OrdinalIgnoreCase);
 
@@ -666,7 +667,7 @@ public class PackageUpdateService : BackgroundService
 
     private async Task CheckAndRecordFailureAsync(string owner, string repo, string packageName, int prNumber, CancellationToken ct)
     {
-        // De-duplicate failure events by PR Number across restarts: only count once per distinct failed PR
+        // Primary path persists deduplication in bot-state.json across restarts; in-memory set is only for unit tests with stateStore == null.
         var isNewFailure = _stateStore != null
             ? _stateStore.TryMarkFailedPrRecorded(owner, repo, prNumber)
             : _recordedFailedPrs.TryAdd(prNumber, true);

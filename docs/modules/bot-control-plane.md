@@ -48,6 +48,7 @@ Configured under the `BotState` JSON section:
 
 ## 4. Failure Handling
 
+- **Single-Instance Exclusive State Lock**: `JsonBotStateStore` acquires an OS-level exclusive lock handle (`FileShare.None`) on `bot-state.lock` in `BotState:StateDirectory` at startup. Starting a second instance targeting the same state directory fails fast with `InvalidOperationException` rather than silently overwriting `bot-state.json` (the OS releases the lock automatically on process exit).
 - **Atomic Persistence**: `JsonBotStateStore` writes to a temporary file and atomically replaces `bot-state.json`.
 - **Corrupt State Fallback**: Invalid JSON logs a warning and falls back to an empty in-memory state instead of crashing startup.
 - **Fail-Closed Authorization**: `ignore` and `unignore` verify `triage`+ repository permission via `IRepositoryPermissionService`; lookup errors deny the mutation.

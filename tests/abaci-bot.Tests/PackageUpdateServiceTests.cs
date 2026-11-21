@@ -1368,4 +1368,96 @@ public class PackageUpdateServiceTests
         await publisherMock.DidNotReceive().PublishUpdateAsync(
             Arg.Any<UpdateCandidate>(), Arg.Any<SpecRewriteResult>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task RecordFailedPr_AcrossTwoServiceInstancesSharingBotStateStore_DeduplicatesAfterRestart()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"pkg-failedpr-restart-{Guid.NewGuid():N}");
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        var failedPrIssue = (Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Issue));
+        typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(failedPrIssue, 99);
+        typeof(Issue).GetProperty(nameof(Issue.UpdatedAt))?.SetValue(failedPrIssue, (DateTimeOffset?)DateTimeOffset.UtcNow.AddHours(-1));
+        var autoUpdateLabel = (Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Label));
+        typeof(Label).GetProperty(nameof(Label.Name))?.SetValue(autoUpdateLabel, GitHubLabels.AutoUpdate);
+        typeof(Issue).GetProperty(nameof(Issue.Labels))?.SetValue(failedPrIssue, new List<Label> { autoUpdateLabel });
+
+        gitHubMock.SearchStaleCandidatesAsync(
+                "owner", "repo", Arg.Any<DateTimeOffset>(), false, Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<Issue>());
+        gitHubMock.SearchStaleCandidatesAsync(
+                "owner", "repo", Arg.Any<DateTimeOffset>(), true, Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { failedPrIssue });
+
+        var fullPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        var headRef = (GitReference)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(GitReference));
+        typeof(GitReference).GetProperty(nameof(GitReference.Ref))?.SetValue(headRef, "autoupdate/curl");
+        typeof(GitReference).GetProperty(nameof(GitReference.Sha))?.SetValue(headRef, "sha99");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Head))?.SetValue(fullPr, headRef);
+        gitHubMock.GetPullRequestAsync("owner", "repo", 99, Arg.Any<CancellationToken>()).Returns(fullPr);
+
+        var failedRun = (WorkflowRun)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WorkflowRun));
+        typeof(WorkflowRun).GetProperty(nameof(WorkflowRun.HeadSha))?.SetValue(failedRun, "sha99");
+        typeof(WorkflowRun).GetProperty(nameof(WorkflowRun.CreatedAt))?.SetValue(failedRun, DateTimeOffset.UtcNow);
+        typeof(WorkflowRun).GetProperty(nameof(WorkflowRun.Conclusion))?.SetValue(failedRun, new StringEnum<WorkflowRunConclusion>(WorkflowRunConclusion.Failure));
+        gitHubMock.ListWorkflowRunsAsync("owner", "repo", "autoupdate/curl", Arg.Any<CancellationToken>())
+            .Returns(new[] { failedRun });
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            TargetRepository = "owner/repo",
+            MaxConsecutiveFailures = 2,
+            GiveUpIssueCooldownDays = 30
+        });
+        var stateOpts = Microsoft.Extensions.Options.Options.Create(new BotStateOptions { StateDirectory = tempDir });
+
+        try
+        {
+            using (var store1 = new JsonBotStateStore(stateOpts))
+            {
+                var service1 = new PackageUpdateService(
+                    gitHubMock,
+                    Array.Empty<IUpdateCandidateSource>(),
+                    Array.Empty<ISpecVersionRewriter>(),
+                    Substitute.For<IPackageUpdatePublisher>(),
+                    new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), options),
+                    Substitute.For<ISpecCatalog>(),
+                    options,
+                    Substitute.For<IRemoteAssetBackfiller>(),
+                    stateStore: store1);
+
+                await service1.RunSweepAsync();
+                Assert.Equal(1, store1.GetPackageFailure("owner", "repo", "curl")?.ConsecutiveFailures);
+                Assert.False(service1.IsInCooldown("curl"));
+            }
+
+            // Simulate process restart with a brand new store2 + service2 encountering the SAME PR #99
+            using var store2 = new JsonBotStateStore(stateOpts);
+            var service2 = new PackageUpdateService(
+                gitHubMock,
+                Array.Empty<IUpdateCandidateSource>(),
+                Array.Empty<ISpecVersionRewriter>(),
+                Substitute.For<IPackageUpdatePublisher>(),
+                new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), options),
+                Substitute.For<ISpecCatalog>(),
+                options,
+                Substitute.For<IRemoteAssetBackfiller>(),
+                stateStore: store2);
+
+            await service2.RunSweepAsync();
+            Assert.Equal(1, store2.GetPackageFailure("owner", "repo", "curl")?.ConsecutiveFailures);
+            Assert.False(service2.IsInCooldown("curl"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
 }

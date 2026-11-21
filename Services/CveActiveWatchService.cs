@@ -25,6 +25,10 @@ public class CveActiveWatchService : BackgroundService
         @"^\[Security\]\s*Outstanding CVEs detected in\s+(?<pkg>\S+)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    private static readonly Regex VersionRegex = new(
+        @"^Version:\s*(?<ver>\S+)",
+        RegexOptions.Compiled | RegexOptions.Multiline);
+
     public CveActiveWatchService(
         IGitHubService gitHubService,
         IPackageVulnerabilityScanner scanner,
@@ -98,28 +102,50 @@ public class CveActiveWatchService : BackgroundService
             return;
         }
 
-        var packages = await LoadPackageCatalogAsync(ct);
-        if (packages.Count == 0)
+        IReadOnlyList<(string PackageName, string Version)> packagesToScan = Array.Empty<(string PackageName, string Version)>();
+        var slicedUpstream = false;
+
+        // Slice package names BEFORE calling GetSpecAsync so fallback mode never fetches O(N) specs.
+        if (_catalogProvider == null && _specCatalog != null && _options.PackagesPerSweep > 0)
+        {
+            var allNames = await _specCatalog.GetAllPackageNamesAsync(ct);
+            if (allNames.Count > 0)
+            {
+                packagesToScan = await FetchSlicedSpecCatalogAsync(allNames, _options.PackagesPerSweep, ct);
+                slicedUpstream = true;
+            }
+        }
+
+        if (!slicedUpstream)
+        {
+            var packages = await LoadPackageCatalogAsync(ct);
+            if (packages.Count == 0)
+            {
+                _logger?.LogInformation("No packages found in catalog to scan for vulnerabilities");
+                return;
+            }
+
+            if (_options.PackagesPerSweep > 0 && _options.PackagesPerSweep < packages.Count)
+            {
+                var offset = _catalogOffset % packages.Count;
+                var chunk = new List<(string PackageName, string Version)>(_options.PackagesPerSweep);
+                for (int i = 0; i < _options.PackagesPerSweep; i++)
+                {
+                    chunk.Add(packages[(offset + i) % packages.Count]);
+                }
+                _catalogOffset = (offset + _options.PackagesPerSweep) % packages.Count;
+                packagesToScan = chunk;
+            }
+            else
+            {
+                packagesToScan = packages;
+            }
+        }
+
+        if (packagesToScan.Count == 0)
         {
             _logger?.LogInformation("No packages found in catalog to scan for vulnerabilities");
             return;
-        }
-
-        IReadOnlyList<(string PackageName, string Version)> packagesToScan;
-        if (_options.PackagesPerSweep > 0 && _options.PackagesPerSweep < packages.Count)
-        {
-            var offset = _catalogOffset % packages.Count;
-            var chunk = new List<(string PackageName, string Version)>(_options.PackagesPerSweep);
-            for (int i = 0; i < _options.PackagesPerSweep; i++)
-            {
-                chunk.Add(packages[(offset + i) % packages.Count]);
-            }
-            _catalogOffset = (offset + _options.PackagesPerSweep) % packages.Count;
-            packagesToScan = chunk;
-        }
-        else
-        {
-            packagesToScan = packages;
         }
 
         _logger?.LogInformation("Dispatching OSV scan for {Count} packages", packagesToScan.Count);
@@ -339,14 +365,51 @@ public class CveActiveWatchService : BackgroundService
         return text.Replace("|", "\\|").Replace("\r\n", " ").Replace("\n", " ").Trim();
     }
 
+    private async Task<IReadOnlyList<(string PackageName, string Version)>> FetchSlicedSpecCatalogAsync(
+        IReadOnlyList<string> allNames,
+        int packagesPerSweep,
+        CancellationToken ct)
+    {
+        var sortedNames = allNames
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var sliceCount = Math.Min(packagesPerSweep, sortedNames.Count);
+        var offset = _catalogOffset % sortedNames.Count;
+        var selectedNames = new List<string>(sliceCount);
+        for (int i = 0; i < sliceCount; i++)
+        {
+            selectedNames.Add(sortedNames[(offset + i) % sortedNames.Count]);
+        }
+
+        _catalogOffset = (offset + sliceCount) % sortedNames.Count;
+
+        var result = new List<(string PackageName, string Version)>(sliceCount);
+        foreach (var name in selectedNames)
+        {
+            if (ct.IsCancellationRequested)
+                break;
+
+            var spec = await _specCatalog!.GetSpecAsync(name, ct);
+            if (spec != null)
+            {
+                var match = VersionRegex.Match(spec.Content);
+                if (match.Success)
+                {
+                    result.Add((name, match.Groups["ver"].Value.Trim()));
+                }
+            }
+        }
+
+        return result;
+    }
+
     private async Task<IReadOnlyList<(string PackageName, string Version)>> LoadPackageCatalogAsync(CancellationToken ct)
     {
         if (_catalogProvider != null)
         {
             return await _catalogProvider(ct);
         }
-
-        var versionRegex = new Regex(@"^Version:\s*(?<ver>\S+)", RegexOptions.Multiline);
 
         if (_specCatalog != null)
         {
@@ -360,7 +423,7 @@ public class CveActiveWatchService : BackgroundService
                 var spec = await _specCatalog.GetSpecAsync(name, ct);
                 if (spec != null)
                 {
-                    var match = versionRegex.Match(spec.Content);
+                    var match = VersionRegex.Match(spec.Content);
                     if (match.Success)
                     {
                         result.Add((name, match.Groups["ver"].Value.Trim()));
@@ -389,7 +452,7 @@ public class CveActiveWatchService : BackgroundService
             try
             {
                 var content = await File.ReadAllTextAsync(specFiles[0], ct);
-                var match = versionRegex.Match(content);
+                var match = VersionRegex.Match(content);
                 if (match.Success)
                 {
                     list.Add((dirName, match.Groups["ver"].Value.Trim()));

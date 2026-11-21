@@ -7,7 +7,7 @@ using System.Text.Json;
 
 namespace abaci_bot.Services;
 
-public class GitHubService : IGitHubService, IRepositoryPermissionService, IBotIdentityProvider, IEphemeralCommentGateway, IDisposable
+public class GitHubService : IGitHubService, IRepositoryPermissionService, IBotIdentityProvider, IEphemeralCommentGateway, IRepositoryArchiveGateway, IDisposable
 {
     private static readonly AsyncLocal<CancellationToken> _ambientCancellationToken = new();
 
@@ -797,6 +797,35 @@ public class GitHubService : IGitHubService, IRepositoryPermissionService, IBotI
         }
         catch (NotFoundException)
         {
+            return null;
+        }
+    }
+
+    public async Task<byte[]?> GetRepositoryTarballAsync(
+        string owner, string repo, string reference, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        try
+        {
+            return await _client.Repository.Content
+                .GetArchive(owner, repo, ArchiveFormat.Tarball, reference, TimeSpan.FromSeconds(60))
+                .WaitAsync(ct);
+        }
+        catch (NotFoundException)
+        {
+            return null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to download repository tarball for {Owner}/{Repo}@{Reference}", owner, repo, reference);
             return null;
         }
     }

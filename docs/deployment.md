@@ -324,7 +324,7 @@ Expected default JSON response (liveness + immutable build/artifact identity):
   "deployment": "container"
 }
 ```
-Pass `?verbose=true` (`curl -f "http://localhost:3456/health?verbose=true"`) for operational diagnostics including `startedAt`, `uptimeSeconds`, `capabilities` (`abiEngine`, `conversationGuardPermission`), `modules` (non-secret enabled/dryRun flags), and `runtime` (`lastError`, `lastErrorAt`).
+Pass `?verbose=true` (`curl -f "http://localhost:3456/health?verbose=true"`) for operational diagnostics including `startedAt`, `uptimeSeconds`, `capabilities` (`abiEngine`, `conversationGuardPermission`), `modules` (non-secret enabled/dryRun flags), `runtime` (`lastError`, `lastErrorAt`), and `sources` (per-source snapshots for `Lookout` and `RustCrates`: `status` as `healthy` / `degraded` / `failed` / `disabled`, `lastAttemptAt`, `lastSuccessAt`, `lastCandidateCount`, `consecutiveFailures`, and sanitized `lastError`). External upstream source outages do **not** cause the default liveness probe `GET /health` to return non-200 status (so containers are not restart-looped due to third-party API downtime).
 Use `./scripts/docker-build.sh` (or `./scripts/docker-build.ps1`) when building the Docker image locally so `GIT_COMMIT` and `GIT_DIRTY` are detected automatically; native `dotnet build`/`dotnet publish` and the release workflow (`github.sha` + `git status --porcelain`) populate `commit` automatically (appending `-dirty` when the working tree has uncommitted changes). Because the OCI registry manifest digest (`sha256:...`) does not exist until after a container image is built and pushed, the release workflow captures `build-and-push.outputs.digest` into a `deployment-manifest.env` artifact (`ABACI_IMAGE_DIGEST`), which you fetch with `gh run download -R openRuyi-Project/abaci-bot --name deployment-manifest --dir .` and pass via `docker compose --env-file deployment-manifest.env up -d` (defaulting to `"unknown"` when omitted). Neither `/health` nor `/health?verbose=true` exposes filesystem paths, environment variables, or secrets.
 
 In verbose mode, `capabilities.abiEngine` reports `native`, `managed`, `unavailable`, or
@@ -343,6 +343,7 @@ If `abiEngine` reports `managed`, the host lacks native Libabigail or RPM extrac
 If startup terminates with `InvalidOperationException`:
 - Verify that `abipkgdiff`, `rpm2cpio`, and `cpio` are installed and available in `$PATH`.
 - Check permissions on `/tmp` or `TempExtractionDirectory`.
+- Ensure no other active `abaci-bot` process is already holding the exclusive OS lock on `BotState:StateDirectory/bot-state.lock` (single-writer lock; stop the existing instance before starting a replacement on the same state volume).
 - If running under Docker, ensure the image is built from Fedora 45 (`registry.fedoraproject.org/fedora:45`).
 
 ### Rollback Procedure

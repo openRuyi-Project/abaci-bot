@@ -19,7 +19,8 @@ public class RustCrateVersionSource : IUpdateCandidateSource
     private readonly ILogger<RustCrateVersionSource>? _logger;
     private readonly ISpecCatalog? _specCatalog;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SpecContext>>>? _specCatalogProvider;
-    private static int s_crateCursor;
+    private readonly RuntimeHealthState? _healthState;
+    private int _crateCursor;
 
     private static readonly Regex CrateNameRegex = new(
         @"^%global\s+crate_name\s+(?<name>\S+)",
@@ -40,13 +41,15 @@ public class RustCrateVersionSource : IUpdateCandidateSource
         IOptions<PackageUpdateOptions> options,
         ILogger<RustCrateVersionSource>? logger = null,
         ISpecCatalog? specCatalog = null,
-        Func<CancellationToken, Task<IReadOnlyList<SpecContext>>>? specCatalogProvider = null)
+        Func<CancellationToken, Task<IReadOnlyList<SpecContext>>>? specCatalogProvider = null,
+        RuntimeHealthState? healthState = null)
     {
         _httpClient = httpClient;
         _options = options.Value.RustCratePoller;
         _logger = logger;
         _specCatalog = specCatalog;
         _specCatalogProvider = specCatalogProvider;
+        _healthState = healthState;
     }
 
     /// <summary>
@@ -76,29 +79,28 @@ public class RustCrateVersionSource : IUpdateCandidateSource
         if (!_options.Enabled || string.IsNullOrWhiteSpace(_options.IndexBaseUrl))
         {
             _logger?.LogInformation("Rust crates poller is disabled or IndexBaseUrl is empty");
+            _healthState?.RecordSourceOutcome(SourceName, "disabled", 0);
             return Array.Empty<UpdateCandidate>();
         }
 
-        var specs = await LoadRustSpecsAsync(ct);
+        var (specs, totalSpecs, startIndex, nextCursorStart, alreadySliced) = await LoadRustSpecsForSweepAsync(ct);
         if (specs.Count == 0)
         {
             _logger?.LogInformation("No Rust crate SPEC files found to evaluate");
+            _healthState?.RecordSourceOutcome(SourceName, "healthy", 0);
             return Array.Empty<UpdateCandidate>();
-        }
-
-        // Apply rotating memory cursor across sweeps to cover all crates eventually
-        var totalSpecs = specs.Count;
-        int startIndex = 0;
-        if (totalSpecs > 0)
-        {
-            startIndex = Math.Abs(s_crateCursor) % totalSpecs;
         }
 
         var candidates = new List<UpdateCandidate>();
         var baseUrl = _options.IndexBaseUrl.TrimEnd('/');
         int processedCount = 0;
+        int queriedCount = 0;
+        int failedCount = 0;
+        int iterated = 0;
+        string? lastError = null;
 
-        for (int i = 0; i < totalSpecs; i++)
+        var loopCount = alreadySliced ? specs.Count : totalSpecs;
+        for (int i = 0; i < loopCount; i++)
         {
             if (ct.IsCancellationRequested)
                 break;
@@ -109,7 +111,8 @@ public class RustCrateVersionSource : IUpdateCandidateSource
                 break;
             }
 
-            var spec = specs[(startIndex + i) % totalSpecs];
+            iterated++;
+            var spec = alreadySliced ? specs[i] : specs[(startIndex + i) % totalSpecs];
 
             var crateMatch = CrateNameRegex.Match(spec.Content);
             if (!crateMatch.Success)
@@ -132,6 +135,7 @@ public class RustCrateVersionSource : IUpdateCandidateSource
                 await Task.Delay(_options.RequestDelayMilliseconds, ct);
             }
 
+            queriedCount++;
             HttpResponseMessage response;
             try
             {
@@ -139,12 +143,19 @@ public class RustCrateVersionSource : IUpdateCandidateSource
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger?.LogDebug(ex, "Failed to query sparse index for crate {Crate} at {Url}", crateName, url);
+                failedCount++;
+                lastError = $"{crateName}: {ex.GetType().Name}: {ex.Message}";
+                _logger?.LogWarning(ex, "Failed to query sparse index for crate {Crate} at {Url}", crateName, url);
                 continue;
             }
 
             if (!response.IsSuccessStatusCode)
+            {
+                failedCount++;
+                lastError = $"{crateName}: HTTP {(int)response.StatusCode} ({response.StatusCode})";
+                _logger?.LogWarning("Sparse index returned status {StatusCode} for crate {Crate} at {Url}", response.StatusCode, crateName, url);
                 continue;
+            }
 
             var stream = await response.Content.ReadAsStreamAsync(ct);
             using var reader = new StreamReader(stream);
@@ -199,8 +210,30 @@ public class RustCrateVersionSource : IUpdateCandidateSource
                 PublishedAt: targetEntry.Pubtime));
         }
 
-        s_crateCursor = (startIndex + processedCount) % (totalSpecs == 0 ? 1 : totalSpecs);
-        _logger?.LogInformation("Rust crates poller discovered {Count} candidates from {Processed} queried crates (cursor moved to {Cursor})", candidates.Count, processedCount, s_crateCursor);
+        _crateCursor = alreadySliced
+            ? nextCursorStart
+            : (startIndex + iterated) % Math.Max(1, totalSpecs);
+
+        if (queriedCount > 0 && failedCount == queriedCount)
+        {
+            _logger?.LogError(
+                "Rust crate version source failed all {Failed}/{Queried} sparse index queries. Last error: {Error}",
+                failedCount, queriedCount, lastError);
+            _healthState?.RecordSourceOutcome(SourceName, "failed", 0, lastError);
+        }
+        else if (failedCount > 0)
+        {
+            _logger?.LogWarning(
+                "Rust crate version source degraded ({Failed}/{Queried} sparse index queries failed, {Candidates} candidates discovered). Last error: {Error}",
+                failedCount, queriedCount, candidates.Count, lastError);
+            _healthState?.RecordSourceOutcome(SourceName, "degraded", candidates.Count, lastError);
+        }
+        else
+        {
+            _healthState?.RecordSourceOutcome(SourceName, "healthy", candidates.Count);
+        }
+
+        _logger?.LogInformation("Rust crates poller discovered {Count} candidates from {Processed} queried crates (cursor moved to {Cursor})", candidates.Count, processedCount, _crateCursor);
         return candidates;
     }
 
@@ -262,18 +295,63 @@ public class RustCrateVersionSource : IUpdateCandidateSource
         return string.Empty;
     }
 
-    private async Task<IReadOnlyList<SpecContext>> LoadRustSpecsAsync(CancellationToken ct)
+    private async Task<(IReadOnlyList<SpecContext> Specs, int TotalSpecs, int StartIndex, int NextCursorStart, bool AlreadySliced)>
+        LoadRustSpecsForSweepAsync(CancellationToken ct)
     {
         if (_specCatalogProvider != null)
         {
-            return await _specCatalogProvider(ct);
+            var providerSpecs = await _specCatalogProvider(ct);
+            var total = providerSpecs.Count;
+            var start = total > 0 ? Math.Abs(_crateCursor) % total : 0;
+            return (providerSpecs, total, start, 0, false);
         }
 
         if (_specCatalog != null)
         {
-            return await _specCatalog.GetRustSpecsAsync(ct);
+            // Slice rust-* package names BEFORE calling GetSpecAsync to avoid O(N) fallback fetches.
+            var allNames = await _specCatalog.GetAllPackageNamesAsync(ct);
+            var rustNames = allNames
+                .Where(n => n.StartsWith("rust-", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (rustNames.Count == 0)
+            {
+                return (Array.Empty<SpecContext>(), 0, 0, 0, true);
+            }
+
+            var total = rustNames.Count;
+            var startIndex = Math.Abs(_crateCursor) % total;
+            var limit = _options.MaxCratesPerSweep > 0 ? Math.Min(_options.MaxCratesPerSweep, total) : total;
+            var slicedSpecs = new List<SpecContext>(limit);
+            int inspected = 0;
+
+            for (int i = 0; i < total && slicedSpecs.Count < limit; i++)
+            {
+                if (ct.IsCancellationRequested)
+                    break;
+
+                inspected++;
+                var name = rustNames[(startIndex + i) % total];
+                var spec = await _specCatalog.GetSpecAsync(name, ct);
+                if (spec != null)
+                {
+                    slicedSpecs.Add(spec);
+                }
+            }
+
+            var nextCursor = (startIndex + inspected) % total;
+            return (slicedSpecs, total, 0, nextCursor, true);
         }
 
+        var localSpecs = await LoadLocalRustSpecsAsync(ct);
+        var localTotal = localSpecs.Count;
+        var localStart = localTotal > 0 ? Math.Abs(_crateCursor) % localTotal : 0;
+        return (localSpecs, localTotal, localStart, 0, false);
+    }
+
+    private async Task<IReadOnlyList<SpecContext>> LoadLocalRustSpecsAsync(CancellationToken ct)
+    {
         // Default: discover from local SPECS/ directory if available
         var list = new List<SpecContext>();
         const string specsDir = "SPECS";

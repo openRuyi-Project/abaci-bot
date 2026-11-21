@@ -69,7 +69,8 @@ public static class HealthResponseBuilder
             {
                 lastError,
                 lastErrorAt
-            }
+            },
+            sources = runtimeHealth.GetSourceHealth()
         };
     }
 }

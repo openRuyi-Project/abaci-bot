@@ -32,13 +32,14 @@ flowchart TD
 ```
 
 ### Key Functional Behaviors
-1. **Admission Rules**: Prevents accidental cross-major SemVer and CalVer breaking changes (`AllowCrossMajorVersion = false`) and skips packages containing downstream `Patch` directives (`SkipPackagesWithPatches = true`). Respects `#!NoAutoUpdate` opt-out tags inside SPEC files.
-2. **Spec Version Rewriters**:
+1. **O(1) Tarball Spec Catalog & Slice-Before-Fetch**: `GitHubSpecCatalog` fetches the repository snapshot once per 6-hour refresh window (`GetArchive` tarball) and extracts only `SPECS/*/*.spec` entries into memory, avoiding O(N) per-file GitHub API requests across thousands of packages. When falling back to lazy tree lookup, `RustCrateVersionSource` filters and slices `MaxCratesPerSweep` sorted `rust-*` package names **before** fetching `.spec` contents.
+2. **Admission Rules**: Prevents accidental cross-major SemVer and CalVer breaking changes (`AllowCrossMajorVersion = false`) and skips packages containing downstream `Patch` directives (`SkipPackagesWithPatches = true`). Respects `#!NoAutoUpdate` opt-out tags inside SPEC files.
+3. **Spec Version Rewriters**:
    - `PlainSpecVersionRewriter`: Updates `Version:` tokens while keeping `Release:` intact.
    - `RustCrateSpecRewriter`: Synchronizes `Version:` and `%global full_version` for Rust crates.
-3. **CI Checksum Backfill**: Detects failed pull requests caused by invalid `#!RemoteAsset` checksums and automatically backfills correct SHA-256 digests.
-4. **Failure Cooldown, Pre-Gate & Tracking**: Before evaluating candidates, each sweep queries open `Auto-Update: Blocked` tracking issues and PRs so blocked packages are skipped deterministically across process restarts. Consecutive CI failures (`MaxConsecutiveFailures`) open a tracking issue carrying `Auto-Update: Blocked` and `Status: stale-exempt` and trigger cooldown for `GiveUpIssueCooldownDays` days.
-5. **Post-Merge OBS Verification**: `ObsPostMergeVerifier` polls Open Build Service (`build.openruyi.cn`) to verify that merged pull request commits build successfully. If `RequireObsSuccessAfterMerge` is enabled and OBS fails, applies `Auto-Update: Blocked`.
+4. **CI Checksum Backfill**: Detects failed pull requests caused by invalid `#!RemoteAsset` checksums and automatically backfills correct SHA-256 digests.
+5. **Failure Cooldown, Pre-Gate & Tracking**: Before evaluating candidates, each sweep queries open `Auto-Update: Blocked` tracking issues and PRs so blocked packages are skipped deterministically across process restarts (and failed PR deduplication is persisted via `bot-state.json`). Consecutive CI failures (`MaxConsecutiveFailures`) open a tracking issue carrying `Auto-Update: Blocked` and `Status: stale-exempt` and trigger cooldown for `GiveUpIssueCooldownDays` days.
+6. **Post-Merge OBS Verification**: `ObsPostMergeVerifier` polls Open Build Service (`build.openruyi.cn`) to verify that merged pull request commits build successfully. If `RequireObsSuccessAfterMerge` is enabled and OBS fails, applies `Auto-Update: Blocked`.
 
 ---
 
@@ -106,6 +107,7 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 ## 5. Failure Handling and Fallback Semantics
 
 - **Quota Starvation**: Sweeps defer automatically when remaining GitHub API quota drops below `MinRateLimitRemaining`.
+- **Source Health Observability**: `LookoutVersionSource` and `RustCrateVersionSource` record structured status (`healthy`, `degraded`, `failed`, `disabled`), `lastSuccessAt`, `consecutiveFailures`, and sanitized `lastError` into `RuntimeHealthState`, surfaced under `GET /health?verbose=true` (`sources`). Complete sweep outages also emit `LogError` while leaving default `GET /health` liveness at HTTP 200.
 - **Fail-Closed Gate Loading**: If querying open `Auto-Update: Blocked` tracking issues or enumerating open `Auto-Update` pull requests fails due to GitHub API or search errors, candidate discovery and PR publishing are deferred until the next sweep so blocked packages cannot slip through and concurrency caps are never exceeded. Read-only post-merge OBS checks still execute.
 - **Merge Commit Synchronization**: OBS verification checks `_service` revision against the PR's `MergeCommitSha` to avoid checking stale build results before synchronization completes.
 - **Fail-Safe Dry Run**: Starts in `DryRun = true` and `Enabled = false` by default.

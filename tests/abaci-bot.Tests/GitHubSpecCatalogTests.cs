@@ -1,3 +1,5 @@
+using System.Formats.Tar;
+using System.IO.Compression;
 using System.Text;
 using abaci_bot.Options;
 using abaci_bot.Services;
@@ -178,6 +180,115 @@ public class GitHubSpecCatalogTests
         // Verify remote API was never queried since content was retrieved from shared blob cache
         await gitHubMock.DidNotReceive().GetFileContentAsync(
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TarballCatalog_Loads5811SpecsInSingleArchiveCall_WithZeroPerFileApiCalls()
+    {
+        const int totalSpecs = 5811;
+        const int rustSpecsCount = 500;
+
+        var entries = new List<(string Path, string Content)>(totalSpecs + 2)
+        {
+            ("5teve2NT-openRuyi-deadbeef/README.md", "# openRuyi\n"),
+            ("5teve2NT-openRuyi-deadbeef/SPECS/curl/fix-build.patch", "diff --git a/x b/x\n")
+        };
+
+        for (int i = 0; i < totalSpecs; i++)
+        {
+            var pkg = i < rustSpecsCount
+                ? $"rust-crate-{i:D4}"
+                : $"pkg-{i:D4}";
+            var content = pkg.StartsWith("rust-", StringComparison.Ordinal)
+                ? $"%global crate_name crate-{i}\n%global full_version 1.{i % 10}.0\nName: {pkg}\nVersion: 1.{i % 10}.0\n"
+                : $"Name: {pkg}\nVersion: 2.{i % 10}.0\n";
+            entries.Add(($"5teve2NT-openRuyi-deadbeef/SPECS/{pkg}/{pkg}.spec", content));
+        }
+
+        var tarballBytes = BuildTarGz(entries);
+
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var archiveGateway = Substitute.For<IRepositoryArchiveGateway>();
+        archiveGateway.GetRepositoryTarballAsync("5teve2NT", "openRuyi", "main", Arg.Any<CancellationToken>())
+            .Returns(tarballBytes);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            TargetRepository = "5teve2NT/openRuyi"
+        });
+
+        using var catalog = new GitHubSpecCatalog(gitHubMock, options, archiveGateway: archiveGateway);
+
+        var names = await catalog.GetAllPackageNamesAsync();
+        var rustSpecs = await catalog.GetRustSpecsAsync();
+        var sampledSpec = await catalog.GetSpecAsync("pkg-5810");
+
+        Assert.Equal(totalSpecs, names.Count);
+        Assert.Equal(rustSpecsCount, rustSpecs.Count);
+        Assert.NotNull(sampledSpec);
+        Assert.Contains("Name: pkg-5810", sampledSpec!.Content, StringComparison.Ordinal);
+
+        await archiveGateway.Received(1).GetRepositoryTarballAsync("5teve2NT", "openRuyi", "main", Arg.Any<CancellationToken>());
+        await gitHubMock.DidNotReceive().GetTreeRecursiveAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await gitHubMock.DidNotReceive().GetFileContentAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TarballCatalog_WhenTarballFails_FallsBackToGitTree()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var archiveGateway = Substitute.For<IRepositoryArchiveGateway>();
+        archiveGateway.GetRepositoryTarballAsync("owner", "repo", "main", Arg.Any<CancellationToken>())
+            .Returns<Task<byte[]?>>(_ => throw new HttpRequestException("tarball download failed"));
+
+        var treeItem = (TreeItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeItem));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Type))?.SetValue(treeItem, new StringEnum<TreeType>(TreeType.Blob));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Path))?.SetValue(treeItem, "SPECS/zlib/zlib.spec");
+
+        var treeResponse = (TreeResponse)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeResponse));
+        typeof(TreeResponse).GetProperty(nameof(TreeResponse.Tree))?.SetValue(treeResponse, new List<TreeItem> { treeItem });
+
+        gitHubMock.GetTreeRecursiveAsync("owner", "repo", "main", Arg.Any<CancellationToken>())
+            .Returns(treeResponse);
+        gitHubMock.GetFileContentAsync("owner", "repo", "SPECS/zlib/zlib.spec", "main", Arg.Any<CancellationToken>())
+            .Returns("Name: zlib\nVersion: 1.3.1\n");
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            TargetRepository = "owner/repo"
+        });
+
+        using var catalog = new GitHubSpecCatalog(gitHubMock, options, archiveGateway: archiveGateway);
+        var spec = await catalog.GetSpecAsync("zlib");
+
+        Assert.NotNull(spec);
+        Assert.Equal("zlib", spec!.PackageName);
+        Assert.Contains("1.3.1", spec.Content, StringComparison.Ordinal);
+        await gitHubMock.Received(1).GetTreeRecursiveAsync("owner", "repo", "main", Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).GetFileContentAsync("owner", "repo", "SPECS/zlib/zlib.spec", "main", Arg.Any<CancellationToken>());
+    }
+
+    private static byte[] BuildTarGz(IEnumerable<(string Path, string Content)> entries)
+    {
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true))
+        using (var writer = new TarWriter(gzip, TarEntryFormat.Pax, leaveOpen: false))
+        {
+            foreach (var (path, content) in entries)
+            {
+                var bytes = Encoding.UTF8.GetBytes(content);
+                using var dataStream = new MemoryStream(bytes, writable: false);
+                var entry = new PaxTarEntry(TarEntryType.RegularFile, path)
+                {
+                    DataStream = dataStream
+                };
+                writer.WriteEntry(entry);
+            }
+        }
+
+        return output.ToArray();
     }
 }
 

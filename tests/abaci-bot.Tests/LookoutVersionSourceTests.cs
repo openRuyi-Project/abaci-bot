@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using abaci_bot.Options;
 using abaci_bot.Services;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -429,6 +430,118 @@ public class LookoutVersionSourceTests
             var candidates = await source.GetCandidatesAsync();
             Assert.Single(candidates);
             Assert.Equal(upstreamPublishedAt, candidates[0].PublishedAt);
+        }
+        finally
+        {
+            if (File.Exists(statePath))
+            {
+                File.Delete(statePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_SourceHealthTransitions_FailedDegradedHealthy()
+    {
+        var statePath = Path.Combine(Path.GetTempPath(), $"lookout-health-{Guid.NewGuid():N}.json");
+        var runtimeHealth = new RuntimeHealthState();
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.AddProvider(new RuntimeErrorLoggerProvider(runtimeHealth));
+        });
+        var logger = loggerFactory.CreateLogger<LookoutVersionSource>();
+
+        int sweep = 0;
+        var handler = new FakeHttpMessageHandler(req =>
+        {
+            var query = req.RequestUri?.Query ?? string.Empty;
+            if (sweep == 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+            }
+
+            if (sweep == 2)
+            {
+                if (query.Contains("page=1", StringComparison.Ordinal))
+                {
+                    var page1Items = Enumerable.Range(0, 200).Select(i => new
+                    {
+                        name = $"pkg-{i:D3}",
+                        current_version = "1.0.0",
+                        latest_version = "1.0.1",
+                        last_known_relation = "outdated",
+                        stale = false,
+                        updated_at = DateTimeOffset.UtcNow
+                    }).ToArray();
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(JsonSerializer.Serialize(new { packages = page1Items }), System.Text.Encoding.UTF8, "application/json")
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            }
+
+            var healthyItems = new[]
+            {
+                new
+                {
+                    name = "curl",
+                    current_version = "8.21.0",
+                    latest_version = "8.22.0",
+                    last_known_relation = "outdated",
+                    stale = false,
+                    updated_at = DateTimeOffset.UtcNow
+                }
+            };
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new { packages = healthyItems }), System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Lookout = new LookoutUpdateOptions
+            {
+                Enabled = true,
+                BaseUrl = "https://lookout.openruyi.cn",
+                FirstSeenStatePath = statePath
+            }
+        });
+
+        try
+        {
+            var source = new LookoutVersionSource(new HttpClient(handler), options, logger: logger, healthState: runtimeHealth);
+
+            // Sweep 1: page 1 HTTP 500 -> failed, ConsecutiveFailures == 1, LastSuccessAt == null, LogError recorded
+            sweep = 1;
+            Assert.Empty(await source.GetCandidatesAsync());
+            var s1 = runtimeHealth.GetSourceHealth()["Lookout"];
+            Assert.Equal("failed", s1.Status);
+            Assert.Equal(1, s1.ConsecutiveFailures);
+            Assert.Null(s1.LastSuccessAt);
+            Assert.Contains("500", s1.LastError!, StringComparison.Ordinal);
+            Assert.NotNull(runtimeHealth.GetLastError().LastError);
+
+            // Sweep 2: page 1 returns 200 items, page 2 returns 503 -> degraded, ConsecutiveFailures == 2, LastSuccessAt set
+            sweep = 2;
+            var partial = await source.GetCandidatesAsync();
+            Assert.Equal(200, partial.Count);
+            var s2 = runtimeHealth.GetSourceHealth()["Lookout"];
+            Assert.Equal("degraded", s2.Status);
+            Assert.Equal(2, s2.ConsecutiveFailures);
+            Assert.NotNull(s2.LastSuccessAt);
+
+            // Sweep 3: clean response -> healthy, ConsecutiveFailures == 0, LastError == null
+            sweep = 3;
+            var healthy = await source.GetCandidatesAsync();
+            Assert.Single(healthy);
+            var s3 = runtimeHealth.GetSourceHealth()["Lookout"];
+            Assert.Equal("healthy", s3.Status);
+            Assert.Equal(0, s3.ConsecutiveFailures);
+            Assert.Null(s3.LastError);
+            Assert.NotNull(s3.LastSuccessAt);
         }
         finally
         {

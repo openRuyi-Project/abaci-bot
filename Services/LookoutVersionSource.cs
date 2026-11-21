@@ -17,6 +17,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
     private readonly HttpClient _httpClient;
     private readonly LookoutUpdateOptions _options;
     private readonly ILogger<LookoutVersionSource>? _logger;
+    private readonly RuntimeHealthState? _healthState;
     private readonly string _stateFilePath;
     private readonly object _stateWriteLock = new();
     private readonly ConcurrentDictionary<string, (string Version, DateTimeOffset FirstSeen)> _firstSeenVersions = new(StringComparer.OrdinalIgnoreCase);
@@ -27,11 +28,13 @@ public class LookoutVersionSource : IUpdateCandidateSource
         HttpClient httpClient,
         IOptions<PackageUpdateOptions> options,
         ILogger<LookoutVersionSource>? logger = null,
-        IBotStateStore? stateStore = null)
+        IBotStateStore? stateStore = null,
+        RuntimeHealthState? healthState = null)
     {
         _httpClient = httpClient;
         _options = options.Value.Lookout;
         _logger = logger;
+        _healthState = healthState;
         var defaultStateDir = stateStore?.StateDirectory
             ?? BotStatePathResolver.ResolveStateDirectory(null);
         _stateFilePath = string.IsNullOrWhiteSpace(_options.FirstSeenStatePath)
@@ -46,6 +49,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
         if (!_options.Enabled || string.IsNullOrWhiteSpace(_options.BaseUrl))
         {
             _logger?.LogInformation("Lookout version source is disabled or BaseUrl is empty");
+            _healthState?.RecordSourceOutcome(SourceName, "disabled", 0);
             return Array.Empty<UpdateCandidate>();
         }
 
@@ -54,6 +58,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
         var stateChanged = false;
         var completedFullSweep = false;
         var hadApiError = false;
+        string? lastError = null;
         var baseUrl = _options.BaseUrl.TrimEnd('/');
         int page = 1;
         const int perPage = 200;
@@ -76,6 +81,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 hadApiError = true;
+                lastError = $"{ex.GetType().Name}: {ex.Message}";
                 _logger?.LogWarning(ex, "Failed to query Lookout packages page {Page} from {Url}", page, url);
                 break;
             }
@@ -83,6 +89,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
             if (!response.IsSuccessStatusCode)
             {
                 hadApiError = true;
+                lastError = $"HTTP {(int)response.StatusCode} ({response.StatusCode}) on page {page}";
                 _logger?.LogWarning("Lookout API returned status code {StatusCode} on page {Page}", response.StatusCode, page);
                 break;
             }
@@ -95,6 +102,7 @@ public class LookoutVersionSource : IUpdateCandidateSource
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 hadApiError = true;
+                lastError = $"{ex.GetType().Name}: {ex.Message}";
                 _logger?.LogWarning(ex, "Failed to deserialize Lookout response on page {Page}", page);
                 break;
             }
@@ -219,11 +227,17 @@ public class LookoutVersionSource : IUpdateCandidateSource
 
         if (hadApiError && candidates.Count == 0)
         {
-            _logger?.LogError("Lookout version source failed with API/parse errors and returned 0 candidates.");
+            _logger?.LogError("Lookout version source failed with API/parse errors and returned 0 candidates. Last error: {Error}", lastError);
+            _healthState?.RecordSourceOutcome(SourceName, "failed", 0, lastError);
         }
         else if (hadApiError)
         {
-            _logger?.LogWarning("Lookout version source returned partial results ({Count} candidates) due to page fetch errors.", candidates.Count);
+            _logger?.LogWarning("Lookout version source returned partial results ({Count} candidates) due to page fetch errors. Last error: {Error}", candidates.Count, lastError);
+            _healthState?.RecordSourceOutcome(SourceName, "degraded", candidates.Count, lastError);
+        }
+        else
+        {
+            _healthState?.RecordSourceOutcome(SourceName, "healthy", candidates.Count);
         }
 
         _logger?.LogInformation("Lookout version source discovered {Count} outdated candidates", candidates.Count);

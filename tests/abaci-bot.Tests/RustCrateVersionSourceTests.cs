@@ -2,7 +2,9 @@ using System.Net;
 using abaci_bot.Options;
 using abaci_bot.Services;
 using static abaci_bot.Services.RustCrateVersionSource;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NSubstitute;
 using Xunit;
 
 namespace abaci_bot.Tests;
@@ -176,6 +178,108 @@ public class RustCrateVersionSourceTests
         var source = new RustCrateVersionSource(new HttpClient(handler), options, specCatalogProvider: fakeCatalog);
         var candidates = await source.GetCandidatesAsync();
         Assert.Empty(candidates);
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_WithSpecCatalog_SlicesBeforeFetchingRustSpecs()
+    {
+        var allNames = Enumerable.Range(0, 20).Select(i => $"rust-crate{i:D2}")
+            .Concat(Enumerable.Range(0, 10).Select(i => $"c-pkg{i:D2}"))
+            .ToList();
+
+        var specCatalogMock = Substitute.For<ISpecCatalog>();
+        specCatalogMock.GetAllPackageNamesAsync(Arg.Any<CancellationToken>()).Returns(allNames);
+        specCatalogMock.GetSpecAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var pkg = call.Arg<string>();
+                return new SpecContext(
+                    pkg, pkg,
+                    $"%global crate_name {pkg}\nVersion: 1.0.0\n",
+                    $"SPECS/{pkg}/{pkg}.spec");
+            });
+
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"name":"crate","vers":"1.0.1","yanked":false}""")
+        });
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            RustCratePoller = new RustCratePollerOptions
+            {
+                Enabled = true,
+                IndexBaseUrl = "https://index.crates.io",
+                MaxCratesPerSweep = 3,
+                RequestDelayMilliseconds = 0
+            }
+        });
+
+        var health = new RuntimeHealthState();
+        var source = new RustCrateVersionSource(new HttpClient(handler), options, specCatalog: specCatalogMock, healthState: health);
+
+        var candidates = await source.GetCandidatesAsync();
+        Assert.Equal(3, candidates.Count);
+        await specCatalogMock.DidNotReceive().GetRustSpecsAsync(Arg.Any<CancellationToken>());
+        await specCatalogMock.Received(3).GetSpecAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.Equal("healthy", health.GetSourceHealth()["RustCrates"].Status);
+        Assert.Equal(0, health.GetSourceHealth()["RustCrates"].ConsecutiveFailures);
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_AllCratesFailAndPartialFailure_RecordsSourceHealthAndLogsError()
+    {
+        var runtimeHealth = new RuntimeHealthState();
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.AddProvider(new RuntimeErrorLoggerProvider(runtimeHealth));
+        });
+        var logger = loggerFactory.CreateLogger<RustCrateVersionSource>();
+
+        var fakeCatalog = (CancellationToken ct) => Task.FromResult<IReadOnlyList<SpecContext>>(new[]
+        {
+            new SpecContext("rust-alpha", "rust-alpha", "%global crate_name alpha\nVersion: 1.0.0\n", "SPECS/rust-alpha/rust-alpha.spec"),
+            new SpecContext("rust-beta", "rust-beta", "%global crate_name beta\nVersion: 1.0.0\n", "SPECS/rust-beta/rust-beta.spec")
+        });
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            RustCratePoller = new RustCratePollerOptions
+            {
+                Enabled = true,
+                IndexBaseUrl = "https://index.crates.io",
+                MaxCratesPerSweep = 10,
+                RequestDelayMilliseconds = 0
+            }
+        });
+
+        // 1. All queries fail -> status "failed", ConsecutiveFailures == 1, LogError captured in RuntimeHealthState
+        var allFailHandler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        var failingSource = new RustCrateVersionSource(
+            new HttpClient(allFailHandler), options, logger: logger, specCatalogProvider: fakeCatalog, healthState: runtimeHealth);
+
+        Assert.Empty(await failingSource.GetCandidatesAsync());
+        var snap1 = runtimeHealth.GetSourceHealth()["RustCrates"];
+        Assert.Equal("failed", snap1.Status);
+        Assert.Equal(1, snap1.ConsecutiveFailures);
+        Assert.Null(snap1.LastSuccessAt);
+        Assert.Contains("503", snap1.LastError!, StringComparison.Ordinal);
+        Assert.NotNull(runtimeHealth.GetLastError().LastError);
+
+        // 2. Partial failure (1 ok, 1 HTTP 500) -> status "degraded", LastSuccessAt set
+        var partialHandler = new FakeHttpMessageHandler(req =>
+            req.RequestUri!.AbsolutePath.Contains("alpha", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"name":"alpha","vers":"1.0.1","yanked":false}""") }
+                : new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var partialSource = new RustCrateVersionSource(
+            new HttpClient(partialHandler), options, logger: logger, specCatalogProvider: fakeCatalog, healthState: runtimeHealth);
+
+        var partialCandidates = await partialSource.GetCandidatesAsync();
+        Assert.Single(partialCandidates);
+        var snap2 = runtimeHealth.GetSourceHealth()["RustCrates"];
+        Assert.Equal("degraded", snap2.Status);
+        Assert.Equal(2, snap2.ConsecutiveFailures);
+        Assert.NotNull(snap2.LastSuccessAt);
     }
 }
 

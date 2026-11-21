@@ -7,14 +7,18 @@ namespace abaci_bot.Services;
 
 /// <summary>
 /// Atomic JSON-file-backed implementation of <see cref="IBotStateStore"/>.
-/// Persists state to <c>bot-state.json</c> under <see cref="BotStateOptions.StateDirectory"/>.
+/// Persists state to <c>bot-state.json</c> under <see cref="BotStateOptions.StateDirectory"/>
+/// and holds an OS-level exclusive lock on <c>bot-state.lock</c> so at most one instance
+/// writes to a given directory at a time.
 /// </summary>
-public sealed class JsonBotStateStore : IBotStateStore
+public sealed class JsonBotStateStore : IBotStateStore, IDisposable
 {
     private readonly object _lock = new();
     private readonly string _stateFilePath;
+    private readonly string _lockFilePath;
     private readonly TimeSpan _localeRetentionMaxAge;
     private readonly ILogger<JsonBotStateStore>? _logger;
+    private FileStream? _directoryLockStream;
     private PersistedBotState _state = new();
 
     public string StateDirectory { get; }
@@ -36,9 +40,58 @@ public sealed class JsonBotStateStore : IBotStateStore
         }
 
         _stateFilePath = Path.Combine(StateDirectory, "bot-state.json");
+        _lockFilePath = Path.Combine(StateDirectory, "bot-state.lock");
         EnsureStateDirectoryWritable();
-        LoadState();
-        PruneExpiredUserLocales(_localeRetentionMaxAge);
+        AcquireExclusiveDirectoryLock();
+        try
+        {
+            LoadState();
+            PruneExpiredUserLocales(_localeRetentionMaxAge);
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
+    }
+
+    private void AcquireExclusiveDirectoryLock()
+    {
+        try
+        {
+            _directoryLockStream = new FileStream(
+                _lockFilePath,
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None);
+        }
+        catch (IOException ex)
+        {
+            _logger?.LogError(
+                ex,
+                "BotState:StateDirectory '{StateDirectory}' is already locked by another running abaci-bot instance ({LockFile})",
+                StateDirectory,
+                _lockFilePath);
+            throw new InvalidOperationException(
+                $"BotState:StateDirectory '{StateDirectory}' is already locked by another running abaci-bot instance. Only a single active instance may share a state directory.",
+                ex);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            _logger?.LogError(ex, "Cannot open exclusive state lock file '{LockFile}'", _lockFilePath);
+            throw new InvalidOperationException(
+                $"BotState:StateDirectory '{StateDirectory}' lock file '{_lockFilePath}' cannot be opened exclusively.",
+                ex);
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            _directoryLockStream?.Dispose();
+            _directoryLockStream = null;
+        }
     }
 
     private void EnsureStateDirectoryWritable()

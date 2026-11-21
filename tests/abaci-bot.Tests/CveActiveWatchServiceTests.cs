@@ -461,4 +461,49 @@ public class CveActiveWatchServiceTests
         await gitHubMock.Received(1).AddLabelsAsync("owner", "repo", 99, Arg.Is<string[]>(labels => labels.Contains(GitHubLabels.VulnerabilityResolved)), Arg.Any<CancellationToken>());
         await gitHubMock.Received(1).CloseIssueAsync("owner", "repo", 99, Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task RunScanSweepAsync_WithSpecCatalogAndPackagesPerSweep_SlicesBeforeFetchingSpecs()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        gitHubMock.GetRateLimitSnapshotAsync(Arg.Any<CancellationToken>())
+            .Returns(new GitHubRateLimitSnapshot(5000, DateTimeOffset.UtcNow.AddHours(1), 30, DateTimeOffset.UtcNow.AddMinutes(1)));
+        gitHubMock.SearchStaleCandidatesAsync(
+                "owner", "repo", Arg.Any<DateTimeOffset>(), false, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<Issue>());
+
+        var allNames = Enumerable.Range(0, 50).Select(i => $"pkg-{i:D2}").ToList();
+        var specCatalogMock = Substitute.For<ISpecCatalog>();
+        specCatalogMock.GetAllPackageNamesAsync(Arg.Any<CancellationToken>()).Returns(allNames);
+        specCatalogMock.GetSpecAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var name = call.Arg<string>();
+                return new SpecContext(name, name, $"Name: {name}\nVersion: 1.0.0\n", $"SPECS/{name}/{name}.spec");
+            });
+
+        var scannerMock = Substitute.For<IPackageVulnerabilityScanner>();
+        var scannedBatches = new List<List<string>>();
+        scannerMock.ScanPackagesAsync(Arg.Do<IEnumerable<(string Name, string Version)>>(pkgs =>
+                scannedBatches.Add(pkgs.Select(p => p.Name).ToList())), Arg.Any<CancellationToken>())
+            .Returns(new PackageVulnerabilityScanResult(Array.Empty<PackageVulnerabilityFinding>(), new HashSet<string>()));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new CveActiveWatchOptions
+        {
+            Enabled = true,
+            DryRun = true,
+            TargetRepository = "owner/repo",
+            PackagesPerSweep = 5
+        });
+
+        var service = new CveActiveWatchService(gitHubMock, scannerMock, options, specCatalog: specCatalogMock);
+
+        await service.RunScanSweepAsync();
+        await specCatalogMock.Received(5).GetSpecAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.Equal(new[] { "pkg-00", "pkg-01", "pkg-02", "pkg-03", "pkg-04" }, scannedBatches[0]);
+
+        await service.RunScanSweepAsync();
+        await specCatalogMock.Received(10).GetSpecAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.Equal(new[] { "pkg-05", "pkg-06", "pkg-07", "pkg-08", "pkg-09" }, scannedBatches[1]);
+    }
 }
