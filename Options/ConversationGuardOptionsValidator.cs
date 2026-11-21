@@ -27,6 +27,11 @@ public class ConversationGuardOptionsValidator : IValidateOptions<ConversationGu
             failures.Add($"{nameof(options.AuthorLockConfirmTimeoutMinutes)} must be between 1 and 60 (got {options.AuthorLockConfirmTimeoutMinutes}).");
         }
 
+        if (options.MaxLocksPerSweep is < 1 or > 500)
+        {
+            failures.Add($"{nameof(options.MaxLocksPerSweep)} must be between 1 and 500 (got {options.MaxLocksPerSweep}).");
+        }
+
         foreach (var invalid in RepositoryAllowList.FindInvalidEntries(options.RepositoryAllowList))
         {
             failures.Add($"{nameof(options.RepositoryAllowList)} entry '{invalid}' must be formatted as 'owner/repo'.");

@@ -266,7 +266,7 @@ public class RustCrateVersionSourceTests
         Assert.Contains("503", snap1.LastError!, StringComparison.Ordinal);
         Assert.NotNull(runtimeHealth.GetLastError().LastError);
 
-        // 2. Partial failure (1 ok, 1 HTTP 500) -> status "degraded", LastSuccessAt set
+        // 2. Partial failure (1 ok, 1 HTTP 500) -> status "degraded", LastSuccessAt remains null (no clean healthy sweep yet)
         var partialHandler = new FakeHttpMessageHandler(req =>
             req.RequestUri!.AbsolutePath.Contains("alpha", StringComparison.Ordinal)
                 ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"name":"alpha","vers":"1.0.1","yanked":false}""") }
@@ -279,7 +279,8 @@ public class RustCrateVersionSourceTests
         var snap2 = runtimeHealth.GetSourceHealth()["RustCrates"];
         Assert.Equal("degraded", snap2.Status);
         Assert.Equal(2, snap2.ConsecutiveFailures);
-        Assert.NotNull(snap2.LastSuccessAt);
+        Assert.NotNull(snap2.LastAttemptAt);
+        Assert.Null(snap2.LastSuccessAt);
     }
 }
 

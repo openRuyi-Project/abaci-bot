@@ -7,7 +7,7 @@ using System.Text.Json;
 
 namespace abaci_bot.Services;
 
-public class GitHubService : IGitHubService, IRepositoryPermissionService, IBotIdentityProvider, IEphemeralCommentGateway, IRepositoryArchiveGateway, IDisposable
+public class GitHubService : IGitHubService, IRepositoryPermissionService, IBotIdentityProvider, IEphemeralCommentGateway, IRepositoryArchiveGateway, IPagedIssueSearchGateway, IDisposable
 {
     private static readonly AsyncLocal<CancellationToken> _ambientCancellationToken = new();
 
@@ -263,6 +263,24 @@ public class GitHubService : IGitHubService, IRepositoryPermissionService, IBotI
             nameof(SearchStaleCandidatesAsync),
             ct);
         return pageResult.Items;
+    }
+
+    public async Task<GitHubSearchPageResult<Issue>> SearchOpenIssuesByLabelAsync(
+        string owner, string repo, string label, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var query = $"repo:{owner}/{repo} is:open is:issue label:\"{label}\"";
+        return await SearchIssuesPaginatedAsync(
+            owner,
+            repo,
+            query,
+            IssueTypeQualifier.Issue,
+            nameof(SearchOpenIssuesByLabelAsync),
+            ct);
     }
 
     private async Task<GitHubSearchPageResult<Issue>> SearchIssuesPaginatedAsync(

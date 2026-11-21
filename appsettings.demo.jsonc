@@ -461,7 +461,11 @@
     // Unit: milliseconds. Range: >= 0. Default: 2000.
     // Delay inserted after publishing each update pull request to avoid secondary rate limits.
     // 0: no delay between publishing candidates.
-    "RequestThrottleMilliseconds": 2000
+    "RequestThrottleMilliseconds": 2000,
+    // Unit: bytes. Range: >= 0. Default: 104857600 (100 MiB).
+    // Maximum repository tarball size accepted for tar parsing after download buffering before falling back to Git Tree API.
+    // 0: disables the size cap and accepts any archive size.
+    "MaxArchiveBytes": 104857600
   },
 
   // ==============================================================================
@@ -573,7 +577,10 @@
     "SweepIntervalHours": 12,
     // Unit: minutes. Range: 1..60. Default: 15.
     // Time window for the PR author to reply with `@<bot> lock confirm` (or `@<bot> archive confirm`) before the confirmation request expires.
-    "AuthorLockConfirmTimeoutMinutes": 15
+    "AuthorLockConfirmTimeoutMinutes": 15,
+    // Unit: pull requests per repository per sweep. Range: 1..500. Default: 50.
+    // Maximum inactive closed pull requests locked per repository per sweep (500 is the search transport cap; remaining PRs defer to the next sweep; values outside 1..500 fail startup validation).
+    "MaxLocksPerSweep": 50
   },
 
   // ==============================================================================

@@ -24,8 +24,11 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
     private readonly ConcurrentDictionary<string, (SpecContext Context, DateTimeOffset Expiry)> _specCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _specPathMap = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _specBlobMap = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan RefreshFailureBackoff = TimeSpan.FromMinutes(5);
+
     private readonly IFileContentCache? _fileCache;
     private DateTimeOffset _lastCatalogRefresh = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextRefreshAllowedAt = DateTimeOffset.MinValue;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
     public GitHubSpecCatalog(
@@ -183,13 +186,17 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
 
     private async Task EnsureCatalogLoadedAsync(CancellationToken ct)
     {
-        if (DateTimeOffset.UtcNow - _lastCatalogRefresh < TimeSpan.FromHours(6) && !_specPathMap.IsEmpty)
+        var now = DateTimeOffset.UtcNow;
+        if ((now - _lastCatalogRefresh < TimeSpan.FromHours(6) && !_specPathMap.IsEmpty) ||
+            now < _nextRefreshAllowedAt)
             return;
 
         await _refreshLock.WaitAsync(ct);
         try
         {
-            if (DateTimeOffset.UtcNow - _lastCatalogRefresh < TimeSpan.FromHours(6) && !_specPathMap.IsEmpty)
+            now = DateTimeOffset.UtcNow;
+            if ((now - _lastCatalogRefresh < TimeSpan.FromHours(6) && !_specPathMap.IsEmpty) ||
+                now < _nextRefreshAllowedAt)
                 return;
 
             var (owner, repo) = GetTargetOwnerRepo();
@@ -200,6 +207,7 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
 
             if (await TryLoadCatalogFromTarballAsync(owner, repo, baseBranch, ct))
             {
+                _nextRefreshAllowedAt = DateTimeOffset.MinValue;
                 return;
             }
 
@@ -232,9 +240,13 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
                     }
                 }
                 _logger?.LogInformation("Discovered {Count} specs from remote GitHub tree", _specPathMap.Count);
+                _lastCatalogRefresh = DateTimeOffset.UtcNow;
+                _nextRefreshAllowedAt = DateTimeOffset.MinValue;
             }
-
-            _lastCatalogRefresh = DateTimeOffset.UtcNow;
+            else
+            {
+                _nextRefreshAllowedAt = DateTimeOffset.UtcNow.Add(RefreshFailureBackoff);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -243,6 +255,7 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Failed to refresh remote spec catalog from GitHub tree");
+            _nextRefreshAllowedAt = DateTimeOffset.UtcNow.Add(RefreshFailureBackoff);
         }
         finally
         {
@@ -262,6 +275,15 @@ public class GitHubSpecCatalog : ISpecCatalog, IDisposable
             var tarballBytes = await _archiveGateway.GetRepositoryTarballAsync(owner, repo, baseBranch, ct);
             if (tarballBytes == null || tarballBytes.Length == 0)
             {
+                return false;
+            }
+
+            var maxArchiveBytes = _options.Value.MaxArchiveBytes;
+            if (maxArchiveBytes > 0 && tarballBytes.LongLength > maxArchiveBytes)
+            {
+                _logger?.LogWarning(
+                    "Repository tarball for {Owner}/{Repo}@{Branch} ({SizeBytes} bytes) exceeds MaxArchiveBytes ({LimitBytes}); falling back to Git Tree API",
+                    owner, repo, baseBranch, tarballBytes.LongLength, maxArchiveBytes);
                 return false;
             }
 

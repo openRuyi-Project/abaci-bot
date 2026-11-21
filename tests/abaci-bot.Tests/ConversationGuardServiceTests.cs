@@ -499,6 +499,39 @@ public class ConversationGuardServiceTests
     }
 
     [Fact]
+    public async Task LockInactivePullRequestsAsync_EnforcesMaxLocksPerSweep_AndDefersRemaining()
+    {
+        var service = CreateService(new ConversationGuardOptions
+        {
+            Enabled = true,
+            DryRun = false,
+            MaxLocksPerSweep = 2
+        });
+
+        var candidates = new List<Issue>
+        {
+            CreateIssue(1, locked: true),
+            CreateIssue(2, locked: false),
+            CreateIssue(3, locked: false),
+            CreateIssue(4, locked: false),
+            CreateIssue(5, locked: false),
+            CreateIssue(6, locked: false)
+        };
+
+        _gitHub.SearchClosedPullRequestsAsync("owner", "repo", Arg.Any<DateTimeOffset>(), Arg.Any<CancellationToken>())
+            .Returns(new GitHubSearchPageResult<Issue>(candidates, candidates.Count, false));
+
+        await service.LockInactivePullRequestsAsync("owner", "repo", 60, dryRun: false, CancellationToken.None);
+
+        await _gitHub.Received(1).LockIssueAsync("owner", "repo", 2, LockReason.TooHeated, Arg.Any<CancellationToken>());
+        await _gitHub.Received(1).LockIssueAsync("owner", "repo", 3, LockReason.TooHeated, Arg.Any<CancellationToken>());
+        await _gitHub.DidNotReceive().LockIssueAsync("owner", "repo", 1, Arg.Any<LockReason?>(), Arg.Any<CancellationToken>());
+        await _gitHub.DidNotReceive().LockIssueAsync("owner", "repo", 4, Arg.Any<LockReason?>(), Arg.Any<CancellationToken>());
+        await _gitHub.DidNotReceive().LockIssueAsync("owner", "repo", 5, Arg.Any<LockReason?>(), Arg.Any<CancellationToken>());
+        await _gitHub.DidNotReceive().LockIssueAsync("owner", "repo", 6, Arg.Any<LockReason?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task HandleCommandAsync_DryRun_SuppressesAllCommentsAcrossAllRejectionHintAndConfirmPaths()
     {
         var service = CreateService(new ConversationGuardOptions { Enabled = true, DryRun = true, ArchiveEnabled = false });

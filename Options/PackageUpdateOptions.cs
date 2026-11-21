@@ -55,6 +55,12 @@ public class PackageUpdateOptions
     public int MinRateLimitRemaining { get; set; } = 500;
 
     public int RequestThrottleMilliseconds { get; set; } = 2000;
+
+    /// <summary>
+    /// Maximum repository tarball archive size in bytes accepted by <c>GitHubSpecCatalog</c> before falling back to the Git Tree API.
+    /// Set to 0 to disable the size cap. Default: 104857600 (100 MiB).
+    /// </summary>
+    public long MaxArchiveBytes { get; set; } = 100L * 1024 * 1024;
 }
 
 public class LookoutUpdateOptions

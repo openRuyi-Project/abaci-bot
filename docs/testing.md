@@ -29,6 +29,7 @@ The test suite simulates GitHub webhook events across various scenarios:
 | `pull_request_review` | `submitted` | Team Captain reviews advance PR from `Ready For Review` to `In Review`, removing `Status: New`. |
 | `issue_comment` | `created` | First human non-author comment removes `Status: New`. |
 | `workflow_run` | `completed` | Downloading RPM artifacts, executing Libabigail `abipkgdiff`, and applying `Impact: ABI`, `Impact: Breaking Change`, or `Status: ABI Unverified`. |
+| Any webhook (`X-GitHub-Delivery`) | Redelivery / Retry | In-memory bounded TTL deduplication (`10` min / `4096` cap) skipping duplicate delivery IDs, releasing claims on unhandled exceptions for retry, and evicting expired/oldest entries. |
 
 ---
 

@@ -629,6 +629,9 @@ public partial class ConversationGuardService : IConversationGuardService
             "Found {Count} closed pull requests inactive for >{Days} days in {Owner}/{Repo}",
             searchResult.Items.Count, inactiveDays, owner, repo);
 
+        var maxLocks = _options.MaxLocksPerSweep;
+        var processedUnlockedCandidates = 0;
+
         foreach (var candidate in searchResult.Items)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -637,6 +640,16 @@ public partial class ConversationGuardService : IConversationGuardService
             {
                 continue;
             }
+
+            if (processedUnlockedCandidates >= maxLocks)
+            {
+                _logger?.LogInformation(
+                    "Reached MaxLocksPerSweep business cap ({Cap}) in {Owner}/{Repo}; deferring remaining eligible pull requests to next sweep.",
+                    maxLocks, owner, repo);
+                break;
+            }
+
+            processedUnlockedCandidates++;
 
             if (dryRun)
             {

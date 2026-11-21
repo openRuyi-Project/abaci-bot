@@ -66,4 +66,21 @@ public class ConversationGuardOptionsValidatorTests
         Assert.True(result.Failed);
         Assert.Contains(result.Failures, f => f.Contains(nameof(options.RepositoryAllowList)));
     }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(501, false)]
+    [InlineData(1, true)]
+    [InlineData(500, true)]
+    public void Validate_MaxLocksPerSweep_EnforcesBounds1To500(int maxLocks, bool expectedSuccess)
+    {
+        var options = new ConversationGuardOptions { MaxLocksPerSweep = maxLocks };
+        var result = _validator.Validate(null, options);
+
+        Assert.Equal(expectedSuccess, result.Succeeded);
+        if (!expectedSuccess)
+        {
+            Assert.Contains(result.Failures!, f => f.Contains(nameof(options.MaxLocksPerSweep)));
+        }
+    }
 }

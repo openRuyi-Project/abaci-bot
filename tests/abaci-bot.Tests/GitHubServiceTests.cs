@@ -1784,6 +1784,74 @@ public class GitHubServiceTests
         }
     }
 
+    [Fact]
+    public async Task GetRepositoryTarballAsync_HandlesSuccessNotFoundErrorAndCancellation()
+    {
+        var (pem, rsa) = GenerateRsaKeyPair();
+        using (rsa)
+        {
+            var (service, client) = CreateTestService(pem);
+            var reposClient = Substitute.For<IRepositoriesClient>();
+            var contentsClient = Substitute.For<IRepositoryContentsClient>();
+            reposClient.Content.Returns(contentsClient);
+            client.Repository.Returns(reposClient);
+
+            var expectedBytes = new byte[] { 0x1F, 0x8B, 0x08, 0x00 };
+            contentsClient.GetArchive("owner", "repo", ArchiveFormat.Tarball, "main", Arg.Any<TimeSpan>())
+                .Returns(Task.FromResult(expectedBytes));
+
+            var result = await service.GetRepositoryTarballAsync("owner", "repo", "main");
+            Assert.Equal(expectedBytes, result);
+
+            // 404 NotFoundException -> returns null
+            contentsClient.GetArchive("owner", "missing", ArchiveFormat.Tarball, "main", Arg.Any<TimeSpan>())
+                .Returns<Task<byte[]>>(_ => throw new NotFoundException("not found", HttpStatusCode.NotFound));
+            Assert.Null(await service.GetRepositoryTarballAsync("owner", "missing", "main"));
+
+            // Unexpected HTTP error -> logs warning and returns null
+            contentsClient.GetArchive("owner", "broken", ArchiveFormat.Tarball, "main", Arg.Any<TimeSpan>())
+                .Returns<Task<byte[]>>(_ => throw new HttpRequestException("gateway timeout"));
+            Assert.Null(await service.GetRepositoryTarballAsync("owner", "broken", "main"));
+
+            // Pre-cancelled token -> throws OperationCanceledException
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                service.GetRepositoryTarballAsync("owner", "repo", "main", cts.Token));
+        }
+    }
+
+    [Fact]
+    public async Task SearchOpenIssuesByLabelAsync_ReturnsTruncationMetadataWhenTotalExceedsReturnedItems()
+    {
+        var (pem, rsa) = GenerateRsaKeyPair();
+        using (rsa)
+        {
+            var (service, client) = CreateTestService(pem);
+            var searchClient = Substitute.For<ISearchClient>();
+            client.Search.Returns(searchClient);
+
+            var pageItems = Enumerable.Range(1, 100).Select(i =>
+            {
+                var issue = (Issue)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Issue));
+                typeof(Issue).GetProperty(nameof(Issue.Number))?.SetValue(issue, i);
+                return issue;
+            }).ToList();
+
+            var pageResult = (SearchIssuesResult)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(SearchIssuesResult));
+            typeof(SearchIssuesResult).GetProperty(nameof(SearchIssuesResult.Items))?.SetValue(pageResult, pageItems);
+            typeof(SearchIssuesResult).GetProperty(nameof(SearchIssuesResult.TotalCount))?.SetValue(pageResult, 600);
+
+            searchClient.SearchIssues(Arg.Any<SearchIssuesRequest>()).Returns(Task.FromResult(pageResult));
+
+            var result = await service.SearchOpenIssuesByLabelAsync("owner", "repo", GitHubLabels.VulnerabilityDetected);
+
+            Assert.Equal(500, result.Items.Count);
+            Assert.Equal(600, result.TotalCount);
+            Assert.True(result.IsTruncated);
+        }
+    }
+
     private sealed class ControllableHttpMessageHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;

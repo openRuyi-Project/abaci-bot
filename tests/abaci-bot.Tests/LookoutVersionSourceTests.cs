@@ -524,16 +524,17 @@ public class LookoutVersionSourceTests
             Assert.Contains("500", s1.LastError!, StringComparison.Ordinal);
             Assert.NotNull(runtimeHealth.GetLastError().LastError);
 
-            // Sweep 2: page 1 returns 200 items, page 2 returns 503 -> degraded, ConsecutiveFailures == 2, LastSuccessAt set
+            // Sweep 2: page 1 returns 200 items, page 2 returns 503 -> degraded, ConsecutiveFailures == 2, LastSuccessAt STILL null (no clean sweep yet)
             sweep = 2;
             var partial = await source.GetCandidatesAsync();
             Assert.Equal(200, partial.Count);
             var s2 = runtimeHealth.GetSourceHealth()["Lookout"];
             Assert.Equal("degraded", s2.Status);
             Assert.Equal(2, s2.ConsecutiveFailures);
-            Assert.NotNull(s2.LastSuccessAt);
+            Assert.NotNull(s2.LastAttemptAt);
+            Assert.Null(s2.LastSuccessAt);
 
-            // Sweep 3: clean response -> healthy, ConsecutiveFailures == 0, LastError == null
+            // Sweep 3: clean response -> healthy, ConsecutiveFailures == 0, LastError == null, LastSuccessAt set
             sweep = 3;
             var healthy = await source.GetCandidatesAsync();
             Assert.Single(healthy);
@@ -542,6 +543,15 @@ public class LookoutVersionSourceTests
             Assert.Equal(0, s3.ConsecutiveFailures);
             Assert.Null(s3.LastError);
             Assert.NotNull(s3.LastSuccessAt);
+
+            // Sweep 4: degraded again -> LastSuccessAt preserves s3.LastSuccessAt instead of advancing
+            sweep = 2;
+            await source.GetCandidatesAsync();
+            var s4 = runtimeHealth.GetSourceHealth()["Lookout"];
+            Assert.Equal("degraded", s4.Status);
+            Assert.Equal(1, s4.ConsecutiveFailures);
+            Assert.Equal(s3.LastSuccessAt, s4.LastSuccessAt);
+            Assert.True(s4.LastAttemptAt >= s3.LastAttemptAt);
         }
         finally
         {

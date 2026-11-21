@@ -51,4 +51,11 @@ public class ConversationGuardOptions
     /// Default: 15.
     /// </summary>
     public int AuthorLockConfirmTimeoutMinutes { get; set; } = 15;
+
+    /// <summary>
+    /// Maximum number of inactive closed pull requests locked per repository in a single sweep cycle.
+    /// Remaining eligible pull requests are deferred to subsequent sweeps.
+    /// Bound to 1..500. Default: 50.
+    /// </summary>
+    public int MaxLocksPerSweep { get; set; } = 50;
 }

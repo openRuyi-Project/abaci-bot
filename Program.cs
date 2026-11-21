@@ -72,6 +72,7 @@ builder.Services.AddSingleton<IRepositoryPermissionService>(sp => sp.GetRequired
 builder.Services.AddSingleton<IBotIdentityProvider>(sp => sp.GetRequiredService<GitHubService>());
 builder.Services.AddSingleton<IEphemeralCommentGateway>(sp => sp.GetRequiredService<GitHubService>());
 builder.Services.AddSingleton<IRepositoryArchiveGateway>(sp => sp.GetRequiredService<GitHubService>());
+builder.Services.AddSingleton<IPagedIssueSearchGateway>(sp => sp.GetRequiredService<GitHubService>());
 
 builder.Services.AddHttpClient();
 

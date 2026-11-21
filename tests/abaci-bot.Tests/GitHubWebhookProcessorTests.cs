@@ -1900,8 +1900,9 @@ public class GitHubWebhookProcessorTests
             abaci_bot.Pipelines.PullRequestLockManager lockManager,
             abaci_bot.Pipelines.LabelMutexEngine mutexEngine,
             IArtifactService? artifactService = null,
-            IAbiDiffService? abiDiffService = null)
-            : base(github, config, pipeline, lockManager, mutexEngine, artifactService: artifactService, abiDiffService: abiDiffService)
+            IAbiDiffService? abiDiffService = null,
+            TimeProvider? timeProvider = null)
+            : base(github, config, pipeline, lockManager, mutexEngine, artifactService: artifactService, abiDiffService: abiDiffService, timeProvider: timeProvider)
         {
             _testGithub = github;
         }
@@ -1913,11 +1914,16 @@ public class GitHubWebhookProcessorTests
 
         public ValueTask ProcessPullRequestAsync(PullRequestEvent payload, PullRequestAction action)
         {
+            return ProcessPullRequestAsync(null, payload, action);
+        }
+
+        public ValueTask ProcessPullRequestAsync(WebhookHeaders? headers, PullRequestEvent payload, PullRequestAction action)
+        {
             if (_testGithub is FakeGitHubService fake)
             {
                 fake.SyncFromPayload(payload);
             }
-            return ProcessPullRequestWebhookAsync(null!, payload, action);
+            return ProcessPullRequestWebhookAsync(headers!, payload, action);
         }
 
         public ValueTask ProcessIssueCommentAsync(IssueCommentEvent payload, IssueCommentAction action)
@@ -2867,6 +2873,141 @@ public class GitHubWebhookProcessorTests
         {
             if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task DuplicateDeliveryId_SkipsSecondWebhookExecution_AndDistinctIdRunsAgain()
+    {
+        var github = new FakeGitHubService();
+        var processor = CreateProcessor(github);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(
+            draft: false,
+            title: "Feature: Test delivery dedup",
+            labels: new[] { GitHubLabels.WorkflowInDev });
+
+        var headers1 = new WebhookHeaders { Delivery = "delivery-uuid-1" };
+        await processor.ProcessPullRequestAsync(headers1, payload, PullRequestAction.Opened);
+        var firstRunOpsCount = github.LabelOperations.Count;
+        Assert.True(firstRunOpsCount > 0);
+
+        // Redelivery with identical X-GitHub-Delivery must be skipped even for a new draft payload
+        var draftPayload = CreatePREvent<PullRequestOpenedEvent>(
+            draft: true,
+            title: "Feature: Test delivery dedup draft");
+        await processor.ProcessPullRequestAsync(headers1, draftPayload, PullRequestAction.Opened);
+        Assert.Equal(firstRunOpsCount, github.LabelOperations.Count);
+
+        // Distinct X-GitHub-Delivery processes normally and applies the new draft state
+        var headers2 = new WebhookHeaders { Delivery = "delivery-uuid-2" };
+        await processor.ProcessPullRequestAsync(headers2, draftPayload, PullRequestAction.Opened);
+        Assert.True(github.LabelOperations.Count > firstRunOpsCount);
+        Assert.Contains($"add:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+    }
+
+    [Fact]
+    public async Task FailedDeliveryId_ReleasesLockAndAllowsRetry()
+    {
+        var githubMock = Substitute.For<IGitHubService>();
+        var pr = new OctokitPullRequest();
+        typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.State))?.SetValue(pr, new Octokit.StringEnum<Octokit.ItemState>(Octokit.ItemState.Open));
+        typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Draft))?.SetValue(pr, false);
+        typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Title))?.SetValue(pr, "Feature: retry test");
+        typeof(OctokitPullRequest).GetProperty(nameof(OctokitPullRequest.Labels))?.SetValue(pr, Array.Empty<Octokit.Label>());
+
+        // Both initial write and recovery fail while failWrites == true -> AggregateException releases claim
+        int calls = 0;
+        bool failWrites = true;
+        githubMock.GetPullRequestAsync("owner", "repo", Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(pr);
+        githubMock.AddLabelsAsync("owner", "repo", Arg.Any<int>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref calls);
+                if (failWrites)
+                    throw new InvalidOperationException("Simulated unrecoverable write failure");
+                return Task.CompletedTask;
+            });
+
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["GitHubApp:TeamName"] = "captains" })
+            .Build();
+        var processor = new TestGitHubWebhookProcessor(githubMock, config);
+        var payload = CreatePREvent<PullRequestOpenedEvent>(draft: false, title: "Feature: retry test");
+        var headers = new WebhookHeaders { Delivery = "delivery-retry-1" };
+
+        await Assert.ThrowsAsync<AggregateException>(async () =>
+            await processor.ProcessPullRequestAsync(headers, payload, PullRequestAction.Opened));
+        var callsAfterFailure = calls;
+        Assert.True(callsAfterFailure >= 2);
+
+        // Same delivery ID can now be retried after failure released the claim
+        failWrites = false;
+        await processor.ProcessPullRequestAsync(headers, payload, PullRequestAction.Opened);
+        Assert.Equal(callsAfterFailure + 1, calls);
+
+        // Once succeeded, repeating the same delivery ID is deduplicated
+        await processor.ProcessPullRequestAsync(headers, payload, PullRequestAction.Opened);
+        Assert.Equal(callsAfterFailure + 1, calls);
+    }
+
+    [Fact]
+    public async Task DeliveryDeduplication_ExpiresAfterTtl_AndEvictsOldestAtCapacity()
+    {
+        var github = new FakeGitHubService();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["GitHubApp:TeamName"] = "captains" })
+            .Build();
+        var mutexEngine = new abaci_bot.Pipelines.LabelMutexEngine();
+        var pipeline = new abaci_bot.Pipelines.PullRequestPipeline(
+            new abaci_bot.Pipelines.IPullRequestModule[] { new WorkflowStateModule() },
+            mutexEngine,
+            github);
+        var fakeTime = new TestFakeTimeProvider(new DateTimeOffset(2026, 11, 21, 10, 0, 0, TimeSpan.Zero));
+        var processor = new TestGitHubWebhookProcessor(
+            github, config, pipeline, new abaci_bot.Pipelines.PullRequestLockManager(), mutexEngine, timeProvider: fakeTime)
+        {
+            MaxTrackedDeliveries = 2
+        };
+
+        var readyPayload = CreatePREvent<PullRequestOpenedEvent>(draft: false, title: "Ready PR");
+        var draftPayload = CreatePREvent<PullRequestOpenedEvent>(draft: true, title: "Draft PR");
+
+        // 1. d1 executes ready transition
+        await processor.ProcessPullRequestAsync(new WebhookHeaders { Delivery = "d1" }, readyPayload, PullRequestAction.Opened);
+        var opsAfterD1 = github.LabelOperations.Count;
+        Assert.True(opsAfterD1 > 0);
+
+        // 2. Duplicate d1 within 10-minute TTL is skipped
+        await processor.ProcessPullRequestAsync(new WebhookHeaders { Delivery = "d1" }, draftPayload, PullRequestAction.Opened);
+        Assert.Equal(opsAfterD1, github.LabelOperations.Count);
+
+        // 3. Advance clock past 10-minute TTL -> d1 expires and executes draft transition
+        fakeTime.Advance(TimeSpan.FromMinutes(11));
+        await processor.ProcessPullRequestAsync(new WebhookHeaders { Delivery = "d1" }, draftPayload, PullRequestAction.Opened);
+        Assert.Contains($"add:{GitHubLabels.WorkflowInDev}", github.LabelOperations);
+        var opsAfterTtlExpiry = github.LabelOperations.Count;
+        Assert.True(opsAfterTtlExpiry > opsAfterD1);
+
+        // 4. Capacity eviction (MaxTrackedDeliveries = 2): d2 then d3 evicts oldest d1; replay of d3 is skipped while replay of d1 executes
+        await processor.ProcessPullRequestAsync(new WebhookHeaders { Delivery = "d2" }, readyPayload, PullRequestAction.Opened);
+        await processor.ProcessPullRequestAsync(new WebhookHeaders { Delivery = "d3" }, draftPayload, PullRequestAction.Opened);
+        var opsBeforeEvictionCheck = github.LabelOperations.Count;
+
+        // d3 is still retained in capacity window -> skipped
+        await processor.ProcessPullRequestAsync(new WebhookHeaders { Delivery = "d3" }, readyPayload, PullRequestAction.Opened);
+        Assert.Equal(opsBeforeEvictionCheck, github.LabelOperations.Count);
+
+        // d1 was evicted -> replaying d1 executes ready transition
+        await processor.ProcessPullRequestAsync(new WebhookHeaders { Delivery = "d1" }, readyPayload, PullRequestAction.Opened);
+        Assert.True(github.LabelOperations.Count > opsBeforeEvictionCheck);
+    }
+
+    private sealed class TestFakeTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _utcNow;
+        public TestFakeTimeProvider(DateTimeOffset initial) => _utcNow = initial;
+        public void Advance(TimeSpan delta) => _utcNow = _utcNow.Add(delta);
+        public override DateTimeOffset GetUtcNow() => _utcNow;
     }
 
     #endregion

@@ -52,4 +52,20 @@ public class PackageUpdateOptionsValidatorTests
         Assert.True(result.Failed);
         Assert.Contains(result.Failures, f => f.Contains(nameof(options.TargetRepository)));
     }
+
+    [Theory]
+    [InlineData(-1, false)]
+    [InlineData(0, true)]
+    [InlineData(1024, true)]
+    public void Validate_MaxArchiveBytes_RejectsNegativeAndAllowsZeroOrPositive(long maxArchiveBytes, bool expectedSuccess)
+    {
+        var options = new PackageUpdateOptions { MaxArchiveBytes = maxArchiveBytes };
+        var result = _validator.Validate(null, options);
+
+        Assert.Equal(expectedSuccess, result.Succeeded);
+        if (!expectedSuccess)
+        {
+            Assert.Contains(result.Failures!, f => f.Contains(nameof(options.MaxArchiveBytes)));
+        }
+    }
 }

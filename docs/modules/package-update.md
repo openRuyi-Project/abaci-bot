@@ -32,7 +32,7 @@ flowchart TD
 ```
 
 ### Key Functional Behaviors
-1. **O(1) Tarball Spec Catalog & Slice-Before-Fetch**: `GitHubSpecCatalog` fetches the repository snapshot once per 6-hour refresh window (`GetArchive` tarball) and extracts only `SPECS/*/*.spec` entries into memory, avoiding O(N) per-file GitHub API requests across thousands of packages. When falling back to lazy tree lookup, `RustCrateVersionSource` filters and slices `MaxCratesPerSweep` sorted `rust-*` package names **before** fetching `.spec` contents.
+1. **O(1) Tarball Spec Catalog & Slice-Before-Fetch**: `GitHubSpecCatalog` downloads the repository archive snapshot once per 6-hour refresh window (`GetArchive` tarball; buffered in memory before `MaxArchiveBytes` defaults of `104857600` bytes / 100 MiB is checked prior to tar extraction, capping accepted/parsed archive size) and extracts only `SPECS/*/*.spec` entries into memory, avoiding O(N) per-file GitHub API requests across thousands of packages. When falling back to lazy tree lookup (if the archive download fails or exceeds `MaxArchiveBytes`), `RustCrateVersionSource` filters and slices `MaxCratesPerSweep` sorted `rust-*` package names **before** fetching `.spec` contents.
 2. **Admission Rules**: Prevents accidental cross-major SemVer and CalVer breaking changes (`AllowCrossMajorVersion = false`) and skips packages containing downstream `Patch` directives (`SkipPackagesWithPatches = true`). Respects `#!NoAutoUpdate` opt-out tags inside SPEC files.
 3. **Spec Version Rewriters**:
    - `PlainSpecVersionRewriter`: Updates `Version:` tokens while keeping `Release:` intact.
@@ -80,6 +80,7 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 | `GiveUpIssueLabel` | `string` | `"Status: stale-exempt"` | Protection label applied to failure tracking issues. |
 | `MinRateLimitRemaining` | `int` | `500` | Minimum core GitHub API quota required to begin a sweep. |
 | `RequestThrottleMilliseconds` | `int` | `2000` | Delay in milliseconds inserted after publishing each update pull request to prevent secondary rate limits. |
+| `MaxArchiveBytes` | `long` | `104857600` | Maximum buffered repository tarball size in bytes (100 MiB) accepted for tar parsing by `GitHubSpecCatalog` before falling back to Git Tree API (`0` disables the cap). |
 
 ### Nested Options
 

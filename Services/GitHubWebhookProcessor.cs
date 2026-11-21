@@ -22,6 +22,11 @@ namespace abaci_bot.Services;
 /// </summary>
 public class GitHubWebhookProcessor : WebhookEventProcessor
 {
+    private const int DefaultMaxTrackedDeliveries = 4096;
+    private static readonly TimeSpan DeliveryDeduplicationTtl = TimeSpan.FromMinutes(10);
+
+    internal int MaxTrackedDeliveries { get; set; } = DefaultMaxTrackedDeliveries;
+
     private readonly IGitHubService _github;
     private readonly IConfiguration _config;
     private readonly PullRequestPipeline _pipeline;
@@ -33,6 +38,9 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
     private readonly IArtifactService? _artifactService;
     private readonly IAbiDiffService? _abiDiffService;
     private readonly IFileContentCache? _fileCache;
+    private readonly TimeProvider _timeProvider;
+    private readonly object _deliveryLock = new();
+    private readonly Dictionary<string, DateTimeOffset> _seenDeliveries = new(StringComparer.OrdinalIgnoreCase);
 
     public GitHubWebhookProcessor(
         IGitHubService github,
@@ -45,7 +53,8 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         IArtifactService? artifactService = null,
         IAbiDiffService? abiDiffService = null,
         IFileContentCache? fileCache = null,
-        IOptions<AbiComplianceOptions>? abiOptions = null)
+        IOptions<AbiComplianceOptions>? abiOptions = null,
+        TimeProvider? timeProvider = null)
     {
         _github = github;
         _config = config;
@@ -62,6 +71,7 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         _artifactService = artifactService;
         _abiDiffService = abiDiffService;
         _fileCache = fileCache;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -88,135 +98,229 @@ public class GitHubWebhookProcessor : WebhookEventProcessor
         return new PullRequestPipeline(modules, mutexEngine, github);
     }
 
-    protected override async ValueTask ProcessPullRequestWebhookAsync(
+    protected override ValueTask ProcessPullRequestWebhookAsync(
         WebhookHeaders headers,
         PullRequestEvent pullRequestEvent,
         PullRequestAction action,
         CancellationToken cancellationToken = default)
     {
-        if (!TryGetRepositoryContext(pullRequestEvent.Repository, out var owner, out var repo))
-            return;
-
-        var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromPullRequestEvent(_github, teamName, headers, pullRequestEvent, action, _fileCache, cancellationToken);
-
-        using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
+        return ExecuteWithDeliveryDedupAsync(headers, async () =>
         {
-            await _pipeline.ExecuteAsync(context, cancellationToken);
-        }
+            if (!TryGetRepositoryContext(pullRequestEvent.Repository, out var owner, out var repo))
+                return;
+
+            var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
+            var context = PullRequestContext.FromPullRequestEvent(_github, teamName, headers, pullRequestEvent, action, _fileCache, cancellationToken);
+
+            using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
+            {
+                await _pipeline.ExecuteAsync(context, cancellationToken);
+            }
+        });
     }
 
-    protected override async ValueTask ProcessPullRequestReviewWebhookAsync(
+    protected override ValueTask ProcessPullRequestReviewWebhookAsync(
         WebhookHeaders headers,
         PullRequestReviewEvent pullRequestReviewEvent,
         PullRequestReviewAction action,
         CancellationToken cancellationToken = default)
     {
-        // Ignore non-Submitted review actions (e.g. Dismissed, Edited) to prevent unintended state transitions
-        if (action != PullRequestReviewAction.Submitted)
-            return;
-
-        if (!TryGetRepositoryContext(pullRequestReviewEvent.Repository, out var owner, out var repo))
-            return;
-
-        if (!HasSender(pullRequestReviewEvent.Sender))
-            return;
-
-        var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromReviewEvent(_github, teamName, headers, pullRequestReviewEvent, action, _fileCache, cancellationToken);
-
-        using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
+        return ExecuteWithDeliveryDedupAsync(headers, async () =>
         {
-            await _pipeline.ExecuteAsync(context, cancellationToken);
-        }
+            // Ignore non-Submitted review actions (e.g. Dismissed, Edited) to prevent unintended state transitions
+            if (action != PullRequestReviewAction.Submitted)
+                return;
+
+            if (!TryGetRepositoryContext(pullRequestReviewEvent.Repository, out var owner, out var repo))
+                return;
+
+            if (!HasSender(pullRequestReviewEvent.Sender))
+                return;
+
+            var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
+            var context = PullRequestContext.FromReviewEvent(_github, teamName, headers, pullRequestReviewEvent, action, _fileCache, cancellationToken);
+
+            using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
+            {
+                await _pipeline.ExecuteAsync(context, cancellationToken);
+            }
+        });
     }
 
-    protected override async ValueTask ProcessPullRequestReviewCommentWebhookAsync(
+    protected override ValueTask ProcessPullRequestReviewCommentWebhookAsync(
         WebhookHeaders headers,
         PullRequestReviewCommentEvent pullRequestReviewCommentEvent,
         PullRequestReviewCommentAction action,
         CancellationToken cancellationToken = default)
     {
-        // Only react to newly created inline review comments; ignore edits and deletions
-        if (action != PullRequestReviewCommentAction.Created)
-            return;
-
-        if (!TryGetRepositoryContext(pullRequestReviewCommentEvent.Repository, out var owner, out var repo))
-            return;
-
-        if (!HasSender(pullRequestReviewCommentEvent.Sender))
-            return;
-
-        var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromReviewCommentEvent(_github, teamName, headers, pullRequestReviewCommentEvent, action, _fileCache, cancellationToken);
-
-        using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
+        return ExecuteWithDeliveryDedupAsync(headers, async () =>
         {
-            await _pipeline.ExecuteAsync(context, cancellationToken);
-        }
+            // Only react to newly created inline review comments; ignore edits and deletions
+            if (action != PullRequestReviewCommentAction.Created)
+                return;
+
+            if (!TryGetRepositoryContext(pullRequestReviewCommentEvent.Repository, out var owner, out var repo))
+                return;
+
+            if (!HasSender(pullRequestReviewCommentEvent.Sender))
+                return;
+
+            var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
+            var context = PullRequestContext.FromReviewCommentEvent(_github, teamName, headers, pullRequestReviewCommentEvent, action, _fileCache, cancellationToken);
+
+            using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
+            {
+                await _pipeline.ExecuteAsync(context, cancellationToken);
+            }
+        });
     }
 
-    protected override async ValueTask ProcessIssueCommentWebhookAsync(
+    protected override ValueTask ProcessIssueCommentWebhookAsync(
         WebhookHeaders headers,
         IssueCommentEvent issueCommentEvent,
         IssueCommentAction action,
         CancellationToken cancellationToken = default)
     {
-        // Only react to newly created comments; ignore edits and deletions
-        if (action != IssueCommentAction.Created)
-            return;
-
-        if (!HasSender(issueCommentEvent.Sender))
-            return;
-
-        // Handle regular issue comments: instant un-stale for non-PR issues
-        if (issueCommentEvent.Issue.PullRequest == null)
+        return ExecuteWithDeliveryDedupAsync(headers, async () =>
         {
-            if (!TryGetRepositoryContext(issueCommentEvent.Repository, out var issueOwner, out var issueRepo))
+            // Only react to newly created comments; ignore edits and deletions
+            if (action != IssueCommentAction.Created)
                 return;
 
-            var existingLabels = GetLabelNames(issueCommentEvent.Issue.Labels);
-            if (existingLabels.Contains(GitHubLabels.StatusStale))
-            {
-                var senderLogin = issueCommentEvent.Sender!.Login ?? string.Empty;
-                var senderType = issueCommentEvent.Sender.Type?.ToString();
+            if (!HasSender(issueCommentEvent.Sender))
+                return;
 
-                if (!BotDetectionHelper.IsBot(senderLogin, senderType, _botOptions.Whitelist))
+            // Handle regular issue comments: instant un-stale for non-PR issues
+            if (issueCommentEvent.Issue.PullRequest == null)
+            {
+                if (!TryGetRepositoryContext(issueCommentEvent.Repository, out var issueOwner, out var issueRepo))
+                    return;
+
+                var existingLabels = GetLabelNames(issueCommentEvent.Issue.Labels);
+                if (existingLabels.Contains(GitHubLabels.StatusStale))
                 {
-                    using (await _lockManager.AcquireLockAsync(issueOwner, issueRepo, (int)issueCommentEvent.Issue.Number, cancellationToken))
+                    var senderLogin = issueCommentEvent.Sender!.Login ?? string.Empty;
+                    var senderType = issueCommentEvent.Sender.Type?.ToString();
+
+                    if (!BotDetectionHelper.IsBot(senderLogin, senderType, _botOptions.Whitelist))
                     {
-                        try
+                        using (await _lockManager.AcquireLockAsync(issueOwner, issueRepo, (int)issueCommentEvent.Issue.Number, cancellationToken))
                         {
-                            await _github.RemoveLabelAsync(issueOwner, issueRepo, (int)issueCommentEvent.Issue.Number, GitHubLabels.StatusStale, cancellationToken);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger?.LogError(ex, "Failed to remove label '{Label}' from issue {Owner}/{Repo}#{Number}",
-                                GitHubLabels.StatusStale, issueOwner, issueRepo, issueCommentEvent.Issue.Number);
+                            try
+                            {
+                                await _github.RemoveLabelAsync(issueOwner, issueRepo, (int)issueCommentEvent.Issue.Number, GitHubLabels.StatusStale, cancellationToken);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger?.LogError(ex, "Failed to remove label '{Label}' from issue {Owner}/{Repo}#{Number}",
+                                    GitHubLabels.StatusStale, issueOwner, issueRepo, issueCommentEvent.Issue.Number);
+                            }
                         }
                     }
                 }
+                return;
             }
-            return;
-        }
 
-        if (!TryGetRepositoryContext(issueCommentEvent.Repository, out var owner, out var repo))
-            return;
+            if (!TryGetRepositoryContext(issueCommentEvent.Repository, out var owner, out var repo))
+                return;
 
-        var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
-        var context = PullRequestContext.FromIssueCommentEvent(_github, teamName, headers, issueCommentEvent, action, _fileCache, cancellationToken);
+            var teamName = _config["GitHubApp:TeamName"] ?? string.Empty;
+            var context = PullRequestContext.FromIssueCommentEvent(_github, teamName, headers, issueCommentEvent, action, _fileCache, cancellationToken);
 
-        using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
-        {
-            await _pipeline.ExecuteAsync(context, cancellationToken);
-        }
+            using (await _lockManager.AcquireLockAsync(owner, repo, context.PrNumber, cancellationToken))
+            {
+                await _pipeline.ExecuteAsync(context, cancellationToken);
+            }
+        });
     }
 
-    protected override async ValueTask ProcessWorkflowRunWebhookAsync(
+    protected override ValueTask ProcessWorkflowRunWebhookAsync(
         WebhookHeaders headers,
         WorkflowRunEvent workflowRunEvent,
         WorkflowRunAction action,
         CancellationToken cancellationToken = default)
+    {
+        return ExecuteWithDeliveryDedupAsync(
+            headers,
+            () => ProcessWorkflowRunCoreAsync(headers, workflowRunEvent, action, cancellationToken));
+    }
+
+    private async ValueTask ExecuteWithDeliveryDedupAsync(WebhookHeaders? headers, Func<ValueTask> action)
+    {
+        var deliveryId = headers?.Delivery;
+        if (string.IsNullOrWhiteSpace(deliveryId))
+        {
+            await action();
+            return;
+        }
+
+        if (!TryClaimDelivery(deliveryId))
+        {
+            _logger?.LogInformation("Skipping duplicate GitHub webhook delivery {DeliveryId}", deliveryId);
+            return;
+        }
+
+        try
+        {
+            await action();
+        }
+        catch
+        {
+            ReleaseDelivery(deliveryId);
+            throw;
+        }
+    }
+
+    private bool TryClaimDelivery(string deliveryId)
+    {
+        var now = _timeProvider.GetUtcNow();
+        lock (_deliveryLock)
+        {
+            if (_seenDeliveries.TryGetValue(deliveryId, out var seenAt) &&
+                now - seenAt < DeliveryDeduplicationTtl)
+            {
+                return false;
+            }
+
+            if (_seenDeliveries.Count >= MaxTrackedDeliveries)
+            {
+                var expiredKeys = _seenDeliveries
+                    .Where(kv => now - kv.Value >= DeliveryDeduplicationTtl)
+                    .Select(kv => kv.Key)
+                    .ToList();
+                foreach (var expired in expiredKeys)
+                {
+                    _seenDeliveries.Remove(expired);
+                }
+
+                if (_seenDeliveries.Count >= MaxTrackedDeliveries)
+                {
+                    var oldestKey = _seenDeliveries.MinBy(kv => kv.Value).Key;
+                    if (oldestKey != null)
+                    {
+                        _seenDeliveries.Remove(oldestKey);
+                    }
+                }
+            }
+
+            _seenDeliveries[deliveryId] = now;
+            return true;
+        }
+    }
+
+    private void ReleaseDelivery(string deliveryId)
+    {
+        lock (_deliveryLock)
+        {
+            _seenDeliveries.Remove(deliveryId);
+        }
+    }
+
+    private async ValueTask ProcessWorkflowRunCoreAsync(
+        WebhookHeaders headers,
+        WorkflowRunEvent workflowRunEvent,
+        WorkflowRunAction action,
+        CancellationToken cancellationToken)
     {
         if (action != WorkflowRunAction.Completed)
             return;

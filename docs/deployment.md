@@ -298,7 +298,7 @@ Deployments adapting `abaci-bot` to other RPM-based Linux distributions should r
 1. Create every managed label before the first webhook; see
    [labels.md](labels.md#3-creating-labels-upstream).
 2. In the App settings, open **Advanced → Recent Deliveries** and use **Redeliver**.
-   A correctly configured deployment returns 200.
+   A correctly configured deployment returns 200. Note that `X-GitHub-Delivery` deduplication is held in process memory (`10`-minute TTL, `4,096` entries); duplicate redeliveries within that window are skipped immediately, whereas redeliveries after a process restart run once idempotently against live GitHub PR state.
 3. Check `http://<your-host>/health` and open a draft pull request to confirm the
    `Status: New` and workflow labels.
 
@@ -324,7 +324,7 @@ Expected default JSON response (liveness + immutable build/artifact identity):
   "deployment": "container"
 }
 ```
-Pass `?verbose=true` (`curl -f "http://localhost:3456/health?verbose=true"`) for operational diagnostics including `startedAt`, `uptimeSeconds`, `capabilities` (`abiEngine`, `conversationGuardPermission`), `modules` (non-secret enabled/dryRun flags), `runtime` (`lastError`, `lastErrorAt`), and `sources` (per-source snapshots for `Lookout` and `RustCrates`: `status` as `healthy` / `degraded` / `failed` / `disabled`, `lastAttemptAt`, `lastSuccessAt`, `lastCandidateCount`, `consecutiveFailures`, and sanitized `lastError`). External upstream source outages do **not** cause the default liveness probe `GET /health` to return non-200 status (so containers are not restart-looped due to third-party API downtime).
+Pass `?verbose=true` (`curl -f "http://localhost:3456/health?verbose=true"`) for operational diagnostics including `startedAt`, `uptimeSeconds`, `capabilities` (`abiEngine`, `conversationGuardPermission`), `modules` (non-secret enabled/dryRun flags), `runtime` (`lastError`, `lastErrorAt`), and `sources` (per-source snapshots for `Lookout` and `RustCrates`: `status` as `healthy` / `degraded` / `failed` / `disabled`, `lastAttemptAt`, `lastSuccessAt` reflecting only clean `healthy` sweeps and preserved across `degraded`/`failed`, `lastCandidateCount`, `consecutiveFailures`, and sanitized `lastError`). External upstream source outages do **not** cause the default liveness probe `GET /health` to return non-200 status (so containers are not restart-looped due to third-party API downtime).
 Use `./scripts/docker-build.sh` (or `./scripts/docker-build.ps1`) when building the Docker image locally so `GIT_COMMIT` and `GIT_DIRTY` are detected automatically; native `dotnet build`/`dotnet publish` and the release workflow (`github.sha` + `git status --porcelain`) populate `commit` automatically (appending `-dirty` when the working tree has uncommitted changes). Because the OCI registry manifest digest (`sha256:...`) does not exist until after a container image is built and pushed, the release workflow captures `build-and-push.outputs.digest` into a `deployment-manifest.env` artifact (`ABACI_IMAGE_DIGEST`), which you fetch with `gh run download -R openRuyi-Project/abaci-bot --name deployment-manifest --dir .` and pass via `docker compose --env-file deployment-manifest.env up -d` (defaulting to `"unknown"` when omitted). Neither `/health` nor `/health?verbose=true` exposes filesystem paths, environment variables, or secrets.
 
 In verbose mode, `capabilities.abiEngine` reports `native`, `managed`, `unavailable`, or

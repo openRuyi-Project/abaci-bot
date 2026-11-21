@@ -3,6 +3,7 @@ using abaci_bot.Options;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Octokit;
 
 namespace abaci_bot.Services;
 
@@ -14,6 +15,7 @@ namespace abaci_bot.Services;
 public class CveActiveWatchService : BackgroundService
 {
     private readonly IGitHubService _gitHubService;
+    private readonly IPagedIssueSearchGateway? _pagedIssueSearch;
     private readonly IPackageVulnerabilityScanner _scanner;
     private readonly CveActiveWatchOptions _options;
     private readonly ILogger<CveActiveWatchService>? _logger;
@@ -35,7 +37,8 @@ public class CveActiveWatchService : BackgroundService
         IOptions<CveActiveWatchOptions> options,
         ILogger<CveActiveWatchService>? logger = null,
         ISpecCatalog? specCatalog = null,
-        Func<CancellationToken, Task<IReadOnlyList<(string PackageName, string Version)>>>? catalogProvider = null)
+        Func<CancellationToken, Task<IReadOnlyList<(string PackageName, string Version)>>>? catalogProvider = null,
+        IPagedIssueSearchGateway? pagedIssueSearch = null)
     {
         _gitHubService = gitHubService;
         _scanner = scanner;
@@ -43,6 +46,7 @@ public class CveActiveWatchService : BackgroundService
         _logger = logger;
         _specCatalog = specCatalog;
         _catalogProvider = catalogProvider;
+        _pagedIssueSearch = pagedIssueSearch ?? gitHubService as IPagedIssueSearchGateway;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -101,6 +105,12 @@ public class CveActiveWatchService : BackgroundService
                 rateLimit.CoreRemaining.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
             return;
         }
+        if (rateLimit != null && rateLimit.SearchRemaining.HasValue && rateLimit.SearchRemaining < 5)
+        {
+            _logger?.LogWarning("GitHub Search API rate limit remaining ({Remaining}) is low; deferring CVE scan sweep",
+                rateLimit.SearchRemaining.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            return;
+        }
 
         IReadOnlyList<(string PackageName, string Version)> packagesToScan = Array.Empty<(string PackageName, string Version)>();
         var slicedUpstream = false;
@@ -156,29 +166,90 @@ public class CveActiveWatchService : BackgroundService
 
         _logger?.LogInformation("Vulnerability scan identified {Count} packages with outstanding CVEs", findings.Count);
 
-        // 1. Process new or existing findings (Rollup Issue per package)
+        if (findings.Count == 0 && scanResult.SuccessfullyScannedPackages.Count == 0)
+        {
+            return;
+        }
+
+        var issueLabel = !string.IsNullOrWhiteSpace(_options.IssueLabel)
+            ? _options.IssueLabel
+            : GitHubLabels.VulnerabilityDetected;
+
+        IReadOnlyList<Issue> openVulnerabilityIssues;
+        var isIndexTruncated = false;
+        var totalOpenIssues = 0;
+        try
+        {
+            if (_pagedIssueSearch != null)
+            {
+                var pageResult = await _pagedIssueSearch.SearchOpenIssuesByLabelAsync(owner, repo, issueLabel, ct);
+                openVulnerabilityIssues = pageResult.Items;
+                isIndexTruncated = pageResult.IsTruncated;
+                totalOpenIssues = pageResult.TotalCount;
+            }
+            else
+            {
+                openVulnerabilityIssues = await _gitHubService.SearchStaleCandidatesAsync(
+                    owner,
+                    repo,
+                    DateTimeOffset.UtcNow,
+                    isPr: false,
+                    labelFilter: $"label:\"{issueLabel}\" is:issue is:open",
+                    ct: ct);
+                totalOpenIssues = openVulnerabilityIssues.Count;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(
+                ex,
+                "Failed to query existing open vulnerability issues for {Owner}/{Repo}; deferring issue creation and closure to avoid duplicates",
+                owner,
+                repo);
+            return;
+        }
+
+        if (isIndexTruncated)
+        {
+            _logger?.LogWarning(
+                "Open vulnerability issue index truncated in {Owner}/{Repo} ({Retrieved} of {Total} open issues); updating indexed issues and closing resolved indexed issues, while deferring new issue creation to prevent duplicates.",
+                owner, repo, openVulnerabilityIssues.Count, totalOpenIssues);
+        }
+
+        var openIssuesByTitle = new Dictionary<string, Issue>(StringComparer.OrdinalIgnoreCase);
+        foreach (var openIssue in openVulnerabilityIssues)
+        {
+            if (!string.IsNullOrWhiteSpace(openIssue.Title))
+            {
+                openIssuesByTitle.TryAdd(openIssue.Title, openIssue);
+            }
+        }
+
+        // 1. Process new or existing findings (Rollup Issue per package) without per-finding Search API calls
         foreach (var finding in findings)
         {
             if (ct.IsCancellationRequested)
                 break;
 
-            await ProcessPackageFindingAsync(owner, repo, finding, ct);
+            await ProcessPackageFindingAsync(owner, repo, finding, issueLabel, openIssuesByTitle, isIndexTruncated, ct);
         }
 
-        // 2. Pure scan-based auto-close: ONLY check existing open CVE issues whose package was successfully scanned in this sweep
-        await CheckAndCloseResolvedIssuesAsync(owner, repo, scanResult.SuccessfullyScannedPackages, vulnerablePackages, ct);
+        // 2. Pure scan-based auto-close: reuse the pre-fetched index so resolved checks emit zero extra Search API calls
+        await CheckAndCloseResolvedIssuesAsync(owner, repo, issueLabel, openVulnerabilityIssues, scanResult.SuccessfullyScannedPackages, vulnerablePackages, ct);
     }
 
     private async Task ProcessPackageFindingAsync(
-        string owner, string repo, PackageVulnerabilityFinding finding, CancellationToken ct)
+        string owner,
+        string repo,
+        PackageVulnerabilityFinding finding,
+        string issueLabel,
+        IReadOnlyDictionary<string, Issue> openIssuesByTitle,
+        bool isIndexTruncated,
+        CancellationToken ct)
     {
         var issueTitle = $"[Security] Outstanding CVEs detected in {finding.PackageName}";
         var body = GenerateIssueBody(finding);
         var maxSeverity = CalculateMaxSeverity(finding.DetailedReports);
-
-        var issueLabel = !string.IsNullOrWhiteSpace(_options.IssueLabel)
-            ? _options.IssueLabel
-            : GitHubLabels.VulnerabilityDetected;
 
         var labels = new List<string>
         {
@@ -192,10 +263,7 @@ public class CveActiveWatchService : BackgroundService
 
         try
         {
-            var openIssues = await _gitHubService.SearchStaleCandidatesAsync(
-                owner, repo, DateTimeOffset.UtcNow, isPr: false, labelFilter: $"\"{issueTitle}\" is:issue is:open", ct: ct);
-
-            var existingIssue = openIssues.FirstOrDefault(i => string.Equals(i.Title, issueTitle, StringComparison.OrdinalIgnoreCase));
+            openIssuesByTitle.TryGetValue(issueTitle, out var existingIssue);
 
             if (existingIssue != null)
             {
@@ -228,6 +296,12 @@ public class CveActiveWatchService : BackgroundService
                     await _gitHubService.AddLabelsAsync(owner, repo, existingIssue.Number, labels.ToArray(), ct);
                 }
             }
+            else if (isIndexTruncated)
+            {
+                _logger?.LogWarning(
+                    "Deferring new vulnerability issue creation for {Package} because the open issue index was truncated.",
+                    finding.PackageName);
+            }
             else
             {
                 _logger?.LogInformation("Creating new vulnerability issue for {Package} ({Count} CVEs, {Severity})",
@@ -246,13 +320,16 @@ public class CveActiveWatchService : BackgroundService
     }
 
     private async Task CheckAndCloseResolvedIssuesAsync(
-        string owner, string repo, IReadOnlySet<string> successfullyScannedPackages, Dictionary<string, PackageVulnerabilityFinding> currentVulnerabilities, CancellationToken ct)
+        string owner,
+        string repo,
+        string issueLabel,
+        IReadOnlyList<Issue> openVulnerabilityIssues,
+        IReadOnlySet<string> successfullyScannedPackages,
+        Dictionary<string, PackageVulnerabilityFinding> currentVulnerabilities,
+        CancellationToken ct)
     {
         try
         {
-            var openVulnerabilityIssues = await _gitHubService.SearchStaleCandidatesAsync(
-                owner, repo, DateTimeOffset.UtcNow, isPr: false, labelFilter: $"label:\"{GitHubLabels.VulnerabilityDetected}\" is:issue is:open", ct: ct);
-
             foreach (var issue in openVulnerabilityIssues)
             {
                 if (ct.IsCancellationRequested)
@@ -277,7 +354,7 @@ public class CveActiveWatchService : BackgroundService
                     {
                         var resolutionComment = "All previously detected CVE vulnerabilities have been resolved in the current package version. Closing issue.";
                         await _gitHubService.CreateCommentAsync(owner, repo, issue.Number, resolutionComment, ct);
-                        await _gitHubService.RemoveLabelAsync(owner, repo, issue.Number, GitHubLabels.VulnerabilityDetected, ct);
+                        await _gitHubService.RemoveLabelAsync(owner, repo, issue.Number, issueLabel, ct);
                         await _gitHubService.AddLabelsAsync(owner, repo, issue.Number, new[] { GitHubLabels.VulnerabilityResolved }, ct);
                         await _gitHubService.CloseIssueAsync(owner, repo, issue.Number, ct);
                     }

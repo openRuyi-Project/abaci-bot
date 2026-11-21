@@ -57,6 +57,11 @@ public class PackageUpdateOptionsValidator : IValidateOptions<PackageUpdateOptio
             failures.Add($"{nameof(options.RequestThrottleMilliseconds)} cannot be negative (got {options.RequestThrottleMilliseconds}).");
         }
 
+        if (options.MaxArchiveBytes < 0)
+        {
+            failures.Add($"{nameof(options.MaxArchiveBytes)} cannot be negative (got {options.MaxArchiveBytes}).");
+        }
+
         if (string.IsNullOrWhiteSpace(options.TargetRepository) || options.TargetRepository.Split('/').Length != 2)
         {
             failures.Add($"{nameof(options.TargetRepository)} must be in 'owner/repo' format (got '{options.TargetRepository}').");

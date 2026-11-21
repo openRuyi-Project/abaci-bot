@@ -12,15 +12,17 @@ Incoming GitHub webhook events are authenticated, parsed, and dispatched through
 flowchart TD
     GH["GitHub Webhook Event<br>(HMAC-SHA256 Signed)"] --> Kestrel["Kestrel Web Server<br>(Port 3456)"]
     Kestrel --> MW["Webhook Verification & Routing<br>(Octokit.Webhooks)"]
-    MW --> Lock["PullRequestLockManager<br>(Per-PR In-Memory FIFO Lock)"]
+    MW --> Dedup["Delivery Dedup<br>(X-GitHub-Delivery 10m TTL / 4096)"]
+    Dedup --> Lock["PullRequestLockManager<br>(Per-PR In-Memory FIFO Lock)"]
     Lock --> Ctx["PullRequestContext Assembly<br>(Labels, Files, Commits, Sender)"]
     Ctx --> Pipe["PullRequestPipeline<br>(Priority Ordered Modules)"]
     Pipe --> Mutex["LabelMutexEngine<br>(Conflict Resolution & Stripping)"]
     Mutex --> Sync["GitHub Reconciler<br>(Batched Label Add/Remove & Comments)"]
 ```
 
-### Locking Strategy
-To prevent race conditions during rapid event arrivals (such as push batches, synchronized reviews, or automated bots), `PullRequestLockManager` guarantees serialized execution per PR using keyed async semaphore locks (`owner/repo#prNumber`).
+### Delivery Deduplication & Locking Strategy
+- **Webhook Delivery Deduplication**: `GitHubWebhookProcessor` tracks processed `X-GitHub-Delivery` UUIDs in an in-memory bounded cache (`10`-minute TTL, max `4,096` entries, evicting expired/oldest entries). Duplicate webhook redeliveries within the TTL window are skipped immediately; unhandled exceptions release the claim so legitimate GitHub retries still run. Because this cache is process-local (guarded by `bot-state.lock` single-instance exclusivity), redeliveries arriving after a process restart execute once idempotently against authoritative remote state.
+- **Locking Strategy**: To prevent race conditions during rapid event arrivals (such as push batches, synchronized reviews, or automated bots), `PullRequestLockManager` guarantees serialized execution per PR using keyed async semaphore locks (`owner/repo#prNumber`).
 
 ---
 

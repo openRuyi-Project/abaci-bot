@@ -107,7 +107,7 @@ public sealed partial class RuntimeHealthState
                 "degraded" => new SourceHealthSnapshot(
                     Status: "degraded",
                     LastAttemptAt: now,
-                    LastSuccessAt: now,
+                    LastSuccessAt: previous?.LastSuccessAt,
                     LastCandidateCount: candidateCount,
                     ConsecutiveFailures: (previous?.ConsecutiveFailures ?? 0) + 1,
                     LastError: sanitizedError ?? previous?.LastError),

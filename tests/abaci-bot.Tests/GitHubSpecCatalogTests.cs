@@ -270,6 +270,75 @@ public class GitHubSpecCatalogTests
         await gitHubMock.Received(1).GetFileContentAsync("owner", "repo", "SPECS/zlib/zlib.spec", "main", Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task TarballCatalog_WhenArchiveExceedsMaxArchiveBytes_FallsBackToGitTree()
+    {
+        var oversizedTarball = BuildTarGz(new[]
+        {
+            ("owner-repo-sha/SPECS/zlib/zlib.spec", "Name: zlib\nVersion: 1.3.1\n")
+        });
+        Assert.True(oversizedTarball.Length > 10);
+
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var archiveGateway = Substitute.For<IRepositoryArchiveGateway>();
+        archiveGateway.GetRepositoryTarballAsync("owner", "repo", "main", Arg.Any<CancellationToken>())
+            .Returns(oversizedTarball);
+
+        var treeItem = (TreeItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeItem));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Type))?.SetValue(treeItem, new StringEnum<TreeType>(TreeType.Blob));
+        typeof(TreeItem).GetProperty(nameof(TreeItem.Path))?.SetValue(treeItem, "SPECS/zlib/zlib.spec");
+
+        var treeResponse = (TreeResponse)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(TreeResponse));
+        typeof(TreeResponse).GetProperty(nameof(TreeResponse.Tree))?.SetValue(treeResponse, new List<TreeItem> { treeItem });
+
+        gitHubMock.GetTreeRecursiveAsync("owner", "repo", "main", Arg.Any<CancellationToken>())
+            .Returns(treeResponse);
+        gitHubMock.GetFileContentAsync("owner", "repo", "SPECS/zlib/zlib.spec", "main", Arg.Any<CancellationToken>())
+            .Returns("Name: zlib\nVersion: 1.3.1\n");
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            TargetRepository = "owner/repo",
+            MaxArchiveBytes = 10
+        });
+
+        using var catalog = new GitHubSpecCatalog(gitHubMock, options, archiveGateway: archiveGateway);
+        var spec = await catalog.GetSpecAsync("zlib");
+
+        Assert.NotNull(spec);
+        Assert.Contains("1.3.1", spec!.Content, StringComparison.Ordinal);
+        await archiveGateway.Received(1).GetRepositoryTarballAsync("owner", "repo", "main", Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).GetTreeRecursiveAsync("owner", "repo", "main", Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).GetFileContentAsync("owner", "repo", "SPECS/zlib/zlib.spec", "main", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task EnsureCatalogLoadedAsync_WhenRefreshFails_AppliesBackoffWithoutRepeatedDownloads()
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var archiveGateway = Substitute.For<IRepositoryArchiveGateway>();
+        archiveGateway.GetRepositoryTarballAsync("owner", "repo", "main", Arg.Any<CancellationToken>())
+            .Returns<Task<byte[]?>>(_ => throw new HttpRequestException("tarball unavailable"));
+        gitHubMock.GetTreeRecursiveAsync("owner", "repo", "main", Arg.Any<CancellationToken>())
+            .Returns<Task<TreeResponse?>>(_ => throw new HttpRequestException("tree API unavailable"));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            TargetRepository = "owner/repo"
+        });
+
+        using var catalog = new GitHubSpecCatalog(gitHubMock, options, archiveGateway: archiveGateway);
+
+        for (int i = 0; i < 5; i++)
+        {
+            Assert.Null(await catalog.GetSpecAsync($"pkg-{i}"));
+        }
+
+        // Backoff prevents 5 consecutive failed refreshes from hammering tarball/tree endpoints
+        await archiveGateway.Received(1).GetRepositoryTarballAsync("owner", "repo", "main", Arg.Any<CancellationToken>());
+        await gitHubMock.Received(1).GetTreeRecursiveAsync("owner", "repo", "main", Arg.Any<CancellationToken>());
+    }
+
     private static byte[] BuildTarGz(IEnumerable<(string Path, string Content)> entries)
     {
         using var output = new MemoryStream();
