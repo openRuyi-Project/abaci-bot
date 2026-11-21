@@ -262,4 +262,78 @@ public interface IGitHubService
     /// </summary>
     Task EnsureLabelsExistAsync(
         string owner, string repo, IEnumerable<(string Name, string Color, string Description)> labels, CancellationToken ct = default);
+
+    /// <summary>
+    /// Retrieves all milestones configured for the repository.
+    /// </summary>
+    Task<IReadOnlyList<Milestone>> GetMilestonesAsync(
+        string owner, string repo, ItemStateFilter state = ItemStateFilter.All, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates a new milestone in the repository.
+    /// </summary>
+    Task<Milestone> CreateMilestoneAsync(
+        string owner, string repo, string title, DateTimeOffset? dueOn = null, string? description = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates an existing milestone in the repository.
+    /// </summary>
+    Task<Milestone> UpdateMilestoneAsync(
+        string owner, string repo, int milestoneNumber, string title, DateTimeOffset? dueOn = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Sets or removes the milestone of an issue or pull request.
+    /// Pass <c>null</c> to remove milestone assignment.
+    /// </summary>
+    Task SetIssueMilestoneAsync(
+        string owner, string repo, int issueNumber, int? milestoneNumber, CancellationToken ct = default);
+
+    /// <summary>
+    /// Searches merged pull requests in the repository that currently have no milestone assigned.
+    /// </summary>
+    Task<GitHubSearchPageResult<Issue>> SearchMergedPullRequestsWithoutMilestoneAsync(
+        string owner, string repo, DateTimeOffset mergedAfter, CancellationToken ct = default);
+
+    /// <summary>
+    /// Locks an issue or pull request with a specified lock reason (default: <see cref="LockReason.TooHeated"/>).
+    /// </summary>
+    Task LockIssueAsync(
+        string owner, string repo, int issueNumber, LockReason? lockReason = LockReason.TooHeated, CancellationToken ct = default);
+
+    /// <summary>
+    /// Unlocks an issue or pull request. Idempotent: ignores errors if the issue is not locked.
+    /// </summary>
+    Task UnlockIssueAsync(
+        string owner, string repo, int issueNumber, CancellationToken ct = default);
+
+    /// <summary>
+    /// Checks whether an issue or pull request is currently locked.
+    /// </summary>
+    Task<bool> IsIssueLockedAsync(
+        string owner, string repo, int issueNumber, CancellationToken ct = default);
+
+    /// <summary>
+    /// Minimizes (hides/folds) an issue or pull request comment using GraphQL minimizeComment mutation.
+    /// Returns <c>true</c> if the comment was minimized; <c>false</c> if the node ID was unavailable or the mutation failed.
+    /// </summary>
+    Task<bool> MinimizeCommentAsync(
+        string owner, string repo, long commentId, string? subjectNodeId = null, string classifier = "SPAM", CancellationToken ct = default);
+
+    /// <summary>
+    /// Archives a pull request using GraphQL archivePullRequest mutation, removing it from public view.
+    /// </summary>
+    Task ArchivePullRequestAsync(
+        string owner, string repo, int prNumber, string? pullRequestNodeId = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Unarchives a pull request using GraphQL unarchivePullRequest mutation.
+    /// </summary>
+    Task UnarchivePullRequestAsync(
+        string owner, string repo, int prNumber, string? pullRequestNodeId = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Searches closed pull requests in the repository that were closed prior to <paramref name="closedBefore"/>.
+    /// </summary>
+    Task<GitHubSearchPageResult<Issue>> SearchClosedPullRequestsAsync(
+        string owner, string repo, DateTimeOffset closedBefore, CancellationToken ct = default);
 }

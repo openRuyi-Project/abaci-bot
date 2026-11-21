@@ -21,9 +21,11 @@ flowchart TD
     Repodata --> Calc["Compute Transitive Reverse Dependencies"]
     Calc --> Tier["Assign Rebuild: Tier (0 to 5001+)"]
     Tier --> TargetCheck{"Target is Rolling AND Count >= BlockThreshold?"}
-    TargetCheck -- Yes --> Block["Add Workflow: Blocked<br>Post Impact Summary Comment"]
+    TargetCheck -- Yes --> Orchestrator["IRebuildVerificationOrchestrator<br>(Interim: Manual OBS Guide + Workflow: Blocked)"]
     TargetCheck -- No --> Pass["Maintain Existing Workflow State"]
 ```
+
+`RebuildImpactModule` delegates gate enforcement and verification workflows through `IRebuildVerificationOrchestrator` (defaulting to `ManualGuideRebuildVerificationOrchestrator`), which returns a `RebuildVerificationResult` carrying a lifecycle `RebuildVerificationState` (`ManualVerificationRequired`, `Pending`, `Passed`, or `Failed`) and an optional `TrackingUrl`. This keeps `IObsBuildService` read-only while leaving a clean extension seam for future bot-driven OBS reverse-dependency automation.
 
 ---
 
@@ -58,6 +60,7 @@ Configured under the `RebuildImpact` JSON section:
 | `MaxDepth` | `int?` | `null` | Optional ceiling for dependency traversal depth (null is unlimited). |
 | `BlockThreshold` | `int` | `1001` | Dependent package count threshold triggering `Workflow: Blocked`. |
 | `TargetBranchToBlock` | `string` | `"Rolling"` | Release stream subject to rebuild blocking (`"Rolling"` or `"LTS"`). |
+| `VerificationGuideLinks` | `VerificationReferenceLink[]` | `[]` | Max 5 unique `http`/`https` links (`Title`, optional `TitleZh`, `Url`) | Optional "See also" reference links appended below the self-contained OBS reverse-dependency guidance comment; empty emits no external links. |
 
 ---
 
@@ -65,6 +68,9 @@ Configured under the `RebuildImpact` JSON section:
 
 - **Missing Repodata**: If the repository primary metadata is not configured or unavailable, the module logs a warning and leaves all `Rebuild:` labels unchanged. It does not assume `Rebuild: 0`.
 - **Cycle Detection**: The transitive traversal algorithm maintains visited sets to prevent infinite loops in cyclic dependencies.
+- **Invalid Configuration Fail-Fast**: `RebuildImpactOptionsValidator` rejects non-positive intervals, negative block thresholds, invalid `CalculationMode` values, and malformed `VerificationGuideLinks` entries (more than 5 links, blank/multiline/overlong titles, non-HTTP/HTTPS URLs, or duplicate normalized URLs) at startup.
+- **Trusted Maintainer Configuration**: `VerificationGuideLinks` comes from maintainer-owned `appsettings.json` (trusted configuration); validation enforces structural bounds while rendering applies minimal link-bracket/newline escaping without over-restricting maintainer-authored titles or URLs.
+- **Automated OBS Boundary & State Contract**: `RebuildImpactModule` is stateless with respect to verification lifecycle — persistence, TTLs, restart recovery, retry policies, and manual overrides belong to future automated `IRebuildVerificationOrchestrator` implementations. `ManualVerificationRequired` suppresses duplicate advisory comments when `Workflow: Blocked` is already present, whereas `Pending`/`Failed` transitions post any non-null `AdvisoryComment` updates. Only `RebuildVerificationState.Passed` clears `Workflow: Blocked`.
 
 ---
 
@@ -76,7 +82,8 @@ Configured under the `RebuildImpact` JSON section:
     "Enabled": true,
     "BlockThreshold": 1001,
     "TargetBranchToBlock": "Rolling",
-    "CalculationMode": "Transitive"
+    "CalculationMode": "Transitive",
+    "VerificationGuideLinks": []
   }
 }
 ```
@@ -87,3 +94,4 @@ Configured under the `RebuildImpact` JSON section:
 
 - `tests/abaci-bot.Tests/RebuildImpactModuleTests.cs`
 - `tests/abaci-bot.Tests/RebuildMetadataRefreshServiceTests.cs`
+- `tests/abaci-bot.Tests/RebuildImpactOptionsValidatorTests.cs`

@@ -158,7 +158,8 @@ public class GitHubPackageUpdatePublisherTests
         Assert.Contains("- [ ] I have read the [AI-Assisted Contribution Policy]", body);
         Assert.Contains("## Checklist", body);
         Assert.Contains("- [x] Package version updated in spec file", body);
-        Assert.Contains("如需停止本包的自动更新，请在 SPEC 文件头部加入 `#!NoAutoUpdate: <reason>`", body);
+        Assert.Contains("To pause automated updates for this package, add `#!NoAutoUpdate: <reason>` to the SPEC file header.", body);
+        Assert.DoesNotContain("如需停止", body);
     }
 
     [Fact]

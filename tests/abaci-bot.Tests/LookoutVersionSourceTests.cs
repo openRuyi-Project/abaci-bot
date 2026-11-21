@@ -200,22 +200,34 @@ public class LookoutVersionSourceTests
         });
 
         var httpClient = new HttpClient(handler);
-        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        var statePath = Path.Combine(Path.GetTempPath(), $"lookout-maxpages-{Guid.NewGuid():N}.json");
+        try
         {
-            Lookout = new LookoutUpdateOptions
+            var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
             {
-                Enabled = true,
-                BaseUrl = "https://lookout.openruyi.cn",
-                StaleThresholdHours = 48
+                Lookout = new LookoutUpdateOptions
+                {
+                    Enabled = true,
+                    BaseUrl = "https://lookout.openruyi.cn",
+                    StaleThresholdHours = 48,
+                    FirstSeenStatePath = statePath
+                }
+            });
+
+            var source = new LookoutVersionSource(httpClient, options);
+            var candidates = await source.GetCandidatesAsync();
+
+            // Must stop at maxPages = 50
+            Assert.Equal(50, requestCount);
+            Assert.Equal(50 * 200, candidates.Count);
+        }
+        finally
+        {
+            if (File.Exists(statePath))
+            {
+                File.Delete(statePath);
             }
-        });
-
-        var source = new LookoutVersionSource(httpClient, options);
-        var candidates = await source.GetCandidatesAsync();
-
-        // Must stop at maxPages = 50
-        Assert.Equal(50, requestCount);
-        Assert.Equal(50 * 200, candidates.Count);
+        }
     }
 
     [Fact]
@@ -262,6 +274,169 @@ public class LookoutVersionSourceTests
         });
         var sourceBadJson = new LookoutVersionSource(new HttpClient(handlerBadJson), options);
         Assert.Empty(await sourceBadJson.GetCandidatesAsync());
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_PersistsFirstSeenAcrossRestarts_AndResetsOnVersionChangeOrPrune()
+    {
+        var statePath = Path.Combine(Path.GetTempPath(), $"lookout-state-{Guid.NewGuid():N}.json");
+        var firstObserved = new DateTimeOffset(2026, 11, 17, 10, 0, 0, TimeSpan.Zero);
+        var laterPoll = new DateTimeOffset(2026, 11, 20, 12, 0, 0, TimeSpan.Zero);
+        var currentPoll = firstObserved;
+        var currentLatest = "2.0.0";
+        var includePkg = true;
+
+        var handler = new FakeHttpMessageHandler(_ =>
+        {
+            object[] items = includePkg
+                ? new object[]
+                {
+                    new
+                    {
+                        name = "dnf5",
+                        monitors = new
+                        {
+                            version = new
+                            {
+                                data = new
+                                {
+                                    current = "1.0.0",
+                                    latest = currentLatest,
+                                    last_known_relation = "outdated",
+                                    stale = false,
+                                    updated_at = currentPoll
+                                }
+                            }
+                        }
+                    }
+                }
+                : Array.Empty<object>();
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new { items }), System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Lookout = new LookoutUpdateOptions
+            {
+                Enabled = true,
+                BaseUrl = "https://lookout.openruyi.cn",
+                FirstSeenStatePath = statePath
+            }
+        });
+
+        try
+        {
+            // 1. First instance observes dnf5@2.0.0 at firstObserved
+            var source1 = new LookoutVersionSource(new HttpClient(handler), options);
+            var c1 = await source1.GetCandidatesAsync();
+            Assert.Single(c1);
+            Assert.Equal(firstObserved, c1[0].PublishedAt);
+            Assert.True(File.Exists(statePath));
+
+            // 2. Simulated process restart with newer Lookout updated_at -> must preserve firstObserved
+            currentPoll = laterPoll;
+            var source2 = new LookoutVersionSource(new HttpClient(handler), options);
+            var c2 = await source2.GetCandidatesAsync();
+            Assert.Single(c2);
+            Assert.Equal(firstObserved, c2[0].PublishedAt);
+
+            // 3. New target version -> resets firstSeen to laterPoll
+            currentLatest = "2.1.0";
+            var c3 = await source2.GetCandidatesAsync();
+            Assert.Single(c3);
+            Assert.Equal(laterPoll, c3[0].PublishedAt);
+
+            // 4. Full sweep without dnf5 -> prunes dnf5 from persisted state
+            includePkg = false;
+            Assert.Empty(await source2.GetCandidatesAsync());
+
+            var source3 = new LookoutVersionSource(new HttpClient(handler), options);
+            includePkg = true;
+            var newerPoll = laterPoll.AddHours(2);
+            currentPoll = newerPoll;
+            var c4 = await source3.GetCandidatesAsync();
+            Assert.Single(c4);
+            Assert.Equal(newerPoll, c4[0].PublishedAt);
+        }
+        finally
+        {
+            if (File.Exists(statePath))
+            {
+                File.Delete(statePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_PrefersUpstreamPublishedAt_AndHandlesCorruptStateFile()
+    {
+        var statePath = Path.Combine(Path.GetTempPath(), $"lookout-corrupt-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(statePath, "{ corrupt json !!!");
+
+        var upstreamPublishedAt = new DateTimeOffset(2026, 11, 10, 0, 0, 0, TimeSpan.Zero);
+        var pollTime = new DateTimeOffset(2026, 11, 20, 12, 0, 0, TimeSpan.Zero);
+
+        var handler = new FakeHttpMessageHandler(_ =>
+        {
+            var payload = new
+            {
+                items = new object[]
+                {
+                    new
+                    {
+                        name = "etcd",
+                        monitors = new
+                        {
+                            version = new
+                            {
+                                data = new
+                                {
+                                    current = "3.7.2",
+                                    latest = "3.7.4",
+                                    last_known_relation = "outdated",
+                                    stale = false,
+                                    updated_at = pollTime,
+                                    published_at = upstreamPublishedAt
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            Lookout = new LookoutUpdateOptions
+            {
+                Enabled = true,
+                BaseUrl = "https://lookout.openruyi.cn",
+                FirstSeenStatePath = statePath
+            }
+        });
+
+        try
+        {
+            var source = new LookoutVersionSource(new HttpClient(handler), options);
+            var candidates = await source.GetCandidatesAsync();
+            Assert.Single(candidates);
+            Assert.Equal(upstreamPublishedAt, candidates[0].PublishedAt);
+        }
+        finally
+        {
+            if (File.Exists(statePath))
+            {
+                File.Delete(statePath);
+            }
+        }
     }
 }
 

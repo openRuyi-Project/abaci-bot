@@ -17,7 +17,7 @@ public partial class RebuildImpactModule : IPullRequestModule
 {
     private readonly IRpmDependencyService _dependencyService;
     private readonly RebuildImpactOptions _options;
-    private readonly IGovernanceCommentFormatter _formatter;
+    private readonly IRebuildVerificationOrchestrator _verificationOrchestrator;
     private readonly ILogger<RebuildImpactModule>? _logger;
 
     public string ModuleName => nameof(RebuildImpactModule);
@@ -44,12 +44,12 @@ public partial class RebuildImpactModule : IPullRequestModule
     public RebuildImpactModule(
         IRpmDependencyService dependencyService,
         IOptions<RebuildImpactOptions> options,
-        IGovernanceCommentFormatter? formatter = null,
+        IRebuildVerificationOrchestrator verificationOrchestrator,
         ILogger<RebuildImpactModule>? logger = null)
     {
-        _dependencyService = dependencyService;
-        _options = options.Value;
-        _formatter = formatter ?? new GovernanceCommentFormatter();
+        _dependencyService = dependencyService ?? throw new ArgumentNullException(nameof(dependencyService));
+        _options = (options ?? throw new ArgumentNullException(nameof(options))).Value;
+        _verificationOrchestrator = verificationOrchestrator ?? throw new ArgumentNullException(nameof(verificationOrchestrator));
         _logger = logger;
     }
 
@@ -160,30 +160,62 @@ public partial class RebuildImpactModule : IPullRequestModule
 
         if (totalCount >= _options.BlockThreshold && isRollingTarget)
         {
-            context.LabelsToAdd.Add(GitHubLabels.WorkflowBlocked);
+            var verificationRequest = new RebuildVerificationRequest(
+                context.Owner,
+                context.Repo,
+                context.PrNumber,
+                context.HeadSha,
+                targetBranch,
+                changedPackages.ToList(),
+                totalCount,
+                _options.BlockThreshold,
+                context.PreferredLocale);
 
-            if (!context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked))
+            var outcome = await _verificationOrchestrator.RequestVerificationAsync(verificationRequest, cancellationToken);
+            if (outcome.ShouldBlockMerge)
             {
-                var report = _formatter.FormatRebuildGateBlocked(
-                    changedPackages.ToList(),
-                    totalCount,
-                    _options.BlockThreshold,
-                    targetBranch);
+                context.LabelsToAdd.Add(GitHubLabels.WorkflowBlocked);
 
-                context.PendingComments.Add(report);
+                var suppressDuplicateManualGuide =
+                    outcome.State == RebuildVerificationState.ManualVerificationRequired &&
+                    context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked);
+
+                if (!suppressDuplicateManualGuide &&
+                    !string.IsNullOrWhiteSpace(outcome.AdvisoryComment))
+                {
+                    context.PendingComments.Add(outcome.AdvisoryComment);
+                }
+
+                _logger?.LogWarning(
+                    "PR #{PrNumber} blocked due to excessive rebuild impact ({Count} >= {Threshold}, verification state: {State}, tracking: {TrackingUrl}).",
+                    context.PrNumber, totalCount, _options.BlockThreshold, outcome.State, outcome.TrackingUrl ?? "none");
             }
-            _logger?.LogWarning("PR #{PrNumber} blocked due to excessive rebuild impact ({Count} >= {Threshold}).",
-                context.PrNumber, totalCount, _options.BlockThreshold);
+            else
+            {
+                RemoveRebuildBlockIfPresent(context);
+
+                if (!string.IsNullOrWhiteSpace(outcome.AdvisoryComment))
+                {
+                    context.PendingComments.Add(outcome.AdvisoryComment);
+                }
+
+                _logger?.LogInformation(
+                    "PR #{PrNumber} cleared rebuild impact gate ({Count} >= {Threshold}, verification state: {State}, tracking: {TrackingUrl}).",
+                    context.PrNumber, totalCount, _options.BlockThreshold, outcome.State, outcome.TrackingUrl ?? "none");
+            }
         }
         else
         {
-            // Only unblock if this PR was previously blocked by this module (i.e. carried a blocking rebuild tier)
-            var hadRebuildBlock = context.ExistingLabels.Any(l => IsBlockingRebuildLabel(l, _options.BlockThreshold));
+            RemoveRebuildBlockIfPresent(context);
+        }
+    }
 
-            if (hadRebuildBlock && context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked))
-            {
-                context.LabelsToRemove.Add(GitHubLabels.WorkflowBlocked);
-            }
+    private void RemoveRebuildBlockIfPresent(PullRequestContext context)
+    {
+        var hadRebuildBlock = context.ExistingLabels.Any(l => IsBlockingRebuildLabel(l, _options.BlockThreshold));
+        if (hadRebuildBlock && context.ExistingLabels.Contains(GitHubLabels.WorkflowBlocked))
+        {
+            context.LabelsToRemove.Add(GitHubLabels.WorkflowBlocked);
         }
     }
 

@@ -42,6 +42,9 @@ Each module implements `IPullRequestModule` with a fixed integer priority. Modul
 | **70** | `VulnerabilityModule` | Scans the pull request title and body for CVE references, querying OSV and NVD to apply severity and lifecycle labels. | `pull_request.opened`, `pull_request.edited`, `pull_request.synchronize`, `pull_request.ready_for_review`, `pull_request.reopened`, `pull_request.closed` |
 | **80** | `RebuildImpactModule` | Evaluates transitive reverse build dependencies via RPM repodata and applies `Rebuild:` tiers. Blocks PR if impact exceeds threshold. | `pull_request.opened`, `pull_request.synchronize`, `pull_request.reopened`, `pull_request.ready_for_review`, `pull_request.edited` |
 | **85** | `AbiComplianceModule` | Compares compiled RPM packages against baseline stable builds using Libabigail `abipkgdiff`. | `workflow_run.completed` |
+| **90** | `MilestoneSyncModule` | Assigns merged pull requests without milestone to monthly release milestone (YYYY.MM); auto-creates missing milestone. | `pull_request.closed` |
+| **95** | `ConversationGuardModule` | Processes moderation mention commands (`@<bot> lock`, `unlock`, `hide`, `archive`) in issue comments. | `issue_comment.created` |
+| **96** | `BotControlPlaneModule` | Processes package control-plane commands (`@<bot> ignore`, `unignore`, `status`) and user language preferences (`@<bot> lang`). | `issue_comment.created` |
 
 ---
 
@@ -70,6 +73,10 @@ In addition to event-driven webhook processing, `abaci-bot` hosts background ser
 - Enforces the deployment gate: aborts startup if native tools are missing and `AllowManagedFallback == false`.
 - Detects RPM v6 payload extraction capability.
 
+### ConversationGuardPermissionProbe
+- Runs at startup when `ConversationGuard:Enabled == true` to verify collaborator endpoint access across `ConversationGuard:RepositoryAllowList`.
+- Enforces the community governance permission gate: aborts startup if the GitHub App lacks `Administration: Read-only` (or `Contents: Read & write`) required to query `triage`/`write`+ collaborator permissions.
+
 ### StaleLifecycleService
 - Scans monitored repositories for inactive issues and pull requests.
 - Applies `Status: Stale` after `StaleDays` of inactivity and closes items after `CloseDays` unless exempted by `Status: stale-exempt` or protected labels.
@@ -93,12 +100,28 @@ In addition to event-driven webhook processing, `abaci-bot` hosts background ser
 - Dispatches serialized requests to stay within rate limits and caches package vulnerability findings.
 - Creates and reconciles prioritized security tracking issues carrying `Vulnerability: Detected`, severity labels, and `Status: stale-exempt`.
 
+### MilestoneBackfillSweepService
+- Periodically scans historical merged pull requests within `BackfillDays` lacking an assigned milestone.
+- Resolves the monthly release milestone (`YYYY.MM`) based on merge date and assigns it to unassigned PRs.
+
+### LockSweepService
+- Periodically scans closed pull requests where `closed_at` exceeds `InactiveCloseDays`.
+- Locks discussions with reason `TooHeated` to prevent post-closure harassment on historic pull requests.
+
+### EphemeralReplyService
+- Owns the full lifecycle of ephemeral bot replies (usage hints, permission denials, and author confirmation prompts).
+- Captures both the exact GitHub comment ID and GraphQL node ID at creation time, persists scheduled cleanup timestamps in `bot-state.json` (respecting `AuthorLockConfirmTimeoutMinutes` for confirmation prompts and `BotState:EphemeralReplyDeleteMinutes` for usage/rejection replies), and executes the configured `BotState:EphemeralReplyAction` (`Delete` or `Minimize` as `OUTDATED`) with bounded retries and `NotFoundException` idempotency.
+
 ---
 
 ## 5. Technical Debt & Interface Evolution
 
 ### Monolithic `IGitHubService` Facade
-- **Current State**: `IGitHubService` acts as a monolithic repository-wide facade providing over 30 API methods across pull requests, issues, labels, workflows, artifacts, and git references.
-- **Rationale**: Preserved across existing governance modules to prevent wide-scale churn and maintain interface stability.
+- **Current State**: `IGitHubService` acts as a monolithic repository-wide facade providing over 40 API methods across pull requests, issues, labels, workflows, artifacts, and git references. `IRepositoryPermissionService` is extracted as the first narrow, domain-focused port for repository collaborator permission checks.
+- **Rationale**: Preserved across existing governance modules to prevent wide-scale churn and maintain interface stability while gradually carving out domain ports for new capabilities.
 - **Future Roadmap**: Introduce narrow, domain-focused port interfaces (e.g. `IPackageUpdateGitHubClient`, `IStaleGitHubClient`, `IWorkflowGateGitHubClient`) backed by modular adapter implementations.
 - **Review Trigger**: Re-evaluate and split into domain-specific clients prior to introducing new GitHub API write mutations or during the next major architectural refactoring milestone.
+
+### OBS Verification Automation Boundary
+- **Current Stage**: `IObsBuildService` remains a strictly read-only `/public` query abstraction used for post-merge verification (`ObsPostMergeVerifier`). When a PR triggers the high-impact rebuild gate, `RebuildImpactModule` delegates to `IRebuildVerificationOrchestrator`, whose default `ManualGuideRebuildVerificationOrchestrator` implementation returns `RebuildVerificationState.ManualVerificationRequired` (`Workflow: Blocked`) and directs contributors to isolated OBS personal-subproject reverse-dependency verification with optional configured `See also` references (`RebuildImpact:VerificationGuideLinks`).
+- **Next Stage Boundary**: Automated bot-driven OBS verification (subproject creation, `linkedbuild="localdep"`, credentials, lifecycle cleanup, and architecture matrices) belongs to a separate phase and is intentionally excluded from `IObsBuildService`. It integrates by registering a new `IRebuildVerificationOrchestrator` implementation returning `Pending`, `Passed`, or `Failed` states (with optional `TrackingUrl`) without altering `RebuildImpactModule`.

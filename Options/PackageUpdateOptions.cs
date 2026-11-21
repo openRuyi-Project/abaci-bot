@@ -64,6 +64,12 @@ public class LookoutUpdateOptions
     public string BaseUrl { get; set; } = "https://lookout.openruyi.cn";
 
     public int StaleThresholdHours { get; set; } = 48;
+
+    /// <summary>
+    /// Optional path to the JSON file used to persist first-observed timestamps for Lookout candidates across restarts.
+    /// When empty, defaults to <c>lookout-first-seen.json</c> under the local application data directory.
+    /// </summary>
+    public string FirstSeenStatePath { get; set; } = string.Empty;
 }
 
 public class RustCratePollerOptions

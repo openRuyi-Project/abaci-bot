@@ -17,6 +17,8 @@ public class LookoutVersionSource : IUpdateCandidateSource
     private readonly HttpClient _httpClient;
     private readonly LookoutUpdateOptions _options;
     private readonly ILogger<LookoutVersionSource>? _logger;
+    private readonly string _stateFilePath;
+    private readonly object _stateWriteLock = new();
     private readonly ConcurrentDictionary<string, (string Version, DateTimeOffset FirstSeen)> _firstSeenVersions = new(StringComparer.OrdinalIgnoreCase);
 
     public string SourceName => "Lookout";
@@ -24,11 +26,19 @@ public class LookoutVersionSource : IUpdateCandidateSource
     public LookoutVersionSource(
         HttpClient httpClient,
         IOptions<PackageUpdateOptions> options,
-        ILogger<LookoutVersionSource>? logger = null)
+        ILogger<LookoutVersionSource>? logger = null,
+        IBotStateStore? stateStore = null)
     {
         _httpClient = httpClient;
         _options = options.Value.Lookout;
         _logger = logger;
+        var defaultStateDir = stateStore?.StateDirectory
+            ?? BotStatePathResolver.ResolveStateDirectory(null);
+        _stateFilePath = string.IsNullOrWhiteSpace(_options.FirstSeenStatePath)
+            ? Path.Combine(defaultStateDir, "lookout-first-seen.json")
+            : _options.FirstSeenStatePath;
+
+        LoadFirstSeenState();
     }
 
     public async Task<IReadOnlyList<UpdateCandidate>> GetCandidatesAsync(CancellationToken ct = default)
@@ -40,6 +50,10 @@ public class LookoutVersionSource : IUpdateCandidateSource
         }
 
         var candidates = new List<UpdateCandidate>();
+        var seenOutdatedPackages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var stateChanged = false;
+        var completedFullSweep = false;
+        var hadApiError = false;
         var baseUrl = _options.BaseUrl.TrimEnd('/');
         int page = 1;
         const int perPage = 200;
@@ -61,12 +75,14 @@ public class LookoutVersionSource : IUpdateCandidateSource
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                hadApiError = true;
                 _logger?.LogWarning(ex, "Failed to query Lookout packages page {Page} from {Url}", page, url);
                 break;
             }
 
             if (!response.IsSuccessStatusCode)
             {
+                hadApiError = true;
                 _logger?.LogWarning("Lookout API returned status code {StatusCode} on page {Page}", response.StatusCode, page);
                 break;
             }
@@ -78,13 +94,17 @@ public class LookoutVersionSource : IUpdateCandidateSource
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                hadApiError = true;
                 _logger?.LogWarning(ex, "Failed to deserialize Lookout response on page {Page}", page);
                 break;
             }
 
             var items = pageResult?.Packages ?? pageResult?.Data ?? pageResult?.Items;
             if (items == null || items.Count == 0)
+            {
+                completedFullSweep = true;
                 break;
+            }
 
             foreach (var pkg in items)
             {
@@ -138,13 +158,28 @@ public class LookoutVersionSource : IUpdateCandidateSource
                 var hasSecurity = pkg.HasSecurityAdvisory || 
                                   (annotations != null && annotations.Any(a => string.Equals(a.Monitor, "security", StringComparison.OrdinalIgnoreCase)));
 
-                var observedTime = updatedAt ?? DateTimeOffset.UtcNow;
-                var firstSeen = _firstSeenVersions.AddOrUpdate(
-                    pkg.Name,
-                    _ => (latestVer, observedTime),
-                    (_, existing) => string.Equals(existing.Version, latestVer, StringComparison.Ordinal)
-                        ? existing
-                        : (latestVer, observedTime)).FirstSeen;
+                seenOutdatedPackages.Add(pkg.Name);
+                var upstreamPublishedAt = versionData?.PublishedAt ?? pkg.PublishedAt;
+                DateTimeOffset effectivePublishedAt;
+                if (upstreamPublishedAt.HasValue)
+                {
+                    effectivePublishedAt = upstreamPublishedAt.Value;
+                }
+                else
+                {
+                    var observedTime = updatedAt ?? DateTimeOffset.UtcNow;
+                    if (_firstSeenVersions.TryGetValue(pkg.Name, out var existing) &&
+                        string.Equals(existing.Version, latestVer, StringComparison.Ordinal))
+                    {
+                        effectivePublishedAt = existing.FirstSeen;
+                    }
+                    else
+                    {
+                        _firstSeenVersions[pkg.Name] = (latestVer, observedTime);
+                        stateChanged = true;
+                        effectivePublishedAt = observedTime;
+                    }
+                }
 
                 candidates.Add(new UpdateCandidate(
                     PackageName: pkg.Name,
@@ -153,19 +188,109 @@ public class LookoutVersionSource : IUpdateCandidateSource
                     Origin: CandidateOrigin.Lookout,
                     EvidenceUrl: evidenceUrl,
                     IsSecurityAdvisory: hasSecurity,
-                    PublishedAt: firstSeen));
+                    PublishedAt: effectivePublishedAt));
             }
 
             if (items.Count < perPage)
+            {
+                completedFullSweep = true;
                 break;
+            }
 
             await Task.Delay(50, ct);
             page++;
         }
 
+        if (completedFullSweep)
+        {
+            foreach (var key in _firstSeenVersions.Keys)
+            {
+                if (!seenOutdatedPackages.Contains(key) && _firstSeenVersions.TryRemove(key, out _))
+                {
+                    stateChanged = true;
+                }
+            }
+        }
+
+        if (stateChanged)
+        {
+            SaveFirstSeenState();
+        }
+
+        if (hadApiError && candidates.Count == 0)
+        {
+            _logger?.LogError("Lookout version source failed with API/parse errors and returned 0 candidates.");
+        }
+        else if (hadApiError)
+        {
+            _logger?.LogWarning("Lookout version source returned partial results ({Count} candidates) due to page fetch errors.", candidates.Count);
+        }
+
         _logger?.LogInformation("Lookout version source discovered {Count} outdated candidates", candidates.Count);
         return candidates;
     }
+
+    private void LoadFirstSeenState()
+    {
+        try
+        {
+            if (!File.Exists(_stateFilePath))
+            {
+                return;
+            }
+
+            var json = File.ReadAllText(_stateFilePath);
+            var persisted = JsonSerializer.Deserialize<Dictionary<string, PersistedFirstSeenEntry>>(json);
+            if (persisted == null)
+            {
+                return;
+            }
+
+            foreach (var (pkgName, entry) in persisted)
+            {
+                if (!string.IsNullOrWhiteSpace(pkgName) && !string.IsNullOrWhiteSpace(entry.Version))
+                {
+                    _firstSeenVersions[pkgName] = (entry.Version, entry.FirstSeen);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to load Lookout first-seen state from {Path}; starting with empty state", _stateFilePath);
+        }
+    }
+
+    private void SaveFirstSeenState()
+    {
+        lock (_stateWriteLock)
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(_stateFilePath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var snapshot = new Dictionary<string, PersistedFirstSeenEntry>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (pkgName, entry) in _firstSeenVersions)
+                {
+                    snapshot[pkgName] = new PersistedFirstSeenEntry(entry.Version, entry.FirstSeen);
+                }
+
+                var json = JsonSerializer.Serialize(snapshot);
+                var tempPath = _stateFilePath + ".tmp";
+                File.WriteAllText(tempPath, json);
+                File.Move(tempPath, _stateFilePath, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to persist Lookout first-seen state to {Path}", _stateFilePath);
+            }
+        }
+    }
+
+    private sealed record PersistedFirstSeenEntry(string Version, DateTimeOffset FirstSeen);
 
     public class LookoutPackageResponse
     {
@@ -255,6 +380,9 @@ public class LookoutVersionSource : IUpdateCandidateSource
 
         [JsonPropertyName("updated_at")]
         public DateTimeOffset? UpdatedAt { get; set; }
+
+        [JsonPropertyName("published_at")]
+        public DateTimeOffset? PublishedAt { get; set; }
 
         [JsonPropertyName("annotations")]
         public List<LookoutAnnotation>? Annotations { get; set; }

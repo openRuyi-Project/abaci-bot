@@ -1067,7 +1067,7 @@ public class GitHubWebhookProcessorTests
         return new TestGitHubWebhookProcessor(github, config, pipeline, lockManager, mutexEngine);
     }
 
-    #region Part 2.1 Full Pipeline End-to-End & Mixed-Case Captains Verification
+    #region Governance Pipeline End-to-End & Mixed-Case Captains Verification
 
     [Fact]
     public async Task FullPipeline_MixedCaseCaptainComment_AdvancesPRAndRemovesCommitsUpdated()
@@ -2314,6 +2314,110 @@ public class GitHubWebhookProcessorTests
             string owner, string repo, IEnumerable<(string Name, string Color, string Description)> labels, CancellationToken ct = default)
         {
             return Task.CompletedTask;
+        }
+
+        public List<Octokit.Milestone> Milestones { get; } = new();
+        public List<(int PrNumber, int? MilestoneNumber)> MilestoneAssignments { get; } = new();
+        public List<Octokit.Issue> MergedPullRequestsWithoutMilestone { get; set; } = new();
+        public HashSet<int> LockedIssues { get; } = new();
+        public List<long> MinimizedComments { get; } = new();
+        public HashSet<int> ArchivedPullRequests { get; } = new();
+        public List<Octokit.Issue> ClosedPullRequests { get; set; } = new();
+
+        public Task<IReadOnlyList<Octokit.Milestone>> GetMilestonesAsync(
+            string owner, string repo, Octokit.ItemStateFilter state = Octokit.ItemStateFilter.Open, CancellationToken ct = default)
+        {
+            return Task.FromResult<IReadOnlyList<Octokit.Milestone>>(Milestones);
+        }
+
+        public Task<Octokit.Milestone> CreateMilestoneAsync(
+            string owner, string repo, string title, DateTimeOffset? dueOn = null, string? description = null, CancellationToken ct = default)
+        {
+            var ms = (Octokit.Milestone)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Milestone));
+            typeof(Octokit.Milestone).GetProperty(nameof(Octokit.Milestone.Number))?.SetValue(ms, Milestones.Count + 1);
+            typeof(Octokit.Milestone).GetProperty(nameof(Octokit.Milestone.Title))?.SetValue(ms, title);
+            typeof(Octokit.Milestone).GetProperty(nameof(Octokit.Milestone.DueOn))?.SetValue(ms, dueOn);
+            typeof(Octokit.Milestone).GetProperty(nameof(Octokit.Milestone.Description))?.SetValue(ms, description);
+            Milestones.Add(ms);
+            return Task.FromResult(ms);
+        }
+
+        public Task<Octokit.Milestone> UpdateMilestoneAsync(
+            string owner, string repo, int milestoneNumber, string title, DateTimeOffset? dueOn = null, CancellationToken ct = default)
+        {
+            var ms = Milestones.FirstOrDefault(m => m.Number == milestoneNumber);
+            if (ms != null)
+            {
+                typeof(Octokit.Milestone).GetProperty(nameof(Octokit.Milestone.Title))?.SetValue(ms, title);
+                typeof(Octokit.Milestone).GetProperty(nameof(Octokit.Milestone.DueOn))?.SetValue(ms, dueOn);
+            }
+            return Task.FromResult(ms ?? (Octokit.Milestone)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Milestone)));
+        }
+
+        public Task SetIssueMilestoneAsync(
+            string owner, string repo, int issueNumber, int? milestoneNumber, CancellationToken ct = default)
+        {
+            MilestoneAssignments.Add((issueNumber, milestoneNumber));
+            return Task.CompletedTask;
+        }
+
+        public Task<GitHubSearchPageResult<Octokit.Issue>> SearchMergedPullRequestsWithoutMilestoneAsync(
+            string owner, string repo, DateTimeOffset mergedAfter, CancellationToken ct = default)
+        {
+            return Task.FromResult(new GitHubSearchPageResult<Octokit.Issue>(
+                MergedPullRequestsWithoutMilestone,
+                MergedPullRequestsWithoutMilestone.Count,
+                false));
+        }
+
+        public Task LockIssueAsync(
+            string owner, string repo, int issueNumber, Octokit.LockReason? lockReason = null, CancellationToken ct = default)
+        {
+            LockedIssues.Add(issueNumber);
+            return Task.CompletedTask;
+        }
+
+        public Task UnlockIssueAsync(
+            string owner, string repo, int issueNumber, CancellationToken ct = default)
+        {
+            LockedIssues.Remove(issueNumber);
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> IsIssueLockedAsync(
+            string owner, string repo, int issueNumber, CancellationToken ct = default)
+        {
+            return Task.FromResult(LockedIssues.Contains(issueNumber));
+        }
+
+        public Task<bool> MinimizeCommentAsync(
+            string owner, string repo, long commentId, string? commentNodeId = null, string classifier = "SPAM", CancellationToken ct = default)
+        {
+            MinimizedComments.Add(commentId);
+            return Task.FromResult(true);
+        }
+
+        public Task ArchivePullRequestAsync(
+            string owner, string repo, int prNumber, string? pullRequestNodeId = null, CancellationToken ct = default)
+        {
+            ArchivedPullRequests.Add(prNumber);
+            return Task.CompletedTask;
+        }
+
+        public Task UnarchivePullRequestAsync(
+            string owner, string repo, int prNumber, string? pullRequestNodeId = null, CancellationToken ct = default)
+        {
+            ArchivedPullRequests.Remove(prNumber);
+            return Task.CompletedTask;
+        }
+
+        public Task<GitHubSearchPageResult<Octokit.Issue>> SearchClosedPullRequestsAsync(
+            string owner, string repo, DateTimeOffset closedBefore, CancellationToken ct = default)
+        {
+            return Task.FromResult(new GitHubSearchPageResult<Octokit.Issue>(
+                ClosedPullRequests,
+                ClosedPullRequests.Count,
+                false));
         }
     }
 

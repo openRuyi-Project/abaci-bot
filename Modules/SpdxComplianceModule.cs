@@ -148,7 +148,7 @@ public partial class SpdxComplianceModule : IPullRequestModule
             context.ReconcileLabels(ManagedLabels, GitHubLabels.ComplianceLicenseIssue);
             if (!context.ExistingLabels.Contains(GitHubLabels.ComplianceLicenseIssue))
             {
-                var report = _formatter.FormatSpdxLicenseIssue(sortedIssues);
+                var report = _formatter.FormatSpdxLicenseIssue(sortedIssues, context.PreferredLocale);
                 context.PendingComments.Add(report);
             }
             _logger?.LogInformation("PR #{PrNumber} flagged with License Issue ({Count} issues found).",

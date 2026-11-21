@@ -147,6 +147,7 @@ public class ObsPostMergeVerifier
                 }
             }
 
+            var obsEndpoint = FormatObsPublicEndpoint(_options.Obs.BaseUrl);
             var comment = $"""
                 ### OBS Build Verification
                 - **Project**: `{buildResult.Project}`
@@ -155,7 +156,7 @@ public class ObsPostMergeVerifier
                 - **Status**: `{buildResult.Code}` (`{buildResult.RawCode}`)
                 - **Synchronized Commit**: `{mergeSha}`
 
-                > Verified via `build.openruyi.cn/public` read-model.
+                > Verified via `{obsEndpoint}` read-model.
                 """;
 
             Octokit.IssueComment? existingComment = null;
@@ -246,6 +247,19 @@ public class ObsPostMergeVerifier
                 _logger?.LogDebug(ex, "Failed to reclaim merged branch {Branch} for PR #{PrNumber}", branchName, pr.Number);
             }
         }
+    }
+
+    private static string FormatObsPublicEndpoint(string? baseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            return "OBS /public";
+        }
+
+        var trimmed = baseUrl.Trim();
+        return Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)
+            ? $"{uri.Authority}/public"
+            : $"{trimmed.TrimEnd('/')}/public";
     }
 }
 

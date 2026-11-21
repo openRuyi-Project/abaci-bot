@@ -15,6 +15,8 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
 {
     private readonly IGitHubService _gitHubService;
     private readonly PackageUpdateOptions _options;
+    private readonly IBotIdentityProvider? _botIdentity;
+    private readonly ILocaleResolver? _localeResolver;
     private readonly ILogger<GitHubPackageUpdatePublisher>? _logger;
 
     private static readonly Regex VersionRegex = new(
@@ -28,11 +30,15 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
     public GitHubPackageUpdatePublisher(
         IGitHubService gitHubService,
         IOptions<PackageUpdateOptions> options,
-        ILogger<GitHubPackageUpdatePublisher>? logger = null)
+        ILogger<GitHubPackageUpdatePublisher>? logger = null,
+        IBotIdentityProvider? botIdentity = null,
+        ILocaleResolver? localeResolver = null)
     {
         _gitHubService = gitHubService;
         _options = options.Value;
         _logger = logger;
+        _botIdentity = botIdentity ?? gitHubService as IBotIdentityProvider;
+        _localeResolver = localeResolver;
     }
 
     public async Task<PublishResult> PublishUpdateAsync(
@@ -140,7 +146,21 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
 
         var commitMessage = $"SPECS: bump {candidate.PackageName} {candidate.CurrentVersion} -> {candidate.TargetVersion}";
         var prTitle = commitMessage;
-        var prBody = GeneratePullRequestBody(candidate);
+        var locale = _localeResolver?.ResolveForBotPullRequest(owner, repo);
+        string? botLogin = null;
+        if (!_options.DryRun && _botIdentity != null)
+        {
+            try
+            {
+                botLogin = await _botIdentity.GetBotLoginAsync(ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogDebug(ex, "Could not resolve live bot login for PR body hint");
+            }
+        }
+
+        var prBody = GeneratePullRequestBody(candidate, locale, botLogin);
 
         if (_options.DryRun)
         {
@@ -214,8 +234,40 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
         return string.Empty;
     }
 
-    public static string GeneratePullRequestBody(UpdateCandidate candidate)
+    public static string GeneratePullRequestBody(UpdateCandidate candidate, string? locale = null, string? botLogin = null)
     {
+        var isZh = string.Equals(locale, "zh", StringComparison.OrdinalIgnoreCase) ||
+                   (locale != null && locale.StartsWith("zh-", StringComparison.OrdinalIgnoreCase));
+        var mentionHint = !string.IsNullOrWhiteSpace(botLogin)
+            ? (isZh
+                ? $"评论 `@{botLogin} ignore {candidate.PackageName}` 或在 SPEC 文件头部加入 `#!NoAutoUpdate: <reason>`"
+                : $"comment `@{botLogin} ignore {candidate.PackageName}` or add `#!NoAutoUpdate: <reason>` to the SPEC file header")
+            : (isZh
+                ? "在 SPEC 文件头部加入 `#!NoAutoUpdate: <reason>`"
+                : "add `#!NoAutoUpdate: <reason>` to the SPEC file header");
+
+        if (isZh)
+        {
+            return $"""
+                ## 摘要
+                自动将 `{candidate.PackageName}` 从 `{candidate.CurrentVersion}` 更新至 `{candidate.TargetVersion}`。
+
+                - **来源**: {candidate.Origin}
+                - **依据**: {candidate.EvidenceUrl}
+
+                ## AI 辅助贡献声明
+                - [ ] 我已阅读 [AI-Assisted Contribution Policy]，本 Pull Request 包含非平凡的 AI 辅助内容。
+                <!-- Assisted-by: None (automated rule-based bot) -->
+
+                ## 检查清单
+                - [x] 已在 spec 文件中更新包版本
+                - [ ] 已构建并测试
+
+                > 提交与描述由机器人自动维护。
+                > 如需停止本包的自动更新，请{mentionHint}。
+                """;
+        }
+
         return $"""
             ## Summary
             Automatic version bump for `{candidate.PackageName}` from `{candidate.CurrentVersion}` to `{candidate.TargetVersion}`.
@@ -231,8 +283,8 @@ public class GitHubPackageUpdatePublisher : IPackageUpdatePublisher
             - [x] Package version updated in spec file
             - [ ] Built and tested
 
-            > Commits and description are automatically maintained by abaci-bot.
-            > 如需停止本包的自动更新，请在 SPEC 文件头部加入 `#!NoAutoUpdate: <reason>`
+            > Commits and description are automatically maintained by the bot.
+            > To pause automated updates for this package, {mentionHint}.
             """;
     }
 }

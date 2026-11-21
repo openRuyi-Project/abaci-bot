@@ -80,7 +80,17 @@ jobs:
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Check git working tree cleanliness
+        id: git-meta
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "dirty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dirty=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push Docker image
+        id: build-and-push
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -90,4 +100,23 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+            GIT_DIRTY=${{ steps.git-meta.outputs.dirty }}
+
+      - name: Emit deployment manifest with registry digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p dist
+          cat <<EOF > dist/deployment-manifest.env
+          ABACI_IMAGE_DIGEST=${{ steps.build-and-push.outputs.digest }}
+          ABACI_BUILD_COMMIT=${{ github.sha }}
+          EOF
+
+      - name: Upload deployment manifest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-manifest
+          path: dist/deployment-manifest.env
 

@@ -1,6 +1,6 @@
 # abaci-bot
 
-`abaci-bot` is a webhook-driven governance daemon and compliance bot built for `openRuyi-Project` package repositories and related infrastructure.
+`abaci-bot` is a webhook-driven governance daemon and compliance bot built for `openRuyi-Project` package repositories and related infrastructure, and configurable for other RPM-based Linux distributions.
 
 ---
 
@@ -67,6 +67,9 @@
 | **ABI Compliance** | Compares compiled RPMs using Libabigail `abipkgdiff` to detect binary breaking changes. | [`docs/modules/abi-compliance.md`](docs/modules/abi-compliance.md) |
 | **Package Updates** | Periodically checks upstream releases, rewrites specs, publishes PRs, and verifies post-merge OBS builds. | [`docs/modules/package-update.md`](docs/modules/package-update.md) |
 | **Active CVE Watch** | Periodically scans package catalog against OSV and NVD to file and update security tracking issues. | [`docs/modules/cve-active-watch.md`](docs/modules/cve-active-watch.md) |
+| **Milestone Automation** | Automatically tags merged PRs with release milestone `YYYY.MM`; creates missing milestones. | [`docs/modules/milestone-sync.md`](docs/modules/milestone-sync.md) |
+| **Conversation Guard** | Moderates PR discussions via `@<bot> lock`, `unlock`, `hide @user`, `archive` and locks inactive closed PRs. | [`docs/modules/conversation-guard.md`](docs/modules/conversation-guard.md) |
+| **Bot Control Plane** | Handles `@<bot> ignore`, `unignore`, `status`, and `lang` mention commands with persistent state. | [`docs/modules/bot-control-plane.md`](docs/modules/bot-control-plane.md) |
 
 ---
 
@@ -74,9 +77,11 @@
 
 ```bash
 curl -f http://localhost:3456/health
+curl -f "http://localhost:3456/health?verbose=true"
 ```
 
-The response includes `abiEngine` (`native`, `managed`, `unavailable`, or `disabled`).
+`/health` returns liveness and immutable build/artifact metadata (`status`, `timestamp`, `version`, `commit`, `imageDigest`, `buildTime`, `deployment`).
+Passing `?verbose=true` additionally returns `startedAt`, `uptimeSeconds`, `capabilities` (`abiEngine`, `conversationGuardPermission`), `modules` (non-secret enabled/dryRun flags), and `runtime` (`lastError`, `lastErrorAt`).
 When native Libabigail or RPM extraction tools (`abipkgdiff`, `rpm2cpio`, `cpio`) are
 missing at startup, the process aborts unless `AbiCompliance:AllowManagedFallback`
 is explicitly enabled. See [docs/modules/abi-compliance.md](docs/modules/abi-compliance.md).

@@ -18,6 +18,16 @@ public class RebuildImpactModuleTests
     private readonly IGitHubService _gitHub = Substitute.For<IGitHubService>();
     private readonly IHttpClientFactory _httpClientFactory = Substitute.For<IHttpClientFactory>();
 
+    private static RebuildImpactModule CreateModule(
+        IRpmDependencyService dependencyService,
+        IOptions<RebuildImpactOptions> options,
+        IRebuildVerificationOrchestrator? verificationOrchestrator = null)
+    {
+        var orchestrator = verificationOrchestrator
+            ?? new ManualGuideRebuildVerificationOrchestrator(new GovernanceCommentFormatter(), options);
+        return new RebuildImpactModule(dependencyService, options, orchestrator);
+    }
+
     private static PullRequestFile CreateFile(string filename)
     {
         var file = (PullRequestFile)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequestFile));
@@ -162,7 +172,7 @@ public class RebuildImpactModuleTests
         dependencyService.MapAffectedCountToRebuildLabel(3).Returns(GitHubLabels.Rebuild1To10);
 
         var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
-        var module = new RebuildImpactModule(dependencyService, options);
+        var module = CreateModule(dependencyService, options);
 
         var file = CreateFile("SPECS/testpkg/testpkg.spec");
         var context = CreateContext(new[] { file });
@@ -184,7 +194,7 @@ public class RebuildImpactModuleTests
         dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
 
         var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
-        var module = new RebuildImpactModule(dependencyService, options);
+        var module = CreateModule(dependencyService, options);
 
         var file = CreateFile("SPECS/glibc/glibc.spec");
         var context = CreateContext(new[] { file }, baseBranch: "main");
@@ -196,7 +206,9 @@ public class RebuildImpactModuleTests
         Assert.NotEmpty(context.PendingComments);
         Assert.Contains("Rebuild Impact Gate: Merge Blocked", context.PendingComments[0]);
         Assert.Contains("1200", context.PendingComments[0]);
-        Assert.Contains("Staging", context.PendingComments[0]);
+        Assert.Contains("OBS personal subproject", context.PendingComments[0]);
+        Assert.Contains("linkedbuild=\"localdep\"", context.PendingComments[0]);
+        Assert.DoesNotContain("Staging", context.PendingComments[0]);
     }
 
     [Fact]
@@ -209,7 +221,7 @@ public class RebuildImpactModuleTests
         dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
 
         var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
-        var module = new RebuildImpactModule(dependencyService, options);
+        var module = CreateModule(dependencyService, options);
 
         var file = CreateFile("SPECS/glibc/glibc.spec");
         var context = CreateContext(
@@ -235,7 +247,7 @@ public class RebuildImpactModuleTests
         dependencyService.MapAffectedCountToRebuildLabel(1500).Returns(GitHubLabels.Rebuild1001To2500);
 
         var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
-        var module = new RebuildImpactModule(dependencyService, options);
+        var module = CreateModule(dependencyService, options);
 
         var file = CreateFile("SPECS/glibc/glibc.spec");
         var context = CreateContext(new[] { file }, baseBranch: "staging-24.09");
@@ -365,7 +377,7 @@ public class RebuildImpactModuleTests
         dependencyService.MapAffectedCountToRebuildLabel(1).Returns(GitHubLabels.Rebuild1To10);
 
         var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
-        var module = new RebuildImpactModule(dependencyService, options);
+        var module = CreateModule(dependencyService, options);
 
         var file = CreateFile("SPECS/leafpkg/leafpkg.spec");
         var context = CreateContext(new[] { file }, baseBranch: "main", existingLabels: new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.Rebuild1001To2500 });
@@ -387,7 +399,7 @@ public class RebuildImpactModuleTests
         dependencyService.MapAffectedCountToRebuildLabel(1500).Returns(GitHubLabels.Rebuild1001To2500);
 
         var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001, TargetBranchToBlock = "Rolling" });
-        var module = new RebuildImpactModule(dependencyService, options);
+        var module = CreateModule(dependencyService, options);
 
         var file = CreateFile("SPECS/glibc/glibc.spec");
         // PR was previously blocked on main (Rolling), then retargeted to LTS branch via Edited action without new commits
@@ -415,7 +427,7 @@ public class RebuildImpactModuleTests
         dependencyService.MapAffectedCountToRebuildLabel(1).Returns(GitHubLabels.Rebuild1To10);
 
         var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
-        var module = new RebuildImpactModule(dependencyService, options);
+        var module = CreateModule(dependencyService, options);
 
         // PR was blocked by a human maintainer without any rebuild tier label
         var file = CreateFile("SPECS/leafpkg/leafpkg.spec");
@@ -441,7 +453,7 @@ public class RebuildImpactModuleTests
             .Returns(GitHubLabels.Rebuild1To10);
 
         var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
-        var module = new RebuildImpactModule(dependencyService, options);
+        var module = CreateModule(dependencyService, options);
 
         var file = CreateFile("SPECS/pkg/pkg.spec");
         var context = CreateContext(new[] { file }, baseBranch: "main");
@@ -460,7 +472,7 @@ public class RebuildImpactModuleTests
         dependencyService.IsMetadataLoaded.Returns(true);
 
         var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
-        var module = new RebuildImpactModule(dependencyService, options);
+        var module = CreateModule(dependencyService, options);
 
         // Case 1: PR previously carried Rebuild: 1001-2500 and Workflow: Blocked; all specs now removed
         var context1 = CreateContext(
@@ -846,6 +858,211 @@ public class RebuildImpactModuleTests
         Assert.Equal("Packages/shared-doc-1.0.noarch.rpm", service.GetPackageLocation("shared-doc", "riscv64"));
         Assert.Equal("Packages/shared-doc-1.0.noarch.rpm", service.GetPackageLocation("shared-doc"));
         Assert.Null(service.GetPackageLocation("non-existent", "riscv64"));
+    }
+
+    [Fact]
+    public async Task ProcessAsync_HighImpactWithReferenceLinks_IncludesAllSeeAlsoLinks()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
+        var largeSet = Enumerable.Range(1, 1200).Select(i => $"pkg-{i}").ToHashSet();
+        dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
+        dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
+
+        const string guideUrl1 = "https://openruyi.org/docs/guide/build-platform-tips";
+        const string guideUrl2 = "https://build.openruyi.cn/";
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions
+        {
+            BlockThreshold = 1001,
+            VerificationGuideLinks = new List<VerificationReferenceLink>
+            {
+                new() { Title = "OBS Reverse-Dependency Guide", Url = guideUrl1 },
+                new() { Title = "openRuyi OBS Portal", Url = guideUrl2 }
+            }
+        });
+        var module = CreateModule(dependencyService, options);
+
+        var file = CreateFile("SPECS/glibc/glibc.spec");
+        var context = CreateContext(new[] { file }, baseBranch: "main");
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
+        Assert.Single(context.PendingComments);
+        Assert.Contains("**See also**:", context.PendingComments[0]);
+        Assert.Contains($"[OBS Reverse-Dependency Guide]({guideUrl1})", context.PendingComments[0]);
+        Assert.Contains($"[openRuyi OBS Portal]({guideUrl2})", context.PendingComments[0]);
+    }
+
+    [Theory]
+    [InlineData(RebuildVerificationState.ManualVerificationRequired)]
+    [InlineData(RebuildVerificationState.Pending)]
+    [InlineData(RebuildVerificationState.Failed)]
+    public async Task ProcessAsync_CustomVerificationOrchestratorNonPassedStates_KeepMergeBlocked(RebuildVerificationState state)
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
+        var largeSet = Enumerable.Range(1, 1200).Select(i => $"pkg-{i}").ToHashSet();
+        dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
+        dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
+
+        var orchestrator = Substitute.For<IRebuildVerificationOrchestrator>();
+        orchestrator.RequestVerificationAsync(Arg.Any<RebuildVerificationRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new RebuildVerificationResult(
+                State: state,
+                AdvisoryComment: $"Status: {state}",
+                TrackingUrl: "https://build.openruyi.cn/project/show/home:bot:pr-1"));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
+        var module = CreateModule(dependencyService, options, orchestrator);
+
+        var file = CreateFile("SPECS/glibc/glibc.spec");
+        var context = CreateContext(new[] { file }, baseBranch: "main");
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
+        Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context.LabelsToRemove);
+        Assert.Contains($"Status: {state}", context.PendingComments);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_CustomVerificationOrchestratorPassed_UnblocksAndPostsAdvisory()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
+        var largeSet = Enumerable.Range(1, 1200).Select(i => $"pkg-{i}").ToHashSet();
+        dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
+        dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
+
+        var orchestrator = Substitute.For<IRebuildVerificationOrchestrator>();
+        orchestrator.RequestVerificationAsync(Arg.Any<RebuildVerificationRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new RebuildVerificationResult(
+                State: RebuildVerificationState.Passed,
+                AdvisoryComment: "OBS automated verification passed.",
+                TrackingUrl: "https://build.openruyi.cn/project/show/home:bot:pr-1"));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
+        var module = CreateModule(dependencyService, options, orchestrator);
+
+        var file = CreateFile("SPECS/glibc/glibc.spec");
+        var context = CreateContext(
+            new[] { file },
+            baseBranch: "main",
+            existingLabels: new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.Rebuild1001To2500 });
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.DoesNotContain(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
+        Assert.Contains(GitHubLabels.WorkflowBlocked, context.LabelsToRemove);
+        Assert.Contains("OBS automated verification passed.", context.PendingComments);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_CustomVerificationOrchestratorBlockedWithoutComment_DoesNotAddEmptyComment()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
+        var largeSet = Enumerable.Range(1, 1200).Select(i => $"pkg-{i}").ToHashSet();
+        dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
+        dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
+
+        var orchestrator = Substitute.For<IRebuildVerificationOrchestrator>();
+        orchestrator.RequestVerificationAsync(Arg.Any<RebuildVerificationRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new RebuildVerificationResult(State: RebuildVerificationState.ManualVerificationRequired, AdvisoryComment: null));
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
+        var module = CreateModule(dependencyService, options, orchestrator);
+
+        var file = CreateFile("SPECS/glibc/glibc.spec");
+        var context = CreateContext(new[] { file }, baseBranch: "main");
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
+        Assert.Empty(context.PendingComments);
+    }
+
+    [Fact]
+    public void Constructor_NullDependencies_ThrowsArgumentNullException()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions());
+        var orchestrator = Substitute.For<IRebuildVerificationOrchestrator>();
+
+        Assert.Throws<ArgumentNullException>(() => new RebuildImpactModule(null!, options, orchestrator));
+        Assert.Throws<ArgumentNullException>(() => new RebuildImpactModule(dependencyService, null!, orchestrator));
+        Assert.Throws<ArgumentNullException>(() => new RebuildImpactModule(dependencyService, options, null!));
+    }
+
+    [Fact]
+    public async Task ProcessAsync_AlreadyBlocked_FailedTransitionPostsNewAdvisory_WhileNullAdvisorySuppresses()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
+        var largeSet = Enumerable.Range(1, 1200).Select(i => $"pkg-{i}").ToHashSet();
+        dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
+        dependencyService.MapAffectedCountToRebuildLabel(1200).Returns(GitHubLabels.Rebuild1001To2500);
+
+        var orchestrator = Substitute.For<IRebuildVerificationOrchestrator>();
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
+        var module = CreateModule(dependencyService, options, orchestrator);
+        var file = CreateFile("SPECS/glibc/glibc.spec");
+
+        // 1. State transition to Failed with non-null AdvisoryComment posts status update even when Workflow: Blocked is already present
+        orchestrator.RequestVerificationAsync(Arg.Any<RebuildVerificationRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new RebuildVerificationResult(
+                State: RebuildVerificationState.Failed,
+                AdvisoryComment: "Automated OBS verification failed for downstream package foo."));
+
+        var blockedContext = CreateContext(
+            new[] { file },
+            baseBranch: "main",
+            existingLabels: new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.Rebuild1001To2500 });
+
+        await module.ProcessAsync(blockedContext, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.WorkflowBlocked, blockedContext.LabelsToAdd);
+        Assert.Single(blockedContext.PendingComments);
+        Assert.Contains("Automated OBS verification failed", blockedContext.PendingComments[0]);
+
+        // 2. Subsequent Pending/Failed poll with unchanged state returns null AdvisoryComment and posts nothing
+        orchestrator.RequestVerificationAsync(Arg.Any<RebuildVerificationRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new RebuildVerificationResult(State: RebuildVerificationState.Pending, AdvisoryComment: null));
+
+        var unchangedContext = CreateContext(
+            new[] { file },
+            baseBranch: "main",
+            existingLabels: new[] { GitHubLabels.WorkflowBlocked, GitHubLabels.Rebuild1001To2500 });
+
+        await module.ProcessAsync(unchangedContext, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.WorkflowBlocked, unchangedContext.LabelsToAdd);
+        Assert.Empty(unchangedContext.PendingComments);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_PassesPreferredLocaleToVerificationOrchestrator_AndEmitsChineseGateComment()
+    {
+        var dependencyService = Substitute.For<IRpmDependencyService>();
+        dependencyService.IsMetadataLoaded.Returns(true);
+        var largeSet = Enumerable.Range(1, 1500).Select(i => $"pkg-{i}").ToHashSet();
+        dependencyService.GetAffectedPackages("glibc", Arg.Any<int?>()).Returns(largeSet);
+        dependencyService.MapAffectedCountToRebuildLabel(1500).Returns(GitHubLabels.Rebuild1001To2500);
+
+        var options = Microsoft.Extensions.Options.Options.Create(new RebuildImpactOptions { BlockThreshold = 1001 });
+        var orchestrator = new ManualGuideRebuildVerificationOrchestrator(new GovernanceCommentFormatter(), options);
+        var module = new RebuildImpactModule(dependencyService, options, orchestrator);
+
+        var file = CreateFile("SPECS/glibc/glibc.spec");
+        var context = CreateContext(new[] { file }, baseBranch: "main");
+        context.PreferredLocale = "zh";
+
+        await module.ProcessAsync(context, CancellationToken.None);
+
+        Assert.Contains(GitHubLabels.WorkflowBlocked, context.LabelsToAdd);
+        Assert.Single(context.PendingComments);
+        Assert.Contains("Rebuild 规模准入拦截", context.PendingComments[0], StringComparison.Ordinal);
     }
 
     private sealed class HttpHandlerStub : HttpMessageHandler

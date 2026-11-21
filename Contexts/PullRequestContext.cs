@@ -91,6 +91,11 @@ public class PullRequestContext
     public bool? IsMerged { get; private set; }
 
     /// <summary>
+    /// Effective locale resolved for user-facing governance replies on this pull request.
+    /// </summary>
+    public string? PreferredLocale { get; set; }
+
+    /// <summary>
     /// The remote pull request state string (e.g. "open", "closed") from the authoritative PR entity.
     /// </summary>
     public string? RemoteState { get; private set; }
@@ -279,6 +284,12 @@ public class PullRequestContext
     /// Binary ABI difference analysis result, if evaluated during workflow run or CI completion.
     /// </summary>
     public AbiDiffResult? AbiResult { get; set; }
+
+    /// <summary>
+    /// Target milestone number to assign to the pull request upon pipeline completion.
+    /// Applied independently in channel 3 without affecting label synchronizations.
+    /// </summary>
+    public int? TargetMilestone { get; set; }
 
     public PullRequestContext(
         IGitHubService gitHubService,

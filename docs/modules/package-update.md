@@ -37,7 +37,7 @@ flowchart TD
    - `PlainSpecVersionRewriter`: Updates `Version:` tokens while keeping `Release:` intact.
    - `RustCrateSpecRewriter`: Synchronizes `Version:` and `%global full_version` for Rust crates.
 3. **CI Checksum Backfill**: Detects failed pull requests caused by invalid `#!RemoteAsset` checksums and automatically backfills correct SHA-256 digests.
-4. **Failure Cooldown & Tracking**: Tracks consecutive CI failures per package (`MaxConsecutiveFailures`). When the threshold is reached, creates a tracking issue carrying `Auto-Update: Blocked` and `Status: stale-exempt` and enters cooldown for `GiveUpIssueCooldownDays` days (independent of the upstream release stabilization window `CooldownHours`).
+4. **Failure Cooldown, Pre-Gate & Tracking**: Before evaluating candidates, each sweep queries open `Auto-Update: Blocked` tracking issues and PRs so blocked packages are skipped deterministically across process restarts. Consecutive CI failures (`MaxConsecutiveFailures`) open a tracking issue carrying `Auto-Update: Blocked` and `Status: stale-exempt` and trigger cooldown for `GiveUpIssueCooldownDays` days.
 5. **Post-Merge OBS Verification**: `ObsPostMergeVerifier` polls Open Build Service (`build.openruyi.cn`) to verify that merged pull request commits build successfully. If `RequireObsSuccessAfterMerge` is enabled and OBS fails, applies `Auto-Update: Blocked`.
 
 ---
@@ -46,7 +46,7 @@ flowchart TD
 
 - `Auto-Update`: Base label applied to all pull requests published by the package update service.
 - `Auto-Update: Rust`: Applied to pull requests updating Rust Cargo crates.
-- `Auto-Update: Blocked`: Applied to tracking issues when repeated failures occur or to merged PRs failing post-merge OBS verification.
+- `Auto-Update: Blocked`: Applied to tracking issues when repeated failures occur or to merged PRs failing post-merge OBS verification. Any package with an open `Auto-Update: Blocked` tracking issue or open PR is skipped by the sweep pre-gate until the tracking issue is closed (or the label is removed), even after process restarts.
 - `Status: stale-exempt`: Applied to tracking issues and pull requests so automated stale sweeps do not close them.
 
 ---
@@ -72,7 +72,7 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 | `MaxCandidatesPerSweep` | `int` | `5` | Maximum number of update candidates admitted and published in a single sweep. |
 | `MaxConcurrentPullRequests` | `int` | `5` | Maximum open update pull requests allowed simultaneously. |
 | `FailedPrTtlDays` | `int` | `7` | Days an inactive pull request with failing CI remains open before automated closure, and maximum age of merged pull requests before unverified branches are reclaimed. |
-| `CooldownHours` | `int` | `72` | Minimum age in hours an upstream release must reach before submission. Setting 0 disables the stabilization window. Security advisories bypass this stabilization delay. |
+| `CooldownHours` | `int` | `72` | Minimum age in hours an upstream release (or persisted first observation when Lookout omits `published_at`) must reach before submission. Setting 0 disables the stabilization window. Security advisories bypass this stabilization delay. |
 | `MaxConsecutiveFailures` | `int` | `3` | Consecutive failed pull requests before entering cooldown. |
 | `IssueOnGivingUp` | `bool` | `true` | Whether to file a tracking issue when a package reaches consecutive failure limits. |
 | `GiveUpIssueCooldownDays` | `int` | `30` | Days a package remains in failure cooldown after reaching consecutive CI failure limits. |
@@ -86,6 +86,7 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 - `Enabled` (`bool`, default: `true`): Toggles Lookout candidate source.
 - `BaseUrl` (`string`, default: `"https://lookout.openruyi.cn"`): Base endpoint URL for Lookout API.
 - `StaleThresholdHours` (`int`, default: `48`): Freshness threshold in hours for Lookout candidate observations.
+- `FirstSeenStatePath` (`string`, default: `""`): Optional path to the JSON file persisting first-observed timestamps for `(package, target_version)` pairs across process restarts when Lookout omits `published_at`. When empty, defaults to `lookout-first-seen.json` under the local application data directory (mount this path in container deployments to survive container recreation).
 
 #### `RustCratePollerOptions` (`PackageUpdate:RustCratePoller`)
 - `Enabled` (`bool`, default: `true`): Toggles crates.io candidate poller.
@@ -105,8 +106,13 @@ Configured under the `PackageUpdate` JSON section in `appsettings.json`:
 ## 5. Failure Handling and Fallback Semantics
 
 - **Quota Starvation**: Sweeps defer automatically when remaining GitHub API quota drops below `MinRateLimitRemaining`.
+- **Fail-Closed Gate Loading**: If querying open `Auto-Update: Blocked` tracking issues or enumerating open `Auto-Update` pull requests fails due to GitHub API or search errors, candidate discovery and PR publishing are deferred until the next sweep so blocked packages cannot slip through and concurrency caps are never exceeded. Read-only post-merge OBS checks still execute.
 - **Merge Commit Synchronization**: OBS verification checks `_service` revision against the PR's `MergeCommitSha` to avoid checking stale build results before synchronization completes.
 - **Fail-Safe Dry Run**: Starts in `DryRun = true` and `Enabled = false` by default.
+- **Runtime Control Plane & Localization (`BotControlPlaneModule`, Priority 96)**:
+  - `@<bot> ignore <package> [reason]` / `@<bot> unignore <package>` (maintainers with `triage`+): persists runtime package ignores in `BotState:StateDirectory/bot-state.json` alongside persistent failure cooldowns.
+  - `@<bot> status [package]`: inspects runtime ignore state, `#!NoAutoUpdate` in the spec file, and failure cooldown state.
+  - `@<bot> lang <en|zh|reset>`: sets or clears the caller's personal reply language preference unless the repository sets `BotState:RepositoryForcedLocales`. Direct command replies use the caller's preference, while PR governance reviews use the PR author's preference (`RepositoryForcedLocales -> User Preference -> RepositoryDefaultLocales -> DefaultLocale`). Autonomous bot pull requests use `RepositoryForcedLocales -> RepositoryDefaultLocales -> DefaultLocale` without mixed-language text. See [bot-control-plane.md](bot-control-plane.md).
 - **Security Updates Concurrency & Bypass**: Security advisories bypass the `CooldownHours` release stabilization window and possess a dedicated 5-slot concurrency allowance above `MaxConcurrentPullRequests` to prevent starvation by routine updates.
 - **Closed-Loop Cooldown Reset**: When a package enters failure cooldown due to consecutive CI failures (`MaxConsecutiveFailures`), cooldown is deterministically reset via two authoritative events:
   1. The tracking issue opened on GitHub is closed by maintainers.

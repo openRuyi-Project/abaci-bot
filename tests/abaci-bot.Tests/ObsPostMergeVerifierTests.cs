@@ -734,4 +734,51 @@ public class ObsPostMergeVerifierTests
         var verifier = new ObsPostMergeVerifier(gitHubMock, Substitute.For<IObsBuildService>(), Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions()));
         await verifier.VerifyMergedPullRequestsAsync("owner/repo");
     }
+
+    [Theory]
+    [InlineData("https://obs.distro.example:8443", "obs.distro.example:8443/public")]
+    [InlineData("custom-obs-host", "custom-obs-host/public")]
+    [InlineData("", "OBS /public")]
+    public async Task VerifyMergedPullRequestsAsync_CommentReflectsConfiguredObsBaseUrl(string obsBaseUrl, string expectedEndpoint)
+    {
+        var gitHubMock = Substitute.For<IGitHubService>();
+        var obsServiceMock = Substitute.For<IObsBuildService>();
+
+        var options = Microsoft.Extensions.Options.Options.Create(new PackageUpdateOptions
+        {
+            TargetRepository = "owner/repo",
+            DryRun = false,
+            Obs = new ObsOptions
+            {
+                BaseUrl = obsBaseUrl,
+                Project = "distro",
+                TargetRepository = "standard",
+                TargetArch = "x86_64"
+            }
+        });
+
+        var pr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Number))?.SetValue(pr, 77);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Title))?.SetValue(pr, "SPECS: bump bash to 5.2");
+        typeof(PullRequest).GetProperty(nameof(PullRequest.MergeCommitSha))?.SetValue(pr, "sha777");
+
+        gitHubMock.SearchMergedPullRequestsAsync("owner", "repo", Arg.Any<string>(), Arg.Any<DateTimeOffset>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { pr });
+        obsServiceMock.GetPackageServiceRevisionAsync("distro", "bash", Arg.Any<CancellationToken>())
+            .Returns("sha777");
+        obsServiceMock.GetPackageBuildResultAsync("distro", "bash", "standard", "x86_64", Arg.Any<CancellationToken>())
+            .Returns(new ObsPackageBuildResult("distro", "bash", "standard", "x86_64", ObsStatusCode.Succeeded, "succeeded"));
+        gitHubMock.GetIssueCommentsAsync("owner", "repo", 77, Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<IssueComment>());
+
+        var verifier = new ObsPostMergeVerifier(gitHubMock, obsServiceMock, options);
+        await verifier.VerifyMergedPullRequestsAsync("owner/repo");
+
+        await gitHubMock.Received(1).CreateCommentAsync(
+            "owner",
+            "repo",
+            77,
+            Arg.Is<string>(body => body.Contains($"Verified via `{expectedEndpoint}` read-model.")),
+            Arg.Any<CancellationToken>());
+    }
 }

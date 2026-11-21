@@ -7,7 +7,7 @@ using System.Text.Json;
 
 namespace abaci_bot.Services;
 
-public class GitHubService : IGitHubService, IDisposable
+public class GitHubService : IGitHubService, IRepositoryPermissionService, IBotIdentityProvider, IEphemeralCommentGateway, IDisposable
 {
     private static readonly AsyncLocal<CancellationToken> _ambientCancellationToken = new();
 
@@ -18,6 +18,8 @@ public class GitHubService : IGitHubService, IDisposable
     private IGitHubClient _client;
     private DateTimeOffset _tokenExpiry;
     private readonly SemaphoreSlim _authLock = new(1, 1);
+    private readonly SemaphoreSlim _botLoginLock = new(1, 1);
+    private string? _cachedBotLogin;
     private readonly ILogger<GitHubService>? _logger;
 
     public GitHubService(int appId, string privateKey, long installationId, ILogger<GitHubService>? logger = null)
@@ -253,7 +255,26 @@ public class GitHubService : IGitHubService, IDisposable
             : $"repo:{owner}/{repo} is:open is:issue updated:<{dateStr}";
         var query = !string.IsNullOrWhiteSpace(labelFilter) ? $"{baseQuery} {labelFilter}" : baseQuery;
 
+        var pageResult = await SearchIssuesPaginatedAsync(
+            owner,
+            repo,
+            query,
+            isPr ? IssueTypeQualifier.PullRequest : IssueTypeQualifier.Issue,
+            nameof(SearchStaleCandidatesAsync),
+            ct);
+        return pageResult.Items;
+    }
+
+    private async Task<GitHubSearchPageResult<Issue>> SearchIssuesPaginatedAsync(
+        string owner,
+        string repo,
+        string query,
+        IssueTypeQualifier? typeQualifier,
+        string operationName,
+        CancellationToken ct)
+    {
         var allItems = new List<Issue>();
+        var totalCount = 0;
         var page = 1;
         const int perPage = 100;
         const int maxPages = 5; // Safety bound to prevent runaway loops
@@ -264,10 +285,14 @@ public class GitHubService : IGitHubService, IDisposable
 
             var searchRequest = new SearchIssuesRequest(query)
             {
-                Type = isPr ? IssueTypeQualifier.PullRequest : IssueTypeQualifier.Issue,
                 Page = page,
                 PerPage = perPage
             };
+
+            if (typeQualifier.HasValue)
+            {
+                searchRequest.Type = typeQualifier.Value;
+            }
 
             SearchIssuesResult searchResult;
             try
@@ -276,21 +301,23 @@ public class GitHubService : IGitHubService, IDisposable
             }
             catch (RateLimitExceededException ex)
             {
-                _logger?.LogDebug(ex, "Search API rate limit exceeded during pagination (page {Page}) for {Owner}/{Repo}. Discarding {Count} partially retrieved candidates.",
-                    page, owner, repo, allItems.Count);
+                _logger?.LogDebug(ex, "Search API rate limit exceeded during {Operation} pagination (page {Page}) for {Owner}/{Repo}. Discarding {Count} partially retrieved items.",
+                    operationName, page, owner, repo, allItems.Count);
                 throw;
             }
-            if (searchResult.Items.Count == 0)
+
+            if (searchResult?.Items == null || searchResult.Items.Count == 0)
                 break;
 
+            totalCount = searchResult.TotalCount;
             allItems.AddRange(searchResult.Items);
-            if (searchResult.Items.Count < perPage || allItems.Count >= searchResult.TotalCount)
+            if (searchResult.Items.Count < perPage || allItems.Count >= totalCount)
                 break;
 
-            if (page == maxPages && allItems.Count < searchResult.TotalCount)
+            if (page == maxPages && allItems.Count < totalCount)
             {
-                _logger?.LogWarning("SearchStaleCandidatesAsync truncated for {Owner}/{Repo}: retrieved {Retrieved} of {Total} items (max {MaxPages} pages).",
-                    owner, repo, allItems.Count, searchResult.TotalCount, maxPages);
+                _logger?.LogWarning("{Operation} truncated for {Owner}/{Repo}: retrieved {Retrieved} of {Total} items (max {MaxPages} pages).",
+                    operationName, owner, repo, allItems.Count, totalCount, maxPages);
             }
 
             page++;
@@ -301,7 +328,8 @@ public class GitHubService : IGitHubService, IDisposable
             }
         }
 
-        return allItems;
+        var isTruncated = allItems.Count < totalCount;
+        return new GitHubSearchPageResult<Issue>(allItems, totalCount, isTruncated);
     }
 
     public async Task<Issue?> GetIssueAsync(string owner, string repo, int number, CancellationToken ct = default)
@@ -374,6 +402,28 @@ public class GitHubService : IGitHubService, IDisposable
         using var _ = SetAmbientToken(ct);
         await EnsureAuthenticatedAsync(ct);
         await _client.Issue.Comment.Create(owner, repo, number, comment);
+    }
+
+    public async Task<CreatedCommentRef> CreateCommentWithMetadataAsync(string owner, string repo, int number, string comment, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        await EnsureAuthenticatedAsync(ct);
+        var created = await _client.Issue.Comment.Create(owner, repo, number, comment);
+        return new CreatedCommentRef(created?.Id ?? 0, created?.NodeId);
+    }
+
+    public async Task DeleteCommentAsync(string owner, string repo, long commentId, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        await EnsureAuthenticatedAsync(ct);
+        try
+        {
+            await _client.Issue.Comment.Delete(owner, repo, commentId);
+        }
+        catch (NotFoundException)
+        {
+            // Comment already deleted; define error out of existence.
+        }
     }
 
     public async Task UpdateCommentAsync(string owner, string repo, long commentId, string comment, CancellationToken ct = default)
@@ -812,6 +862,553 @@ public class GitHubService : IGitHubService, IDisposable
                 _logger?.LogWarning(ex, "Failed to create label '{Label}' in {Owner}/{Repo}", name, owner, repo);
             }
         }
+    }
+
+    public async Task<IReadOnlyList<Milestone>> GetMilestonesAsync(
+        string owner, string repo, ItemStateFilter state = ItemStateFilter.All, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var request = new MilestoneRequest { State = state };
+        return await _client.Issue.Milestone.GetAllForRepository(owner, repo, request);
+    }
+
+    public async Task<Milestone> CreateMilestoneAsync(
+        string owner, string repo, string title, DateTimeOffset? dueOn = null, string? description = null, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var newMilestone = new NewMilestone(title)
+        {
+            DueOn = dueOn,
+            Description = description
+        };
+
+        var created = await _client.Issue.Milestone.Create(owner, repo, newMilestone);
+
+        if (dueOn.HasValue && created.DueOn.HasValue && created.DueOn.Value.Date != dueOn.Value.Date)
+        {
+            try
+            {
+                var update = new MilestoneUpdate
+                {
+                    DueOn = dueOn.Value
+                };
+                created = await _client.Issue.Milestone.Update(owner, repo, created.Number, update);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogDebug(ex, "Failed to calibrate milestone due date for {Owner}/{Repo}#{Number}", owner, repo, created.Number);
+            }
+        }
+
+        return created;
+    }
+
+    public async Task<Milestone> UpdateMilestoneAsync(
+        string owner, string repo, int milestoneNumber, string title, DateTimeOffset? dueOn = null, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var update = new MilestoneUpdate
+        {
+            Title = title,
+            DueOn = dueOn
+        };
+
+        return await _client.Issue.Milestone.Update(owner, repo, milestoneNumber, update);
+    }
+
+    public async Task SetIssueMilestoneAsync(
+        string owner, string repo, int issueNumber, int? milestoneNumber, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var update = new IssueUpdate
+        {
+            Milestone = milestoneNumber
+        };
+
+        await _client.Issue.Update(owner, repo, issueNumber, update);
+    }
+
+    public async Task<GitHubSearchPageResult<Issue>> SearchMergedPullRequestsWithoutMilestoneAsync(
+        string owner, string repo, DateTimeOffset mergedAfter, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var dateStr = mergedAfter.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture);
+        var query = $"repo:{owner}/{repo} is:pr is:merged no:milestone merged:>={dateStr}";
+
+        return await SearchIssuesPaginatedAsync(
+            owner,
+            repo,
+            query,
+            IssueTypeQualifier.PullRequest,
+            nameof(SearchMergedPullRequestsWithoutMilestoneAsync),
+            ct);
+    }
+
+    public async Task LockIssueAsync(
+        string owner, string repo, int issueNumber, LockReason? lockReason = LockReason.TooHeated, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        await _client.Issue.LockUnlock.Lock(owner, repo, issueNumber, lockReason);
+    }
+
+    public async Task UnlockIssueAsync(
+        string owner, string repo, int issueNumber, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        try
+        {
+            await _client.Issue.LockUnlock.Unlock(owner, repo, issueNumber);
+        }
+        catch (NotFoundException)
+        {
+            // Idempotent: ignore if already unlocked
+        }
+    }
+
+    public async Task<bool> IsIssueLockedAsync(
+        string owner, string repo, int issueNumber, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var issue = await GetIssueAsync(owner, repo, issueNumber, ct);
+        return issue?.Locked ?? false;
+    }
+
+    public async Task<bool> MinimizeCommentAsync(
+        string owner, string repo, long commentId, string? subjectNodeId = null, string classifier = "SPAM", CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var nodeId = subjectNodeId;
+        if (string.IsNullOrWhiteSpace(nodeId))
+        {
+            var comment = await _client.Issue.Comment.Get(owner, repo, commentId);
+            nodeId = comment?.NodeId;
+        }
+
+        if (string.IsNullOrWhiteSpace(nodeId))
+        {
+            _logger?.LogWarning("Cannot minimize comment {CommentId}: nodeId unavailable", commentId);
+            return false;
+        }
+
+        const string mutation = """
+            mutation($subjectId: ID!, $classifier: ReportedContentClassifiers!) {
+              minimizeComment(input: { subjectId: $subjectId, classifier: $classifier }) {
+                minimizedComment {
+                  isMinimized
+                }
+              }
+            }
+            """;
+
+        var variables = new Dictionary<string, object>
+        {
+            ["subjectId"] = nodeId,
+            ["classifier"] = classifier
+        };
+
+        try
+        {
+            var graphQlError = await ExecuteGraphQlMutationAsync(mutation, variables, ct);
+            if (!string.IsNullOrEmpty(graphQlError))
+            {
+                _logger?.LogWarning("GraphQL error minimizing comment {CommentId} (NodeId: {NodeId}): {Error}", commentId, nodeId, graphQlError);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "Failed to minimize comment {CommentId} (NodeId: {NodeId})", commentId, nodeId);
+            return false;
+        }
+    }
+
+    public async Task ArchivePullRequestAsync(
+        string owner, string repo, int prNumber, string? pullRequestNodeId = null, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var nodeId = pullRequestNodeId;
+        if (string.IsNullOrWhiteSpace(nodeId))
+        {
+            var pr = await GetPullRequestAsync(owner, repo, prNumber, ct);
+            nodeId = pr?.NodeId;
+        }
+
+        if (string.IsNullOrWhiteSpace(nodeId))
+        {
+            throw new InvalidOperationException($"Cannot archive PR #{prNumber}: nodeId unavailable");
+        }
+
+        const string mutation = """
+            mutation($pullRequestId: ID!) {
+              archivePullRequest(input: { pullRequestId: $pullRequestId }) {
+                pullRequest {
+                  id
+                }
+              }
+            }
+            """;
+
+        var variables = new Dictionary<string, object>
+        {
+            ["pullRequestId"] = nodeId
+        };
+
+        var graphQlError = await ExecuteGraphQlMutationAsync(mutation, variables, ct);
+        if (!string.IsNullOrEmpty(graphQlError))
+        {
+            throw new InvalidOperationException($"GraphQL server error archiving PR #{prNumber}: {graphQlError}");
+        }
+    }
+
+    public async Task UnarchivePullRequestAsync(
+        string owner, string repo, int prNumber, string? pullRequestNodeId = null, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var nodeId = pullRequestNodeId;
+        if (string.IsNullOrWhiteSpace(nodeId))
+        {
+            var pr = await GetPullRequestAsync(owner, repo, prNumber, ct);
+            nodeId = pr?.NodeId;
+        }
+
+        if (string.IsNullOrWhiteSpace(nodeId))
+        {
+            throw new InvalidOperationException($"Cannot unarchive PR #{prNumber}: nodeId unavailable");
+        }
+
+        const string mutation = """
+            mutation($pullRequestId: ID!) {
+              unarchivePullRequest(input: { pullRequestId: $pullRequestId }) {
+                pullRequest {
+                  id
+                }
+              }
+            }
+            """;
+
+        var variables = new Dictionary<string, object>
+        {
+            ["pullRequestId"] = nodeId
+        };
+
+        var graphQlError = await ExecuteGraphQlMutationAsync(mutation, variables, ct);
+        if (!string.IsNullOrEmpty(graphQlError))
+        {
+            throw new InvalidOperationException($"GraphQL server error unarchiving PR #{prNumber}: {graphQlError}");
+        }
+    }
+
+    private async Task<string?> ExecuteGraphQlMutationAsync(
+        string mutation,
+        Dictionary<string, object> variables,
+        CancellationToken ct)
+    {
+        // Dictionary<string, object> preserves exact camelCase GraphQL variable names;
+        // Octokit's SimpleJsonSerializer converts anonymous-type property names to snake_case.
+        var payload = new Dictionary<string, object>
+        {
+            ["query"] = mutation,
+            ["variables"] = variables
+        };
+
+        var response = await _client.Connection.Post<object>(
+            new Uri("graphql", UriKind.Relative),
+            payload,
+            "application/json",
+            "application/json",
+            (IDictionary<string, string>?)null,
+            ct);
+
+        return TryGetGraphQlErrorMessage(response);
+    }
+
+    public async Task<GitHubSearchPageResult<Issue>> SearchClosedPullRequestsAsync(
+        string owner, string repo, DateTimeOffset closedBefore, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        var dateStr = closedBefore.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture);
+        var query = $"repo:{owner}/{repo} is:pr is:closed is:unlocked closed:<{dateStr}";
+
+        return await SearchIssuesPaginatedAsync(
+            owner,
+            repo,
+            query,
+            IssueTypeQualifier.PullRequest,
+            nameof(SearchClosedPullRequestsAsync),
+            ct);
+    }
+
+    public async Task<RepositoryAccessLevel> GetUserPermissionAsync(
+        string owner, string repo, string username, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return RepositoryAccessLevel.None;
+        }
+
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        try
+        {
+            var response = await _client.Repository.Collaborator.ReviewPermission(owner, repo, username.Trim());
+            if (response == null)
+            {
+                return RepositoryAccessLevel.None;
+            }
+
+            return MapPermissionLevel(response.RoleName) ??
+                   MapPermissionLevel(response.Permission) ??
+                   RepositoryAccessLevel.None;
+        }
+        catch (NotFoundException)
+        {
+            return RepositoryAccessLevel.None;
+        }
+    }
+
+    public async Task VerifyCollaboratorPermissionProbeAsync(
+        string owner, string repo, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+        await EnsureAuthenticatedAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        await _client.Repository.Collaborator.GetAll(owner, repo, new ApiOptions
+        {
+            PageSize = 1,
+            PageCount = 1
+        });
+    }
+
+    public async Task VerifyArchivePermissionProbeAsync(
+        string owner, string repo, CancellationToken ct = default)
+    {
+        using var _ = SetAmbientToken(ct);
+        ct.ThrowIfCancellationRequested();
+
+        if (!string.IsNullOrWhiteSpace(_botPat))
+        {
+            await EnsureAuthenticatedAsync(ct);
+            ct.ThrowIfCancellationRequested();
+
+            var repoInfo = await _client.Repository.Get(owner, repo);
+            var perms = repoInfo?.Permissions;
+            if (perms == null || !(perms.Triage || perms.Push || perms.Maintain || perms.Admin))
+            {
+                throw new InvalidOperationException(
+                    $"Configured BotPat lacks triage+ permission on '{owner}/{repo}' required for ConversationGuard:ArchiveEnabled=true.");
+            }
+
+            return;
+        }
+
+        await _authLock.WaitAsync(ct);
+        try
+        {
+            var jwt = GenerateJwt();
+            var priorCredentials = _client.Connection.Credentials;
+            _client.Connection.Credentials = new Credentials(jwt, AuthenticationType.Bearer);
+            try
+            {
+                var installation = await _client.GitHubApps.GetInstallationForCurrent(_installationId);
+                var adminPermission = installation?.Permissions?.Administration;
+                if (adminPermission != InstallationReadWritePermissionLevel.Write)
+                {
+                    throw new InvalidOperationException(
+                        $"GitHub App installation {_installationId} has Administration='{adminPermission?.StringValue ?? "none"}' " +
+                        $"for '{owner}/{repo}'; ConversationGuard:ArchiveEnabled=true requires 'Administration: Read & write' (or a triage+ BotPat).");
+                }
+            }
+            finally
+            {
+                _client.Connection.Credentials = priorCredentials;
+            }
+        }
+        finally
+        {
+            _authLock.Release();
+        }
+    }
+
+    public async Task<string> GetBotLoginAsync(CancellationToken cancellationToken = default)
+    {
+        if (!string.IsNullOrWhiteSpace(_cachedBotLogin))
+        {
+            return _cachedBotLogin;
+        }
+
+        await _botLoginLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_cachedBotLogin))
+            {
+                return _cachedBotLogin;
+            }
+
+            await _authLock.WaitAsync(cancellationToken);
+            try
+            {
+                var priorCredentials = _client.Connection.Credentials;
+                try
+                {
+                    string? resolvedLogin;
+                    if (!string.IsNullOrWhiteSpace(_botPat))
+                    {
+                        _client.Connection.Credentials = new Credentials(_botPat);
+                        var currentUser = await _client.User.Current();
+                        resolvedLogin = currentUser?.Login;
+                    }
+                    else
+                    {
+                        var jwt = GenerateJwt();
+                        _client.Connection.Credentials = new Credentials(jwt, AuthenticationType.Bearer);
+                        var app = await _client.GitHubApps.GetCurrent();
+                        resolvedLogin = app?.Slug;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(resolvedLogin))
+                    {
+                        throw new InvalidOperationException("GitHub API returned an empty bot login/slug.");
+                    }
+
+                    _cachedBotLogin = resolvedLogin.Trim();
+                    return _cachedBotLogin;
+                }
+                finally
+                {
+                    _client.Connection.Credentials = priorCredentials;
+                }
+            }
+            finally
+            {
+                _authLock.Release();
+            }
+        }
+        finally
+        {
+            _botLoginLock.Release();
+        }
+    }
+
+    private static RepositoryAccessLevel? MapPermissionLevel(string? rawLevel)
+    {
+        if (string.IsNullOrWhiteSpace(rawLevel))
+        {
+            return null;
+        }
+
+        return rawLevel.Trim().ToLowerInvariant() switch
+        {
+            "admin" => RepositoryAccessLevel.Admin,
+            "maintain" => RepositoryAccessLevel.Maintain,
+            "write" => RepositoryAccessLevel.Write,
+            "triage" => RepositoryAccessLevel.Triage,
+            "read" => RepositoryAccessLevel.Read,
+            "none" => RepositoryAccessLevel.None,
+            _ => null
+        };
+    }
+
+    private static string? TryGetGraphQlErrorMessage(IApiResponse<object>? response)
+    {
+        if (response == null)
+        {
+            return null;
+        }
+
+        if (response.Body is IDictionary<string, object> dict &&
+            dict.TryGetValue("errors", out var errorsVal) &&
+            errorsVal != null)
+        {
+            return errorsVal.ToString();
+        }
+
+        var rawBody = response.HttpResponse?.Body as string ?? response.Body as string;
+        if (string.IsNullOrWhiteSpace(rawBody) && response.Body is JsonElement element && element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty("errors", out var errorsProp) &&
+                errorsProp.ValueKind == JsonValueKind.Array &&
+                errorsProp.GetArrayLength() > 0)
+            {
+                return errorsProp.GetRawText();
+            }
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(rawBody) && rawBody.Contains("\"errors\"", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(rawBody);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                    doc.RootElement.TryGetProperty("errors", out var errorsProp) &&
+                    errorsProp.ValueKind == JsonValueKind.Array &&
+                    errorsProp.GetArrayLength() > 0)
+                {
+                    return errorsProp.GetRawText();
+                }
+            }
+            catch (JsonException)
+            {
+                // Ignore non-JSON bodies
+            }
+        }
+
+        return null;
     }
 
     public void Dispose()

@@ -23,7 +23,7 @@ public static class UpdateAdmission
         RegexOptions.Compiled);
 
     private static readonly Regex SafeVersionRegex = new(
-        @"^[a-zA-Z0-9_.+~^]+$",
+        @"^(?:\d+:)?[a-zA-Z0-9_.+~^]+$",
         RegexOptions.Compiled);
 
     /// <summary>
@@ -154,8 +154,15 @@ public static class UpdateAdmission
     /// </summary>
     public static int CompareRpmVersions(string? v1, string? v2)
     {
-        var str1 = StripVersionSuffix(v1 ?? string.Empty);
-        var str2 = StripVersionSuffix(v2 ?? string.Empty);
+        var (epoch1, rawVer1) = SplitEpoch(StripVersionSuffix(v1 ?? string.Empty));
+        var (epoch2, rawVer2) = SplitEpoch(StripVersionSuffix(v2 ?? string.Empty));
+
+        var epochCmp = epoch1.CompareTo(epoch2);
+        if (epochCmp != 0)
+            return epochCmp > 0 ? 1 : -1;
+
+        var str1 = rawVer1;
+        var str2 = rawVer2;
 
         if (string.Equals(str1, str2, StringComparison.Ordinal))
             return 0;
@@ -230,6 +237,17 @@ public static class UpdateAdmission
         }
 
         return 0;
+    }
+
+    private static (long Epoch, string Version) SplitEpoch(string input)
+    {
+        var colonIdx = input.IndexOf(':');
+        if (colonIdx > 0 && long.TryParse(input[..colonIdx], out var epoch) && epoch >= 0)
+        {
+            return (epoch, input[(colonIdx + 1)..]);
+        }
+
+        return (0, input);
     }
 
     /// <summary>

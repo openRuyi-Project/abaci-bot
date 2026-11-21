@@ -27,7 +27,9 @@ public class DocumentationContractTests
         [typeof(BotDetectionOptions)] = "docs/modules/workflow-state.md",
         [typeof(FileCacheOptions)] = "docs/configuration.md",
         [typeof(PackageUpdateOptions)] = "docs/modules/package-update.md",
-        [typeof(CveActiveWatchOptions)] = "docs/modules/cve-active-watch.md"
+        [typeof(CveActiveWatchOptions)] = "docs/modules/cve-active-watch.md",
+        [typeof(MilestoneSyncOptions)] = "docs/modules/milestone-sync.md",
+        [typeof(ConversationGuardOptions)] = "docs/modules/conversation-guard.md"
     };
 
     private static readonly Dictionary<string, string> ModuleDocs = new()
@@ -43,7 +45,9 @@ public class DocumentationContractTests
         ["SpdxComplianceModule"] = "docs/modules/spdx-compliance.md",
         ["VulnerabilityModule"] = "docs/modules/vulnerability.md",
         ["RebuildImpactModule"] = "docs/modules/rebuild-impact.md",
-        ["AbiComplianceModule"] = "docs/modules/abi-compliance.md"
+        ["AbiComplianceModule"] = "docs/modules/abi-compliance.md",
+        ["MilestoneSyncModule"] = "docs/modules/milestone-sync.md",
+        ["ConversationGuardModule"] = "docs/modules/conversation-guard.md"
     };
 
     [Fact]
