@@ -13,7 +13,7 @@ This guide covers production deployment options, host prerequisites, containeriz
 | **Operating System** | Linux (Fedora 45+ recommended) | Kernel 6.x+ | Fedora 45 includes native RPM v4 and v6 (07070X indexed format) extraction support. |
 | **ABI Tools** | Libabigail 2.6+ | `abipkgdiff`, `libabigail` | Executes binary shared library comparison. |
 | **Package Tools** | RPM 4.20+ / 6.0+ | `rpm`, `rpm2cpio`, `cpio` | Required to unpack payload archives from RPM packages. |
-| **Runtime** | .NET 10 LTS | `libicu`, `libssl`, `libz` | Required for self-contained or framework-dependent .NET 10 execution. |
+| **Runtime** | .NET 10 LTS | `libicu`, `tzdata`, `libssl`, `libz` | Required for .NET 10 execution and IANA timezone resolution (`MilestoneSync:TimeZoneId`). |
 
 ---
 
@@ -44,9 +44,12 @@ services:
       - "127.0.0.1:3456:3456"
     volumes:
       - ./appsettings.json:/app/appsettings.json:ro
+      - ./state:/state
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_HTTP_PORTS=3456
+      - BotState__StateDirectory=/state
+      - ABACI_IMAGE_DIGEST=${ABACI_IMAGE_DIGEST:-unknown}
       # Optional environment variable overrides:
       # - GitHubApp__AppId=123456
       # - GitHubApp__InstallationId=78901234
@@ -65,9 +68,22 @@ services:
 ```
 
 ### Starting the Service
+Create and grant ownership of the persistent state directory to container UID/GID `1654:1654` before starting Docker Compose (otherwise Docker creates `./state` as `root` and startup will fail fast because uid `1654` cannot write to `/state`):
+
 ```bash
-docker compose up -d
+mkdir -p state
+sudo chown 1654:1654 state
+
+# Download the release deployment-manifest.env artifact (contains ABACI_IMAGE_DIGEST)
+gh run download -R openRuyi-Project/abaci-bot --name deployment-manifest --dir .
+docker compose --env-file deployment-manifest.env up -d
 docker compose logs -f
+```
+
+When building a container image locally instead of pulling from GHCR, use the wrapper script so `GIT_COMMIT` and `GIT_DIRTY` are injected automatically:
+
+```bash
+./scripts/docker-build.sh -t abaci-bot:local
 ```
 
 ---
@@ -116,10 +132,12 @@ ProtectSystem=full
 ProtectHome=true
 NoNewPrivileges=true
 PrivateTmp=true
+StateDirectory=abaci-bot
 
 # Environment Configuration
 Environment=ASPNETCORE_ENVIRONMENT=Production
 Environment=ASPNETCORE_HTTP_PORTS=3456
+Environment=BotState__StateDirectory=/var/lib/abaci-bot
 EnvironmentFile=-/etc/default/abaci-bot
 
 [Install]
@@ -208,7 +226,24 @@ once per organization.
 | Organization | **Members: Read-only** | Resolve the `captains` team for review transitions. |
 
 `Contents: write` is only needed if you want the App itself to merge pull requests; the
-bot does not. No `Workflows` or `Checks` permission is required.
+bot does not. No `Workflows` or `Checks` permission is required while community
+governance (`ConversationGuard`) remains disabled.
+
+> [!NOTE]
+> **Elevated permissions for `ConversationGuard`:** When `ConversationGuard:Enabled`
+> is set to `true`, authorizing `@<bot> lock`, `@<bot> unlock`, and `@<bot> hide` against
+> authoritative repository collaborator roles (`triage`/`write`+) requires granting the
+> GitHub App **Repository -> Administration: Read-only** (or **Contents: Read & write**).
+> Additionally enabling `ConversationGuard:ArchiveEnabled=true` (`@<bot> archive`) requires
+> **Repository -> Administration: Read & write** on the GitHub App (or a `triage`+
+> `PackageUpdate:BotPat`), because standard minimal App tokens receive `FORBIDDEN` from
+> GitHub's `archivePullRequest` GraphQL mutation.
+> On startup (including when `DryRun` is `true`), `ConversationGuardPermissionProbe`
+> verifies collaborator endpoint access (and archive permission when `ArchiveEnabled=true`)
+> on every repository in `ConversationGuard:RepositoryAllowList` and aborts startup if any
+> required permission is missing, ensuring dry-run simulation and archive readiness match
+> production credentials. Keep `ConversationGuard:Enabled` set to `false` to preserve the
+> baseline minimal permission set.
 
 ### 5.3 Event subscriptions
 
@@ -256,12 +291,14 @@ visible to the App's `Members` permission; keep it non-secret.
 | `GitHubApp:TeamName` | The team slug, for example `captains`. |
 | `Kestrel:Endpoints:Http:Url` | `http://0.0.0.0:3456` inside the container. |
 
+Deployments adapting `abaci-bot` to other RPM-based Linux distributions should review [Multi-Distribution Configuration Boundary](configuration.md#8-multi-distribution-configuration-boundary) for timezone and endpoint defaults to override in `appsettings.json`.
+
 ### 5.8 Create labels and verify deliveries
 
 1. Create every managed label before the first webhook; see
    [labels.md](labels.md#3-creating-labels-upstream).
 2. In the App settings, open **Advanced → Recent Deliveries** and use **Redeliver**.
-   A correctly configured deployment returns 200.
+   A correctly configured deployment returns 200. Note that `X-GitHub-Delivery` deduplication is held in process memory (`10`-minute TTL, `4,096` entries); duplicate redeliveries within that window are skipped immediately, whereas redeliveries after a process restart run once idempotently against live GitHub PR state.
 3. Check `http://<your-host>/health` and open a draft pull request to confirm the
    `Status: New` and workflow labels.
 
@@ -275,16 +312,22 @@ Verify that the service is running and all governance modules are healthy:
 curl -f http://localhost:3456/health
 ```
 
-Expected JSON response:
+Expected default JSON response (liveness + immutable build/artifact identity):
 ```json
 {
   "status": "healthy",
-  "timestamp": "2026-11-17T16:28:03.1146402Z",
-  "abiEngine": "native"
+  "timestamp": "2026-11-20T16:28:03.1146402Z",
+  "version": "1.0.0",
+  "commit": "0a5160c",
+  "imageDigest": "unknown",
+  "buildTime": "2026-11-20T16:20:00Z",
+  "deployment": "container"
 }
 ```
+Pass `?verbose=true` (`curl -f "http://localhost:3456/health?verbose=true"`) for operational diagnostics including `startedAt`, `uptimeSeconds`, `capabilities` (`abiEngine`, `conversationGuardPermission`), `modules` (non-secret enabled/dryRun flags), `runtime` (`lastError`, `lastErrorAt`), and `sources` (per-source snapshots for `Lookout` and `RustCrates`: `status` as `healthy` / `degraded` / `failed` / `disabled`, `lastAttemptAt`, `lastSuccessAt` reflecting only clean `healthy` sweeps and preserved across `degraded`/`failed`, `lastCandidateCount`, `consecutiveFailures`, and sanitized `lastError`). External upstream source outages do **not** cause the default liveness probe `GET /health` to return non-200 status (so containers are not restart-looped due to third-party API downtime).
+Use `./scripts/docker-build.sh` (or `./scripts/docker-build.ps1`) when building the Docker image locally so `GIT_COMMIT` and `GIT_DIRTY` are detected automatically; native `dotnet build`/`dotnet publish` and the release workflow (`github.sha` + `git status --porcelain`) populate `commit` automatically (appending `-dirty` when the working tree has uncommitted changes). Because the OCI registry manifest digest (`sha256:...`) does not exist until after a container image is built and pushed, the release workflow captures `build-and-push.outputs.digest` into a `deployment-manifest.env` artifact (`ABACI_IMAGE_DIGEST`), which you fetch with `gh run download -R openRuyi-Project/abaci-bot --name deployment-manifest --dir .` and pass via `docker compose --env-file deployment-manifest.env up -d` (defaulting to `"unknown"` when omitted). Neither `/health` nor `/health?verbose=true` exposes filesystem paths, environment variables, or secrets.
 
-`abiEngine` reports the active engine tier: `native`, `managed`, `unavailable`, or
+In verbose mode, `capabilities.abiEngine` reports `native`, `managed`, `unavailable`, or
 `disabled`.
 
 > [!IMPORTANT]
@@ -300,6 +343,7 @@ If `abiEngine` reports `managed`, the host lacks native Libabigail or RPM extrac
 If startup terminates with `InvalidOperationException`:
 - Verify that `abipkgdiff`, `rpm2cpio`, and `cpio` are installed and available in `$PATH`.
 - Check permissions on `/tmp` or `TempExtractionDirectory`.
+- Ensure no other active `abaci-bot` process is already holding the exclusive OS lock on `BotState:StateDirectory/bot-state.lock` (single-writer lock; stop the existing instance before starting a replacement on the same state volume).
 - If running under Docker, ensure the image is built from Fedora 45 (`registry.fedoraproject.org/fedora:45`).
 
 ### Rollback Procedure

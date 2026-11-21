@@ -172,4 +172,79 @@ public class PullRequestPipelineCommentTests
         await _gitHub.DidNotReceive().CreateCommentAsync(
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task ExecuteAsync_WithTargetMilestone_CallsSetIssueMilestoneAsync()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.When(m => m.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo =>
+            {
+                var ctx = callInfo.Arg<PullRequestContext>();
+                ctx.TargetMilestone = 42;
+            });
+
+        var pipeline = new PullRequestPipeline(new[] { module }, _mutexEngine, _gitHub);
+        var context = CreateContext();
+
+        await pipeline.ExecuteAsync(context, CancellationToken.None);
+
+        await _gitHub.Received(1).SetIssueMilestoneAsync("openRuyi-Project", "openRuyi", 77, 42, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TargetMilestoneThrowsException_CatchesGracefullyWithoutRollingBack()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.When(m => m.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo =>
+            {
+                var ctx = callInfo.Arg<PullRequestContext>();
+                ctx.LabelsToAdd.Add(GitHubLabels.WorkflowComplete);
+                ctx.TargetMilestone = 42;
+            });
+
+        _gitHub.SetIssueMilestoneAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new InvalidOperationException("Milestone API failure"));
+
+        var pipeline = new PullRequestPipeline(new[] { module }, _mutexEngine, _gitHub);
+        var context = CreateContext();
+
+        var ex = await Record.ExceptionAsync(() => pipeline.ExecuteAsync(context, CancellationToken.None));
+        Assert.Null(ex);
+        await _gitHub.Received(1).AddLabelsAsync(
+            "openRuyi-Project",
+            "openRuyi",
+            77,
+            Arg.Is<string[]>(labels => labels.Contains(GitHubLabels.WorkflowComplete)),
+            Arg.Any<CancellationToken>());
+        await _gitHub.DidNotReceive().RemoveLabelAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), GitHubLabels.WorkflowComplete, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TargetMilestoneCancelled_RethrowsOperationCanceledException()
+    {
+        var module = Substitute.For<IPullRequestModule>();
+        module.Priority.Returns(10);
+        module.ShouldProcess(Arg.Any<PullRequestContext>()).Returns(true);
+        module.When(m => m.ProcessAsync(Arg.Any<PullRequestContext>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo =>
+            {
+                var ctx = callInfo.Arg<PullRequestContext>();
+                ctx.TargetMilestone = 42;
+            });
+
+        _gitHub.SetIssueMilestoneAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new OperationCanceledException());
+
+        var pipeline = new PullRequestPipeline(new[] { module }, _mutexEngine, _gitHub);
+        var context = CreateContext();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => pipeline.ExecuteAsync(context, CancellationToken.None));
+    }
 }

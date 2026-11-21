@@ -3332,6 +3332,70 @@ public class PipelineAndModulesTests
         Assert.Null(context.AuthorLogin);
     }
 
+    [Fact]
+    public async Task PullRequestPipeline_DuplicateOpenedWebhookDelivery_ProducesZeroDuplicateWrites()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var modules = new IPullRequestModule[]
+        {
+            new WorkflowStateModule(),
+            new ShinyNewPrModule()
+        };
+        var pipeline = new PullRequestPipeline(modules, mutexEngine, gitHub);
+
+        var appliedLabels = new[] { GitHubLabels.WorkflowReadyForReview, GitHubLabels.StatusNew };
+        var ctx = CreateMockContext(
+            gitHub,
+            prNumber: 77,
+            isDraft: false,
+            action: nameof(WebhookPullRequestAction.Opened),
+            prAction: WebhookPullRequestAction.Opened,
+            existingLabels: appliedLabels,
+            mockRefresh: true);
+
+        await pipeline.ExecuteAsync(ctx);
+
+        await gitHub.DidNotReceiveWithAnyArgs().AddLabelsAsync(default!, default!, default, default!, default);
+        await gitHub.DidNotReceiveWithAnyArgs().RemoveLabelAsync(default!, default!, default, default!, default);
+        await gitHub.DidNotReceiveWithAnyArgs().CreateCommentAsync(default!, default!, default, default!, default);
+    }
+
+    [Fact]
+    public async Task PullRequestPipeline_OutOfOrderOpenedWebhookOnClosedMergedPr_DoesNotRegressToInDev()
+    {
+        var gitHub = Substitute.For<IGitHubService>();
+        var mutexEngine = new LabelMutexEngine();
+        var pipeline = new PullRequestPipeline(new IPullRequestModule[] { new WorkflowStateModule() }, mutexEngine, gitHub);
+
+        // Authoritative remote state shows PR #88 is already closed+merged with Workflow: Complete
+        var closedMergedPr = (PullRequest)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PullRequest));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Draft))?.SetValue(closedMergedPr, false);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.State))?.SetValue(closedMergedPr, new StringEnum<ItemState>(ItemState.Closed));
+        typeof(PullRequest).GetProperty(nameof(PullRequest.MergedAt))?.SetValue(closedMergedPr, (DateTimeOffset?)DateTimeOffset.UtcNow);
+        var completeLabel = (Octokit.Label)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Octokit.Label));
+        typeof(Octokit.Label).GetProperty(nameof(Octokit.Label.Name))?.SetValue(completeLabel, GitHubLabels.WorkflowComplete);
+        typeof(PullRequest).GetProperty(nameof(PullRequest.Labels))?.SetValue(closedMergedPr, new[] { completeLabel });
+
+        gitHub.GetPullRequestAsync("owner", "repo", 88, Arg.Any<CancellationToken>())
+            .Returns(closedMergedPr);
+
+        // Stale out-of-order 'opened' draft payload arrives late
+        var staleOpenedCtx = CreateMockContext(
+            gitHub,
+            prNumber: 88,
+            isDraft: true,
+            action: nameof(WebhookPullRequestAction.Opened),
+            prAction: WebhookPullRequestAction.Opened,
+            existingLabels: Array.Empty<string>(),
+            mockRefresh: false);
+
+        await pipeline.ExecuteAsync(staleOpenedCtx);
+
+        await gitHub.DidNotReceiveWithAnyArgs().AddLabelsAsync(default!, default!, default, default!, default);
+        await gitHub.DidNotReceiveWithAnyArgs().RemoveLabelAsync(default!, default!, default, default!, default);
+    }
+
     #endregion
 
     #endregion

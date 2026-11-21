@@ -63,6 +63,8 @@ appsettings.json
 .idea
 .vs/
 .vscode/
+.trae/
+.trae-cn/
 Properties/launchSettings.json
 *.log
 *AUDIT*.md

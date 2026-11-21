@@ -83,7 +83,7 @@ public class AbiComplianceModule : IPullRequestModule
             var reason = !string.IsNullOrWhiteSpace(result.ErrorMessage)
                 ? result.ErrorMessage
                 : (!string.IsNullOrWhiteSpace(result.Details) ? result.Details : "Unknown engine error");
-            var comment = _formatter.FormatAbiCheckFailed(reason);
+            var comment = _formatter.FormatAbiCheckFailed(reason, context.PreferredLocale);
             context.PendingComments.Add(comment);
         }
 
@@ -91,7 +91,7 @@ public class AbiComplianceModule : IPullRequestModule
         {
             if (!context.ExistingLabels.Contains(GitHubLabels.ImpactBreakingChange))
             {
-                var report = _formatter.FormatAbiBreakingChange(result.Details);
+                var report = _formatter.FormatAbiBreakingChange(result.Details, context.PreferredLocale);
                 context.PendingComments.Add(report);
             }
             _logger?.LogWarning("PR #{PrNumber} flagged with ABI breaking changes.", context.PrNumber);

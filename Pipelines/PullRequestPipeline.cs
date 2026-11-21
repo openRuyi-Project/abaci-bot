@@ -16,6 +16,7 @@ public class PullRequestPipeline
     private readonly LabelMutexEngine _mutexEngine;
     private readonly IGitHubService _gitHubService;
     private readonly IGovernanceCommentFormatter _formatter;
+    private readonly ILocaleResolver? _localeResolver;
     private readonly ILogger<PullRequestPipeline>? _logger;
     private readonly TimeSpan _recoveryTimeout;
 
@@ -32,7 +33,8 @@ public class PullRequestPipeline
         IGitHubService gitHubService,
         ILogger<PullRequestPipeline>? logger = null,
         TimeSpan? recoveryTimeout = null,
-        IGovernanceCommentFormatter? formatter = null)
+        IGovernanceCommentFormatter? formatter = null,
+        ILocaleResolver? localeResolver = null)
     {
         _modules = modules.OrderBy(m => m.Priority).ToList();
         _mutexEngine = mutexEngine;
@@ -40,6 +42,7 @@ public class PullRequestPipeline
         _logger = logger;
         _recoveryTimeout = recoveryTimeout ?? DefaultRecoveryTimeout;
         _formatter = formatter ?? new GovernanceCommentFormatter();
+        _localeResolver = localeResolver;
     }
 
     /// <summary>
@@ -111,6 +114,14 @@ public class PullRequestPipeline
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+
+        if (_localeResolver != null)
+        {
+            context.PreferredLocale ??= _localeResolver.ResolveForReply(
+                context.Owner,
+                context.Repo,
+                context.AuthorLogin ?? context.SenderLogin);
+        }
 
         // Evaluate module eligibility against refreshed authoritative remote state
         if (!HasEligibleModule(context))
@@ -232,6 +243,43 @@ public class PullRequestPipeline
                     ex, recoveryFailure!);
             }
         }
+
+        await ApplyMilestoneAsync(context, cancellationToken);
+    }
+
+    private async Task ApplyMilestoneAsync(PullRequestContext context, CancellationToken cancellationToken)
+    {
+        if (!context.TargetMilestone.HasValue)
+        {
+            return;
+        }
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await _gitHubService.SetIssueMilestoneAsync(
+                context.Owner,
+                context.Repo,
+                context.PrNumber,
+                context.TargetMilestone.Value,
+                cancellationToken);
+
+            _logger?.LogInformation(
+                "Successfully assigned milestone {Milestone} to pull request {Owner}/{Repo}#{PrNumber}",
+                context.TargetMilestone.Value, context.Owner, context.Repo, context.PrNumber);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Milestone assignment failure does not roll back or invalidate label synchronization (isolated channel 3)
+            _logger?.LogWarning(
+                ex,
+                "Failed to assign milestone {Milestone} to pull request {Owner}/{Repo}#{PrNumber}. Label synchronization remains unaffected.",
+                context.TargetMilestone.Value, context.Owner, context.Repo, context.PrNumber);
+        }
     }
 
     private sealed class WriteTracker
@@ -303,7 +351,7 @@ public class PullRequestPipeline
             return;
 
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine(_formatter.FormatConsolidatedHeader());
+        sb.AppendLine(_formatter.FormatConsolidatedHeader(context.PreferredLocale));
         sb.AppendLine();
         foreach (var comment in context.PendingComments)
         {

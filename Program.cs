@@ -9,6 +9,9 @@ using Octokit.Webhooks.AspNetCore;
 
 // Load appsettings.json and environment variables
 var builder = WebApplication.CreateBuilder(args);
+var runtimeHealth = new RuntimeHealthState(TimeProvider.System);
+builder.Services.AddSingleton(runtimeHealth);
+builder.Logging.AddProvider(new RuntimeErrorLoggerProvider(runtimeHealth));
 
 // Validate required configuration — make sure appsettings.json exists and is filled in
 var config = builder.Configuration;
@@ -57,12 +60,19 @@ catch (Exception ex)
     return;
 }
 
-builder.Services.AddSingleton<IGitHubService>(sp => new GitHubService(
+builder.Services.AddSingleton(sp => new GitHubService(
     builder.Configuration.GetValue<int>("GitHubApp:AppId"),
     builder.Configuration["GitHubApp:PrivateKey"]!,
     builder.Configuration.GetValue<long>("GitHubApp:InstallationId"),
+    builder.Configuration["PackageUpdate:BotPat"],
     sp.GetService<ILogger<GitHubService>>()
 ));
+builder.Services.AddSingleton<IGitHubService>(sp => sp.GetRequiredService<GitHubService>());
+builder.Services.AddSingleton<IRepositoryPermissionService>(sp => sp.GetRequiredService<GitHubService>());
+builder.Services.AddSingleton<IBotIdentityProvider>(sp => sp.GetRequiredService<GitHubService>());
+builder.Services.AddSingleton<IEphemeralCommentGateway>(sp => sp.GetRequiredService<GitHubService>());
+builder.Services.AddSingleton<IRepositoryArchiveGateway>(sp => sp.GetRequiredService<GitHubService>());
+builder.Services.AddSingleton<IPagedIssueSearchGateway>(sp => sp.GetRequiredService<GitHubService>());
 
 builder.Services.AddHttpClient();
 
@@ -75,10 +85,39 @@ builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<Stal
 builder.Services.Configure<BotDetectionOptions>(config.GetSection("BotDetection"));
 builder.Services.Configure<SpdxComplianceOptions>(config.GetSection("SpdxCompliance"));
 builder.Services.Configure<CveSecurityOptions>(config.GetSection("CveSecurity"));
-builder.Services.Configure<RebuildImpactOptions>(config.GetSection("RebuildImpact"));
+builder.Services.AddOptions<RebuildImpactOptions>()
+    .Bind(config.GetSection("RebuildImpact"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<RebuildImpactOptions>, RebuildImpactOptionsValidator>();
 builder.Services.Configure<AbiComplianceOptions>(config.GetSection("AbiCompliance"));
 builder.Services.Configure<FileCacheOptions>(config.GetSection("FileCache"));
 builder.Services.AddSingleton<IFileContentCache, FileContentCache>();
+builder.Services.AddOptions<PackageUpdateOptions>()
+    .Bind(config.GetSection("PackageUpdate"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<PackageUpdateOptions>, PackageUpdateOptionsValidator>();
+builder.Services.AddOptions<CveActiveWatchOptions>()
+    .Bind(config.GetSection("CveActiveWatch"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<CveActiveWatchOptions>, CveActiveWatchOptionsValidator>();
+builder.Services.AddOptions<MilestoneSyncOptions>()
+    .Bind(config.GetSection("MilestoneSync"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<MilestoneSyncOptions>, MilestoneSyncOptionsValidator>();
+builder.Services.AddOptions<BotStateOptions>()
+    .Bind(config.GetSection("BotState"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<BotStateOptions>, BotStateOptionsValidator>();
+builder.Services.AddSingleton<IBotStateStore, JsonBotStateStore>();
+builder.Services.AddSingleton<ILocaleResolver, LocaleResolver>();
+builder.Services.AddSingleton<EphemeralReplyService>();
+builder.Services.AddSingleton<IEphemeralReplyService>(sp => sp.GetRequiredService<EphemeralReplyService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<EphemeralReplyService>());
+
+builder.Services.AddOptions<ConversationGuardOptions>()
+    .Bind(config.GetSection("ConversationGuard"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<ConversationGuardOptions>, ConversationGuardOptionsValidator>();
 
 // Register pipeline infrastructure and mutual-exclusion engine
 builder.Services.AddSingleton<PullRequestLockManager>();
@@ -89,7 +128,7 @@ builder.Services.AddSingleton<IChangeTypeStrategy, OpenRuyiPackageRepoStrategy>(
 builder.Services.AddSingleton<IChangeTypeStrategy, HomepageRepoStrategy>();
 builder.Services.AddSingleton<IChangeTypeStrategy, DefaultChangeTypeStrategy>();
 
-// Register Part 2.2 domain services
+// Register compliance, security, rebuild impact, and ABI domain services
 builder.Services.AddSingleton<ISpdxLicenseService, SpdxLicenseService>();
 builder.Services.AddSingleton<ICveSecurityService, CveSecurityService>();
 builder.Services.AddSingleton<IRpmDependencyService, RpmDependencyService>();
@@ -104,6 +143,23 @@ builder.Services.AddSingleton<IAbiDiffService>(sp =>
         sp.GetService<ILogger<AbiDiffService>>()));
 builder.Services.AddSingleton<IArtifactService, ArtifactService>();
 builder.Services.AddSingleton<IGovernanceCommentFormatter, GovernanceCommentFormatter>();
+builder.Services.AddSingleton<IRebuildVerificationOrchestrator, ManualGuideRebuildVerificationOrchestrator>();
+
+// Register package update, CVE watch, milestone, and conversation governance services
+builder.Services.AddSingleton<ISpecCatalog, GitHubSpecCatalog>();
+builder.Services.AddSingleton<ISpecVersionRewriter, PlainSpecVersionRewriter>();
+builder.Services.AddSingleton<ISpecVersionRewriter, RustCrateSpecRewriter>();
+builder.Services.AddSingleton<IUpdateCandidateSource, LookoutVersionSource>();
+builder.Services.AddSingleton<IUpdateCandidateSource, RustCrateVersionSource>();
+builder.Services.AddSingleton<IObsBuildService, ObsBuildService>();
+builder.Services.AddSingleton<IRemoteAssetBackfiller, RemoteAssetBackfiller>();
+builder.Services.AddSingleton<IPackageUpdatePublisher, GitHubPackageUpdatePublisher>();
+builder.Services.AddSingleton<ObsPostMergeVerifier>();
+builder.Services.AddSingleton<IPackageVulnerabilityScanner, PackageVulnerabilityScanner>();
+builder.Services.AddSingleton<IMilestoneResolver, MilestoneResolver>();
+builder.Services.AddSingleton(_ => new PendingConfirmationStore());
+builder.Services.AddSingleton<IConversationGuardService, ConversationGuardService>();
+builder.Services.AddSingleton<IBotControlPlaneService, BotControlPlaneService>();
 
 // Register pluggable pull request governance modules (executed in priority order)
 builder.Services.AddSingleton<IPullRequestModule, WorkflowStateModule>();
@@ -118,12 +174,20 @@ builder.Services.AddSingleton<IPullRequestModule, SpdxComplianceModule>();
 builder.Services.AddSingleton<IPullRequestModule, VulnerabilityModule>();
 builder.Services.AddSingleton<IPullRequestModule, RebuildImpactModule>();
 builder.Services.AddSingleton<IPullRequestModule, AbiComplianceModule>();
+builder.Services.AddSingleton<IPullRequestModule, MilestoneSyncModule>();
+builder.Services.AddSingleton<IPullRequestModule, ConversationGuardModule>();
+builder.Services.AddSingleton<IPullRequestModule, BotControlPlaneModule>();
 
 // Register background lifecycle services
 builder.Services.AddHostedService<AbiEngineProbe>();
+builder.Services.AddHostedService<ConversationGuardPermissionProbe>();
 builder.Services.AddHostedService<StaleLifecycleService>();
 builder.Services.AddHostedService<RebuildMetadataRefreshService>();
 builder.Services.AddHostedService<SpdxMetadataRefreshService>();
+builder.Services.AddHostedService<PackageUpdateService>();
+builder.Services.AddHostedService<CveActiveWatchService>();
+builder.Services.AddHostedService<MilestoneBackfillSweepService>();
+builder.Services.AddHostedService<LockSweepService>();
 
 // Register the pipeline orchestrator
 builder.Services.AddSingleton<PullRequestPipeline>();
@@ -132,15 +196,44 @@ builder.Services.AddSingleton<WebhookEventProcessor, GitHubWebhookProcessor>();
 
 var app = builder.Build();
 
+// Eagerly initialize persistent state store at startup so unwritable state directories
+// fail fast and expired user preferences are pruned immediately.
+app.Services.GetRequiredService<IBotStateStore>();
+
 app.MapGitHubWebhooks("/api/webhook", config["GitHubApp:WebhookSecret"]!);
 
-// Health check endpoint for Docker/Kubernetes
-app.MapGet("/health", () => Results.Ok(new
+// Health check endpoint for Docker/Kubernetes (minimal by default; ?verbose=true for diagnostics)
+app.MapGet("/health", (
+    HttpContext httpContext,
+    RuntimeHealthState healthState,
+    IOptions<PackageUpdateOptions> packageUpdate,
+    IOptions<CveActiveWatchOptions> cveActiveWatch,
+    IOptions<MilestoneSyncOptions> milestoneSync,
+    IOptions<StaleLifecycleOptions> staleLifecycle,
+    IOptions<ConversationGuardOptions> conversationGuard,
+    IOptions<AbiComplianceOptions> abiCompliance,
+    IOptions<RebuildImpactOptions> rebuildImpact,
+    IOptions<SpdxComplianceOptions> spdxCompliance,
+    IOptions<CveSecurityOptions> cveSecurity) =>
 {
-    status = "healthy",
-    timestamp = DateTime.UtcNow,
-    abiEngine = AbiEngineProbe.ActiveEngineTier
-}));
+    var verboseParam = httpContext.Request.Query["verbose"].ToString();
+    var isVerbose = httpContext.Request.Query.ContainsKey("verbose") &&
+                    !string.Equals(verboseParam, "false", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(verboseParam, "0", StringComparison.Ordinal);
+
+    return Results.Ok(HealthResponseBuilder.Build(
+        isVerbose,
+        healthState,
+        packageUpdate.Value,
+        cveActiveWatch.Value,
+        milestoneSync.Value,
+        staleLifecycle.Value,
+        conversationGuard.Value,
+        abiCompliance.Value,
+        rebuildImpact.Value,
+        spdxCompliance.Value,
+        cveSecurity.Value));
+});
 
 app.Run();
 

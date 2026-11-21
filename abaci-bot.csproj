@@ -8,7 +8,30 @@
         <Nullable>enable</Nullable>
         <AnalysisMode>Recommended</AnalysisMode>
         <ServerGarbageCollection>false</ServerGarbageCollection>
+        <Version>1.0.0</Version>
     </PropertyGroup>
+
+    <ItemGroup>
+        <AssemblyMetadata Include="BuildTime" Value="$([System.DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))" />
+    </ItemGroup>
+
+    <Target Name="ResolveGitBuildIdentity" BeforeTargets="GetAssemblyVersion;InitializeSourceControlInformation">
+        <Exec Command="git rev-parse --short=12 HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="Low" Condition="Exists('$(MSBuildProjectDirectory)\.git') And ('$(GitCommit)' == '' Or '$(GitCommit)' == 'unknown')">
+            <Output TaskParameter="ConsoleOutput" PropertyName="_DetectedGitSha" />
+            <Output TaskParameter="ExitCode" PropertyName="_GitShaExitCode" />
+        </Exec>
+        <Exec Command="git status --porcelain" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="Low" Condition="Exists('$(MSBuildProjectDirectory)\.git') And '$(GitDirty)' == ''">
+            <Output TaskParameter="ConsoleOutput" PropertyName="_DetectedGitDirtyOutput" />
+            <Output TaskParameter="ExitCode" PropertyName="_GitDirtyExitCode" />
+        </Exec>
+        <PropertyGroup>
+            <_EffectiveCommit Condition="'$(GitCommit)' != '' And '$(GitCommit)' != 'unknown'">$(GitCommit)</_EffectiveCommit>
+            <_EffectiveCommit Condition="'$(_EffectiveCommit)' == '' And '$(_GitShaExitCode)' == '0' And '$(_DetectedGitSha)' != ''">$(_DetectedGitSha)</_EffectiveCommit>
+            <_IsDirtyTree Condition="'$(GitDirty)' == 'true' Or ('$(_GitDirtyExitCode)' == '0' And '$(_DetectedGitDirtyOutput)' != '')">true</_IsDirtyTree>
+            <SourceRevisionId Condition="'$(_EffectiveCommit)' != '' And '$(_IsDirtyTree)' == 'true'">$(_EffectiveCommit)-dirty</SourceRevisionId>
+            <SourceRevisionId Condition="'$(_EffectiveCommit)' != '' And '$(_IsDirtyTree)' != 'true'">$(_EffectiveCommit)</SourceRevisionId>
+        </PropertyGroup>
+    </Target>
 
     <ItemGroup>
       <Content Update="appsettings.json" CopyToPublishDirectory="Never" />

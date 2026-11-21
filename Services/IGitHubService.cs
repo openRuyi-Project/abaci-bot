@@ -107,6 +107,18 @@ public interface IGitHubService
         string owner, string repo, int number, CancellationToken ct = default);
 
     /// <summary>
+    /// Creates a new issue in the specified repository.
+    /// </summary>
+    Task<Issue> CreateIssueAsync(
+        string owner, string repo, string title, string body, string[]? labels = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates the title and/or body of an existing issue.
+    /// </summary>
+    Task<Issue> UpdateIssueAsync(
+        string owner, string repo, int number, string title, string body, CancellationToken ct = default);
+
+    /// <summary>
     /// Posts a comment on an issue or pull request.
     /// </summary>
     /// <param name="owner">Repository owner or organization name.</param>
@@ -116,6 +128,23 @@ public interface IGitHubService
     /// <param name="ct">Cancellation token.</param>
     Task CreateCommentAsync(
         string owner, string repo, int number, string comment, CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates the content of an existing issue or pull request comment.
+    /// </summary>
+    /// <param name="owner">Repository owner or organization name.</param>
+    /// <param name="repo">Repository name.</param>
+    /// <param name="commentId">The ID of the comment to update.</param>
+    /// <param name="comment">Updated markdown comment content.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task UpdateCommentAsync(
+        string owner, string repo, long commentId, string comment, CancellationToken ct = default);
+
+    /// <summary>
+    /// Retrieves all comments on an issue or pull request.
+    /// </summary>
+    Task<IReadOnlyList<IssueComment>> GetIssueCommentsAsync(
+        string owner, string repo, int number, CancellationToken ct = default);
 
     /// <summary>
     /// Retrieves the authoritative Issue model for an issue or pull request.
@@ -148,4 +177,163 @@ public interface IGitHubService
     /// </summary>
     Task<Stream> DownloadArtifactZipStreamAsync(
         string owner, string repo, long artifactId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Retrieves the commit SHA of a Git reference (e.g. "heads/autoupdate/curl").
+    /// Returns null if the reference does not exist.
+    /// </summary>
+    Task<string?> GetRefShaAsync(
+        string owner, string repo, string branchName, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates or updates a Git reference.
+    /// </summary>
+    Task CreateOrUpdateRefAsync(
+        string owner, string repo, string branchName, string commitSha, bool force = true, CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes a Git reference (e.g. "heads/autoupdate/curl"). Idempotent: ignores NotFoundException.
+    /// </summary>
+    Task DeleteRefAsync(
+        string owner, string repo, string branchName, CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates or creates a file's content in the repository on a specific branch.
+    /// </summary>
+    Task<string> UpdateFileContentAsync(
+        string owner, string repo, string path, string message, string content, string branch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Finds an open pull request where the head branch matches <paramref name="headBranch"/>.
+    /// </summary>
+    Task<PullRequest?> FindOpenPullRequestByHeadAsync(
+        string owner, string repo, string headBranch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates a new pull request.
+    /// </summary>
+    Task<PullRequest> CreatePullRequestAsync(
+        string owner, string repo, string title, string head, string baseBranch, string body, CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates the title and/or body of an existing pull request.
+    /// </summary>
+    Task<PullRequest> UpdatePullRequestAsync(
+        string owner, string repo, int prNumber, string title, string body, CancellationToken ct = default);
+
+    /// <summary>
+    /// Downloads an artifact from GitHub Actions, supporting both raw text/.diff and zip streams.
+    /// </summary>
+    Task<Stream> DownloadArtifactAsync(
+        string owner, string repo, long artifactId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists workflow runs for a specific branch or repository.
+    /// </summary>
+    Task<IReadOnlyList<WorkflowRun>> ListWorkflowRunsAsync(
+        string owner, string repo, string? branch = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Searches pull requests authored by a specific user that have been merged recently.
+    /// </summary>
+    Task<IReadOnlyList<PullRequest>> SearchMergedPullRequestsAsync(
+        string owner, string repo, string author, DateTimeOffset updatedAfter, CancellationToken ct = default);
+
+    /// <summary>
+    /// Retrieves the latest commit information on a branch (SHA, commit message, committer login/email).
+    /// </summary>
+    Task<(string Sha, string Message, string CommitterLogin, string CommitterEmail)?> GetBranchLatestCommitAsync(
+        string owner, string repo, string branch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Retrieves the repository Git tree recursively.
+    /// </summary>
+    Task<TreeResponse?> GetTreeRecursiveAsync(
+        string owner, string repo, string branchOrSha, CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists artifacts for a specific workflow run.
+    /// </summary>
+    Task<IReadOnlyList<Artifact>> ListWorkflowArtifactsAsync(
+        string owner, string repo, long runId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Ensures that the specified labels exist in the repository, creating any that are missing.
+    /// </summary>
+    Task EnsureLabelsExistAsync(
+        string owner, string repo, IEnumerable<(string Name, string Color, string Description)> labels, CancellationToken ct = default);
+
+    /// <summary>
+    /// Retrieves all milestones configured for the repository.
+    /// </summary>
+    Task<IReadOnlyList<Milestone>> GetMilestonesAsync(
+        string owner, string repo, ItemStateFilter state = ItemStateFilter.All, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates a new milestone in the repository.
+    /// </summary>
+    Task<Milestone> CreateMilestoneAsync(
+        string owner, string repo, string title, DateTimeOffset? dueOn = null, string? description = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates an existing milestone in the repository.
+    /// </summary>
+    Task<Milestone> UpdateMilestoneAsync(
+        string owner, string repo, int milestoneNumber, string title, DateTimeOffset? dueOn = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Sets or removes the milestone of an issue or pull request.
+    /// Pass <c>null</c> to remove milestone assignment.
+    /// </summary>
+    Task SetIssueMilestoneAsync(
+        string owner, string repo, int issueNumber, int? milestoneNumber, CancellationToken ct = default);
+
+    /// <summary>
+    /// Searches merged pull requests in the repository that currently have no milestone assigned.
+    /// </summary>
+    Task<GitHubSearchPageResult<Issue>> SearchMergedPullRequestsWithoutMilestoneAsync(
+        string owner, string repo, DateTimeOffset mergedAfter, CancellationToken ct = default);
+
+    /// <summary>
+    /// Locks an issue or pull request with a specified lock reason (default: <see cref="LockReason.TooHeated"/>).
+    /// </summary>
+    Task LockIssueAsync(
+        string owner, string repo, int issueNumber, LockReason? lockReason = LockReason.TooHeated, CancellationToken ct = default);
+
+    /// <summary>
+    /// Unlocks an issue or pull request. Idempotent: ignores errors if the issue is not locked.
+    /// </summary>
+    Task UnlockIssueAsync(
+        string owner, string repo, int issueNumber, CancellationToken ct = default);
+
+    /// <summary>
+    /// Checks whether an issue or pull request is currently locked.
+    /// </summary>
+    Task<bool> IsIssueLockedAsync(
+        string owner, string repo, int issueNumber, CancellationToken ct = default);
+
+    /// <summary>
+    /// Minimizes (hides/folds) an issue or pull request comment using GraphQL minimizeComment mutation.
+    /// Returns <c>true</c> if the comment was minimized; <c>false</c> if the node ID was unavailable or the mutation failed.
+    /// </summary>
+    Task<bool> MinimizeCommentAsync(
+        string owner, string repo, long commentId, string? subjectNodeId = null, string classifier = "SPAM", CancellationToken ct = default);
+
+    /// <summary>
+    /// Archives a pull request using GraphQL archivePullRequest mutation, removing it from public view.
+    /// </summary>
+    Task ArchivePullRequestAsync(
+        string owner, string repo, int prNumber, string? pullRequestNodeId = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Unarchives a pull request using GraphQL unarchivePullRequest mutation.
+    /// </summary>
+    Task UnarchivePullRequestAsync(
+        string owner, string repo, int prNumber, string? pullRequestNodeId = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Searches closed pull requests in the repository that were closed prior to <paramref name="closedBefore"/>.
+    /// </summary>
+    Task<GitHubSearchPageResult<Issue>> SearchClosedPullRequestsAsync(
+        string owner, string repo, DateTimeOffset closedBefore, CancellationToken ct = default);
 }

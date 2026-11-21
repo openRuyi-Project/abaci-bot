@@ -1,3 +1,4 @@
+using abaci_bot.Options;
 using abaci_bot.Services;
 using Xunit;
 
@@ -96,7 +97,7 @@ public class GovernanceCommentFormatterTests
     }
 
     [Fact]
-    public void FormatRebuildGateBlocked_EnglishDefault_UsesGfmImportant()
+    public void FormatRebuildGateBlocked_EnglishDefault_UsesGfmImportantAndDecoupledObsGuidance()
     {
         var packages = new[] { "glibc", "openssl" };
         var output = _formatter.FormatRebuildGateBlocked(packages, 1500, 1001, "Rolling");
@@ -106,9 +107,62 @@ public class GovernanceCommentFormatterTests
         Assert.Contains("1500", output);
         Assert.Contains("1001", output);
         Assert.Contains("Rolling", output);
-        Assert.Contains("Staging", output);
+        Assert.Contains("isolated build environment", output);
+        Assert.Contains("linkedbuild=\"localdep\"", output);
+        Assert.DoesNotContain("Staging", output);
+        Assert.DoesNotContain("See also", output);
         AssertNoEmojis(output);
         AssertNoInternalTaskCodes(output);
+    }
+
+    [Fact]
+    public void FormatRebuildGateBlocked_WithReferenceLinks_RendersBilingualSeeAlsoAndEscapesAndDedups()
+    {
+        var packages = new[] { "glibc" };
+        var links = new List<VerificationReferenceLink>
+        {
+            null!,
+            new() { Title = "Ignored Bad Url", Url = "ftp://invalid.example.com" },
+            new() { Title = "   ", Url = "https://ignored-empty-title.example.org" },
+            new()
+            {
+                Title = "OBS [Reverse-Dep]\\Guide\nWith Newline",
+                TitleZh = "OBS 反向依赖\\[指南]",
+                Url = "https://Docs.Example.org/obs-guide"
+            },
+            new()
+            {
+                Title = "Duplicate Ignored",
+                Url = "https://docs.example.org/obs-guide"
+            },
+            new()
+            {
+                Title = "Fallback Distro Policy",
+                TitleZh = "  ",
+                Url = "https://example.org/policy"
+            }
+        };
+
+        var enOutput = _formatter.FormatRebuildGateBlocked(packages, 1200, 1001, "Rolling", "en", links);
+        Assert.Contains("> **See also**:", enOutput);
+        Assert.Contains("> - [OBS \\[Reverse-Dep\\]\\\\Guide With Newline](https://docs.example.org/obs-guide)", enOutput);
+        Assert.Contains("> - [Fallback Distro Policy](https://example.org/policy)", enOutput);
+        Assert.DoesNotContain("Duplicate Ignored", enOutput);
+        Assert.DoesNotContain("Ignored Bad Url", enOutput);
+        Assert.DoesNotContain("ignored-empty-title", enOutput);
+
+        var zhWithoutLinks = _formatter.FormatRebuildGateBlocked(packages, 1200, 1001, "Rolling", "zh-CN", Array.Empty<VerificationReferenceLink>());
+        Assert.Contains("OBS 个人子项目", zhWithoutLinks);
+        Assert.Contains("linkedbuild=\"localdep\"", zhWithoutLinks);
+        Assert.DoesNotContain("Staging", zhWithoutLinks);
+        Assert.DoesNotContain("另请参阅", zhWithoutLinks);
+
+        var zhWithLinks = _formatter.FormatRebuildGateBlocked(packages, 1200, 1001, "Rolling", "zh-CN", links);
+        Assert.Contains("> **另请参阅**：", zhWithLinks);
+        Assert.Contains("> - [OBS 反向依赖\\\\\\[指南\\]](https://docs.example.org/obs-guide)", zhWithLinks);
+        Assert.Contains("> - [Fallback Distro Policy](https://example.org/policy)", zhWithLinks);
+        AssertNoEmojis(zhWithLinks);
+        AssertNoInternalTaskCodes(zhWithLinks);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using abaci_bot.Options;
 
 namespace abaci_bot.Services;
 
@@ -113,10 +114,17 @@ public class GovernanceCommentFormatter : IGovernanceCommentFormatter
         return sb.ToString().TrimEnd();
     }
 
-    public string FormatRebuildGateBlocked(IReadOnlyList<string> packages, int affectedCount, int threshold, string targetBranch, string? locale = null)
+    public string FormatRebuildGateBlocked(
+        IReadOnlyList<string> packages,
+        int affectedCount,
+        int threshold,
+        string targetBranch,
+        string? locale = null,
+        IReadOnlyList<VerificationReferenceLink>? referenceLinks = null)
     {
         var isZh = IsChinese(locale);
         var pkgList = string.Join("`, `", packages);
+        var resolvedLinks = ResolveReferenceLinks(referenceLinks, isZh);
         var sb = new StringBuilder();
         sb.AppendLine("> [!IMPORTANT]");
 
@@ -126,7 +134,7 @@ public class GovernanceCommentFormatter : IGovernanceCommentFormatter
             sb.AppendLine(CultureInfo.InvariantCulture, $"> 本 PR 涉及基础包变更（`{pkgList}`），在下游反向依赖 DAG 中触发 **{affectedCount}** 个软件包重构（阈值: {threshold}）。");
             sb.AppendLine(">");
             sb.AppendLine(CultureInfo.InvariantCulture, $"> 为防止大规模级联构建影响 {targetBranch} 主干分支稳定性，已自动添加 `Workflow: Blocked` 拦截合并。");
-            sb.Append("> **建议处置**：请将 PR 目标分支改选为 `Staging` 分支进行隔离验证。");
+            sb.AppendLine("> **建议处置**：请在独立的构建环境（例如配置 `linkedbuild=\"localdep\"` 的 OBS 个人子项目）中对受影响的下游反向依赖完成隔离构建验证后再推进合并。");
         }
         else
         {
@@ -134,10 +142,66 @@ public class GovernanceCommentFormatter : IGovernanceCommentFormatter
             sb.AppendLine(CultureInfo.InvariantCulture, $"> Changes to base packages (`{pkgList}`) trigger a cascading rebuild of **{affectedCount}** downstream packages in the reverse dependency graph (threshold: {threshold}).");
             sb.AppendLine(">");
             sb.AppendLine(CultureInfo.InvariantCulture, $"> To safeguard the stability of the `{targetBranch}` branch, this pull request has been automatically marked with `Workflow: Blocked` to prevent merging.");
-            sb.Append("> **Recommended Action**: Retarget this pull request to the `Staging` branch for isolated build verification.");
+            sb.AppendLine("> **Recommended Action**: Verify the affected downstream reverse dependencies in an isolated build environment (for example, an OBS personal subproject with `linkedbuild=\"localdep\"`) before merging.");
         }
 
-        return sb.ToString();
+        if (resolvedLinks.Count > 0)
+        {
+            sb.AppendLine(">");
+            sb.AppendLine(isZh ? "> **另请参阅**：" : "> **See also**:");
+            foreach (var (title, url) in resolvedLinks)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"> - [{title}]({url})");
+            }
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    private static List<(string Title, string Url)> ResolveReferenceLinks(
+        IReadOnlyList<VerificationReferenceLink>? referenceLinks,
+        bool isZh)
+    {
+        var result = new List<(string Title, string Url)>();
+        if (referenceLinks == null || referenceLinks.Count == 0)
+        {
+            return result;
+        }
+
+        var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var link in referenceLinks)
+        {
+            if (link == null || !VerificationReferenceLink.TryNormalizeHttpUrl(link.Url, out var uri))
+            {
+                continue;
+            }
+
+            var rawTitle = isZh && !string.IsNullOrWhiteSpace(link.TitleZh) ? link.TitleZh : link.Title;
+            if (string.IsNullOrWhiteSpace(rawTitle))
+            {
+                continue;
+            }
+
+            if (!seenUrls.Add(uri.AbsoluteUri))
+            {
+                continue;
+            }
+
+            result.Add((EscapeMarkdownLinkTitle(rawTitle), uri.AbsoluteUri));
+        }
+
+        return result;
+    }
+
+    private static string EscapeMarkdownLinkTitle(string rawTitle)
+    {
+        return rawTitle
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim()
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("[", "\\[", StringComparison.Ordinal)
+            .Replace("]", "\\]", StringComparison.Ordinal);
     }
 
     public string FormatAbiBreakingChange(string diffSnippet, string? locale = null)

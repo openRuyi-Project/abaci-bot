@@ -1,3 +1,5 @@
+using abaci_bot.Options;
+
 namespace abaci_bot.Services;
 
 /// <summary>
@@ -29,7 +31,13 @@ public interface IGovernanceCommentFormatter
     /// <summary>
     /// Formats a cascading rebuild impact threshold blockage alert using GFM [!IMPORTANT].
     /// </summary>
-    string FormatRebuildGateBlocked(IReadOnlyList<string> packages, int affectedCount, int threshold, string targetBranch, string? locale = null);
+    string FormatRebuildGateBlocked(
+        IReadOnlyList<string> packages,
+        int affectedCount,
+        int threshold,
+        string targetBranch,
+        string? locale = null,
+        IReadOnlyList<VerificationReferenceLink>? referenceLinks = null);
 
     /// <summary>
     /// Formats an ABI breaking change warning using GFM [!CAUTION].

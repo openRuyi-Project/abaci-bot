@@ -284,7 +284,12 @@
     // 0 blocks every change on that branch.
     "BlockThreshold": 1001,
     // Allowed values: "Rolling" or "LTS". Default: Rolling.
-    "TargetBranchToBlock": "Rolling"
+    "TargetBranchToBlock": "Rolling",
+    // Format: array of { "Title", "TitleZh" (optional), "Url" } objects (max 5 unique absolute HTTP/HTTPS URLs).
+    // Interim "See also" reference links appended to manual rebuild verification guidance comments.
+    // Empty: self-contained OBS reverse-dependency guidance is posted without external links.
+    // Default: [].
+    "VerificationGuideLinks": []
   },
 
   // ==============================================================================
@@ -343,139 +348,274 @@
   },
 
   // ==============================================================================
-  // RESERVED: automated package update service
-  // Not implemented in this release. The configuration is accepted but no service
-  // consumes it yet; it will be activated by the upcoming ecosystem release.
-  // Values below are the intended defaults and are not exercised by this build.
+  // PackageUpdateOptions: automated upstream package update background service
+  // Discovers upstream releases from Lookout and crates.io, admits safe updates,
+  // rewrites SPEC files, backfills CI checksums, and publishes automated PRs.
   // ==============================================================================
   "PackageUpdate": {
-    // Reserved. Default: false.
+    // Default: false.
     // false: no update sweeps; true: sweep every CheckIntervalHours.
     "Enabled": false,
-    // Reserved. Default: true.
+    // Default: true.
     // true: discover candidates and prepare plans without pushing branches or opening PRs.
     "DryRun": true,
-    // Reserved. Format: "owner/repo".
+    // Format: "owner/repo".
     // Empty: sweeps are skipped.
-    // Reserved. Default: "openRuyi-Project/openRuyi".
+    // Default: "openRuyi-Project/openRuyi".
     "TargetRepository": "openRuyi-Project/openRuyi",
-    // Reserved. Format: GitHub login used to author update PRs.
+    // Format: GitHub login used to author update PRs.
     // Empty: invalid when Enabled=true.
-    // Reserved. Default: "aqua-rium".
+    // Default: "aqua-rium".
     "BotLogin": "aqua-rium",
-    // Reserved. Format: PAT with repository write access.
+    // Format: PAT with repository write access.
     // Empty: the GitHub App installation token is used instead.
-    // Reserved. Default: empty (the App installation token is used).
+    // Default: empty (the App installation token is used).
     "BotPat": "",
-    // Reserved. Format: branch name prefix.
+    // Format: branch name prefix.
     // Empty: branches are created without a prefix (not recommended).
-    // Reserved. Default: "autoupdate/".
+    // Default: "autoupdate/".
     "BranchPrefix": "autoupdate/",
-    // Reserved. Unit: hours. Range: >= 1. Default: 12.
+    // Unit: hours. Range: >= 1. Default: 12.
     "CheckIntervalHours": 12,
     "Lookout": {
-      // Reserved. Default: true.
+      // Default: true.
       // false: the Lookout candidate source is skipped.
       "Enabled": true,
-      // Reserved. Format: absolute URL.
+      // Format: absolute URL.
       // Empty: Lookout queries cannot run.
-      // Reserved. Default: https://lookout.openruyi.cn.
+      // Default: https://lookout.openruyi.cn.
       "BaseUrl": "https://lookout.openruyi.cn",
-      // Reserved. Unit: hours. Range: > 0. Default: 48.
-      "StaleThresholdHours": 48
+      // Unit: hours. Range: > 0. Default: 48.
+      "StaleThresholdHours": 48,
+      // Format: local file path for persisting Lookout first-observed timestamps across restarts.
+      // Empty: defaults to lookout-first-seen.json under the local application data directory.
+      // Default: "".
+      "FirstSeenStatePath": ""
     },
     "RustCratePoller": {
-      // Reserved. Default: true.
+      // Default: true.
       // false: the crates.io candidate source is skipped.
       "Enabled": true,
-      // Reserved. Format: absolute URL.
+      // Format: absolute URL.
       // Empty: crates.io queries cannot run.
-      // Reserved. Default: https://index.crates.io.
+      // Default: https://index.crates.io.
       "IndexBaseUrl": "https://index.crates.io",
-      // Reserved. Range: >= 1. Default: 60.
+      // Range: >= 1. Default: 60.
       "MaxCratesPerSweep": 60,
-      // Reserved. Unit: milliseconds. Range: >= 0. Default: 300.
+      // Unit: milliseconds. Range: >= 0. Default: 300.
       "RequestDelayMilliseconds": 300
     },
     "Obs": {
-      // Reserved. Format: absolute URL.
+      // Format: absolute URL.
       // Empty: OBS verification is disabled.
-      // Reserved. Default: https://build.openruyi.cn.
+      // Default: https://build.openruyi.cn.
       "BaseUrl": "https://build.openruyi.cn",
-      // Reserved. Format: OBS project name.
+      // Format: OBS project name.
       // Empty: invalid when OBS verification is enabled.
-      // Reserved. Default: "openruyi".
+      // Default: "openruyi".
       "Project": "openruyi",
-      // Reserved. Format: OBS repository name (not an architecture).
+      // Format: OBS repository name (not an architecture).
       // Default: riscv64 (the repository name used by the target OBS project).
       "TargetRepository": "riscv64",
-      // Reserved. Format: architecture filter.
-      // Reserved. Default: "riscv64".
+      // Format: architecture filter.
+      // Default: "riscv64".
       "TargetArch": "riscv64",
-      // Reserved. Default: false.
+      // Default: false.
       // true: a non-successful post-merge OBS build applies Auto-Update: Blocked.
       // false: OBS results are reported without applying a label.
       "RequireObsSuccessAfterMerge": false
     },
-    // Reserved. Default: false.
+    // Default: false.
     // false: updates crossing a major version boundary are skipped.
     "AllowCrossMajorVersion": false,
-    // Reserved. Default: true.
+    // Default: true.
     // true: packages carrying downstream patch files are skipped.
     "SkipPackagesWithPatches": true,
-    // Reserved. Range: >= 1. Default: 5.
+    // Range: >= 1. Default: 5.
     "MaxCandidatesPerSweep": 5,
-    // Reserved. Range: >= 1. Default: 5.
+    // Range: >= 1. Default: 5.
     "MaxConcurrentPullRequests": 5,
-    // Reserved. Unit: days. Range: >= 1. Default: 7.
+    // Unit: days. Range: >= 1. Default: 7.
     "FailedPrTtlDays": 7,
-    // Reserved. Unit: hours. Range: >= 0. Default: 72.
+    // Unit: hours. Range: >= 0. Default: 72.
+    // Minimum age in hours an upstream release (or persisted first observation when the source omits release timestamps) must reach before submission.
+    // 0: disables the stabilization window; candidates are submitted immediately.
+    // Security advisories bypass this stabilization delay.
     "CooldownHours": 72,
-    // Reserved. Range: >= 1. Default: 3.
+    // Range: >= 1. Default: 3.
     "MaxConsecutiveFailures": 3,
-    // Reserved. Default: true.
+    // Default: true.
     // true: a tracking issue is filed when the failure limit is reached.
     "IssueOnGivingUp": true,
-    // Reserved. Unit: days. Range: >= 1. Default: 30.
+    // Unit: days. Range: >= 1. Default: 30.
+    // Duration a package remains in failure cooldown after reaching consecutive CI failure limits.
+    // Setting 0 or empty is rejected by options validation.
     "GiveUpIssueCooldownDays": 30,
-    // Reserved. Format: label name.
+    // Format: label name.
     // Empty: falls back to Status: stale-exempt.
-    // Reserved. Default: "Status: stale-exempt".
-    "GiveUpIssueLabel": "Status: stale-exempt"
+    // Default: "Status: stale-exempt".
+    "GiveUpIssueLabel": "Status: stale-exempt",
+    // Unit: requests. Range: >= 0. Default: 500.
+    // When remaining core API quota drops below this value, candidate sweeps pause.
+    "MinRateLimitRemaining": 500,
+    // Unit: milliseconds. Range: >= 0. Default: 2000.
+    // Delay inserted after publishing each update pull request to avoid secondary rate limits.
+    // 0: no delay between publishing candidates.
+    "RequestThrottleMilliseconds": 2000,
+    // Unit: bytes. Range: >= 0. Default: 104857600 (100 MiB).
+    // Maximum repository tarball size accepted for tar parsing after download buffering before falling back to Git Tree API.
+    // 0: disables the size cap and accepts any archive size.
+    "MaxArchiveBytes": 104857600
   },
 
   // ==============================================================================
-  // RESERVED: proactive CVE watch service
-  // Not implemented in this release. The configuration is accepted but no service
-  // consumes it yet; it will be activated by the upcoming ecosystem release.
-  // Values below are the intended defaults and are not exercised by this build.
+  // CveActiveWatchOptions: active repository-wide CVE vulnerability watch service
+  // Periodically scans all distribution packages against OSV.dev and NIST NVD,
+  // files prioritized security tracking issues, and closes resolved issues.
   // ==============================================================================
   "CveActiveWatch": {
-    // Reserved. Default: false.
+    // Default: false.
     // false: no proactive scans; true: scan every CheckIntervalHours.
     "Enabled": false,
-    // Reserved. Default: true.
+    // Default: true.
     // true: findings are logged without creating or closing issues.
     "DryRun": true,
-    // Reserved. Format: "owner/repo".
+    // Format: "owner/repo".
     // Empty: scans and issue filing are skipped.
-    // Reserved. Default: "openRuyi-Project/openRuyi".
+    // Default: "openRuyi-Project/openRuyi".
     "TargetRepository": "openRuyi-Project/openRuyi",
-    // Reserved. Unit: hours. Range: >= 1. Default: 24.
+    // Unit: hours. Range: >= 1. Default: 24.
     "CheckIntervalHours": 24,
-    // Reserved. Range: >= 1. Default: 1000.
+    // Range: >= 1. Default: 1000.
     "OsvBatchSize": 1000,
-    // Reserved. Range: >= 0. Default: 0.
+    // Range: >= 0. Default: 0.
     // 0: every package in the catalog is evaluated during a sweep.
+    // Non-zero: packages scanned per sweep, advancing sequentially through the catalog across successive cycles.
     "PackagesPerSweep": 0,
-    // Reserved. Unit: queries per day. Range: >= 0. Default: 200.
+    // Unit: queries per day. Range: >= 0. Default: 200.
     // 0: no NVD fallback queries are issued.
     "MaxNvdQueriesPerDay": 200,
-    // Reserved. Unit: milliseconds. Range: >= 0. Default: 6500.
+    // Unit: milliseconds. Range: >= 0. Default: 6500.
     "NvdRequestDelayMilliseconds": 6500,
-    // Reserved. Format: label name.
+    // Range: >= 1. Default: 8.
+    // Maximum concurrent HTTP requests dispatched when resolving OSV vulnerability details.
+    "MaxConcurrentOsvRequests": 8,
+    // Format: label name.
     // Empty: falls back to Vulnerability: Detected.
-    // Reserved. Default: "Vulnerability: Detected".
-    "IssueLabel": "Vulnerability: Detected"
+    // Default: "Vulnerability: Detected".
+    "IssueLabel": "Vulnerability: Detected",
+    // Unit: hours. Range: >= 1. Default: 168.
+    // Duration before cached vulnerability query results expire.
+    "CacheExpirationHours": 168
+  },
+
+  // ==============================================================================
+  // MilestoneSyncOptions: automated milestone assignment and backfill sweep service
+  // Assigns merged pull requests lacking a milestone to the current monthly milestone (YYYY.MM).
+  // Defaults source: Options/MilestoneSyncOptions.cs
+  // ==============================================================================
+  "MilestoneSync": {
+    // Default: false.
+    // false: milestone synchronization module and background backfill sweep are disabled.
+    // true: merged PRs without a milestone are assigned to the current month's milestone.
+    "Enabled": false,
+    // Default: true.
+    // true: simulated operations are logged without writing to GitHub.
+    // false: milestone assignments and milestone creation requests are written to the remote repository.
+    "DryRun": true,
+    // Format: array of "owner/repo" strings.
+    // Empty: milestone synchronization is disabled globally across all repositories.
+    // Default: [].
+    "RepositoryAllowList": [],
+    // Default: false.
+    // false: if the target monthly milestone does not exist, the assignment is skipped.
+    // true: the bot is permitted to create missing monthly milestones (YYYY.MM) on the remote repository.
+    "CreationEnabled": false,
+    // Unit: day of month. Range: 1..28. Default: 25.
+    // The target due day of the month configured when creating a new monthly milestone.
+    "DueDayOfMonth": 25,
+    // Unit: days. Range: 1..365. Default: 30.
+    // Historical time window for the background service to backfill merged pull requests lacking a milestone.
+    "BackfillDays": 30,
+    // Unit: hours. Range: 1..168. Default: 24.
+    // Execution interval for the background milestone backfill sweep service.
+    "SweepIntervalHours": 24,
+    // Format: IANA or system timezone ID (e.g. "Asia/Shanghai", "UTC", "America/New_York").
+    // Applies UTC offset and DST transitions when determining the YYYY.MM release milestone month.
+    // Empty or invalid: startup validation fails fast.
+    // Default: "Asia/Shanghai".
+    "TimeZoneId": "Asia/Shanghai"
+  },
+
+  // ==============================================================================
+  // ConversationGuardOptions: conversation locking, mention command moderation, and inactive PR sweep
+  // Automates thread locking, mention command moderation (@<bot> lock, unlock, hide, archive), and post-closure harassment prevention.
+  // Defaults source: Options/ConversationGuardOptions.cs
+  // ==============================================================================
+  "ConversationGuard": {
+    // Default: false.
+    // false: conversation guard module and background lock sweep are disabled.
+    // true: mention commands are processed and closed PRs exceeding inactive thresholds are locked.
+    "Enabled": false,
+    // Default: true.
+    // true: moderation actions are logged without applying locks, minimization, or archiving on GitHub.
+    // false: moderation actions are executed on the remote repository.
+    "DryRun": true,
+    // Format: array of "owner/repo" strings.
+    // Empty: conversation moderation is disabled globally across all repositories.
+    // Default: [].
+    "RepositoryAllowList": [],
+    // Default: false.
+    // false: archive commands are rejected to prevent unintended 404 access restrictions.
+    // true: pull request level archiving via GraphQL is enabled.
+    "ArchiveEnabled": false,
+    // Unit: days. Range: 7..365. Default: 60.
+    // Threshold based on closed_at after which closed PRs are automatically locked to prevent post-closure harassment.
+    "InactiveCloseDays": 60,
+    // Unit: hours. Range: 1..72. Default: 12.
+    // Execution interval for the background closed PR lock sweep service.
+    "SweepIntervalHours": 12,
+    // Unit: minutes. Range: 1..60. Default: 15.
+    // Time window for the PR author to reply with `@<bot> lock confirm` (or `@<bot> archive confirm`) before the confirmation request expires.
+    "AuthorLockConfirmTimeoutMinutes": 15,
+    // Unit: pull requests per repository per sweep. Range: 1..500. Default: 50.
+    // Maximum inactive closed pull requests locked per repository per sweep (500 is the search transport cap; remaining PRs defer to the next sweep; values outside 1..500 fail startup validation).
+    "MaxLocksPerSweep": 50
+  },
+
+  // ==============================================================================
+  // BotStateOptions: unified persistent runtime state and localization policy
+  // Stores ignored packages, failure cooldowns, user language preferences, and repository locale overrides.
+  // Defaults source: Options/BotStateOptions.cs
+  // ==============================================================================
+  "BotState": {
+    // Format: absolute local directory path for persisting bot-state.json and default lookout-first-seen.json (relative paths are rejected at startup).
+    // Empty: resolves LocalApplicationData -> XDG_DATA_HOME -> $HOME/.local/share/abaci-bot -> temp directory (with warning).
+    // Default: "".
+    "StateDirectory": "",
+    // Unit: days. Range: >= 1. Default: 180.
+    // Retention period for user language preferences before inactive entries are pruned.
+    "LocaleRetentionDays": 180,
+    // Allowed values: "en", "zh".
+    // Global fallback locale when neither repository policy nor user preference is set.
+    // Default: "en".
+    "DefaultLocale": "en",
+    // Format: map of "owner/repo" to "en" or "zh".
+    // Empty: no repositories force a global language; users may select their preferred language.
+    // Default: {}.
+    "RepositoryForcedLocales": {},
+    // Format: map of "owner/repo" to "en" or "zh".
+    // Empty: repositories fall back to DefaultLocale when a user has no personal preference.
+    // Default: {}.
+    "RepositoryDefaultLocales": {},
+    // Unit: minutes. Range: 0..1440. Default: 5.
+    // Delay before ephemeral bot usage and rejection replies are processed.
+    // 0: disables automatic cleanup.
+    "EphemeralReplyDeleteMinutes": 5,
+    // Allowed values: "Delete", "Minimize".
+    // Delete: deletes the expired ephemeral comment via GitHub REST API.
+    // Minimize: folds the expired ephemeral comment as OUTDATED via GitHub GraphQL API.
+    // Default: "Delete".
+    "EphemeralReplyAction": "Delete"
   }
 }

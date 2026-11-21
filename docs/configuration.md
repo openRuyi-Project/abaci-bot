@@ -132,3 +132,13 @@ The response confirms:
 - Active ABI engine tier (`native` vs `managed`)
 - RPM v6 extraction capability (`true` / `false`)
 - Count of loaded governance modules
+
+---
+
+## 8. Multi-Distribution Configuration Boundary
+
+Although `abaci-bot` is built for `openRuyi`, its governance pipeline supports other RPM-based distributions through a unified configuration boundary:
+
+- **Belongs in configuration**: instance endpoints (Lookout, crates.io, OBS `BaseUrl`/`Project`/`TargetRepository`/`TargetArch`, repodata URLs, optional guide links such as `RebuildImpact:VerificationGuideLinks`), target repositories and branch policies, IANA timezones (`MilestoneSync:TimeZoneId`), numeric thresholds, and feature/dry-run switches.
+- **Out-of-the-box default strategy**: code defaults target `openRuyi` out of the box (for example, `MilestoneSync:TimeZoneId = "Asia/Shanghai"`, `PackageUpdate:Obs`), and deployments for other RPM distributions override those instance-specific values in `appsettings.json`.
+- **Stays in code constants**: the managed GitHub label taxonomy ([`GitHubLabels.cs`](../Services/GitHubLabels.cs)), priority-ordered pipeline invariants, and localized message framing templates.
